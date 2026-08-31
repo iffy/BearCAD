@@ -1046,6 +1046,12 @@ pub enum ConstraintPoint {
     /// `FaceId::ExtrudeCap`/`FaceId::ExtrudeSide`; other face kinds never resolve. Fixed by
     /// the body's geometry, not draggable — mirrors [`ConstraintEntity::Origin`].
     FaceVertex { face: FaceId, index: usize },
+    /// The centre of a **circular** body face (#1858): a cylinder cap, or the cap of an
+    /// extruded circle. Analytic — it comes from [`crate::extrude::face_circle_world`], not
+    /// from the face's tessellated boundary loop — so it stays the true centre however finely
+    /// the rim is faceted. Fixed by the body's geometry, not draggable, exactly like
+    /// [`Self::FaceVertex`].
+    FaceCircleCenter { face: FaceId },
     /// One of a sketch text's nine anchor points (#408): the bounding-box corners, edge
     /// midpoints, or centre. Solving moves the text's `origin` (the whole text translates
     /// rigidly); its rotation and size never change from constraints.
@@ -1384,6 +1390,11 @@ pub enum ConstraintEntity {
     Line(ConstraintLine),
     /// A circle's perimeter (point-on-circle when paired with a point).
     Circle(CircleKey),
+    /// The rim of a **circular** body face (#1858) — a cylinder cap or an extruded circle's
+    /// cap. Point-on-circle when paired with a point, against the face's analytic centre and
+    /// radius rather than the 48 chords its boundary loop is stored as. Fixed geometry, like
+    /// [`ConstraintPoint::FaceVertex`].
+    FaceCircle { face: FaceId },
     /// The sketch origin (local UV `(0, 0)`); a fixed point for snapping.
     Origin,
 }

@@ -1058,8 +1058,9 @@ fn point_effective_visible(
         // A face's own vertex tracks the feature that produced its face — same dependency
         // `face_element` gives a sketch placed on a body cap/side wall.
         // With no owning feature there is nothing to inherit from (#1055).
-        ConstraintPoint::FaceVertex { face, .. } => face_owner_element(&face)
-            .is_none_or(|owner| visibility.effective_visible(doc, owner)),
+        ConstraintPoint::FaceVertex { face, .. } | ConstraintPoint::FaceCircleCenter { face } => {
+            face_owner_element(&face).is_none_or(|owner| visibility.effective_visible(doc, owner))
+        }
         ConstraintPoint::TextAnchor { text, .. } => {
             doc.sketch_texts.get(text).is_some_and(|entity| {
                 visibility.effective_visible(doc, SceneElement::Sketch(entity.sketch))
@@ -1671,7 +1672,7 @@ fn constraint_entity_node(entity: &ConstraintEntity) -> Option<HierarchyNode> {
         ConstraintEntity::Point(point) => constraint_point_node(point),
         ConstraintEntity::Line(line) => constraint_line_node(line),
         ConstraintEntity::Circle(circle) => Some(HierarchyNode::Circle(*circle)),
-        ConstraintEntity::Origin => None,
+        ConstraintEntity::FaceCircle { .. } | ConstraintEntity::Origin => None,
     }
 }
 
@@ -3377,7 +3378,9 @@ fn point_parent_element(doc: &Document, point: ConstraintPoint) -> Option<SceneE
         | ConstraintPoint::ImageAnchor { image, .. } => Some(SceneElement::Image(image)),
         ConstraintPoint::Origin => Some(SceneElement::Origin),
         // A face's own vertex nests under the feature that produced its face.
-        ConstraintPoint::FaceVertex { face, .. } => face_owner_element(&face),
+        ConstraintPoint::FaceVertex { face, .. } | ConstraintPoint::FaceCircleCenter { face } => {
+            face_owner_element(&face)
+        }
     }
 }
 
@@ -3776,7 +3779,7 @@ fn constraint_entity_touches_element(entity: &ConstraintEntity, element: &SceneE
         ConstraintEntity::Point(point) => constraint_point_touches_element(point, element),
         ConstraintEntity::Line(line) => constraint_line_touches_element(line, element),
         ConstraintEntity::Circle(circle) => *element == SceneElement::Circle(*circle),
-        ConstraintEntity::Origin => false,
+        ConstraintEntity::FaceCircle { .. } | ConstraintEntity::Origin => false,
     }
 }
 

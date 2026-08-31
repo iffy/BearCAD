@@ -1418,7 +1418,8 @@ fn constraint_refs(
             ConstraintEntity::Point(p) => point(p, lines, circles),
             ConstraintEntity::Line(l) => line_ref(l, lines),
             ConstraintEntity::Circle(c) => circles.push(*c),
-            ConstraintEntity::Origin => {}
+            // Body-fixed geometry: no sketch entity of its own to emit.
+            ConstraintEntity::FaceCircle { .. } | ConstraintEntity::Origin => {}
         }
     }
     match kind {
@@ -1914,6 +1915,7 @@ fn entity_select(doc: &Document, e: &ConstraintEntity) -> Option<String> {
             let ord = doc.circles.keys().position(|k| k == *i).unwrap_or(0);
             Some(format!("{{ kind = \"circle\", index = {ord} }}"))
         }
+        ConstraintEntity::FaceCircle { .. } => None,
         ConstraintEntity::Origin => Some("{ kind = \"origin\" }".into()),
     }
 }

@@ -571,7 +571,10 @@ pub fn element_in_sketch(
         SceneElement::Point(point) => match point {
             crate::model::ConstraintPoint::LineEndpoint { line, .. } => line_in(*line),
             crate::model::ConstraintPoint::CircleCenter(ci) => circle_in(*ci),
-            crate::model::ConstraintPoint::FaceVertex { face, .. } => Some(face) == host_face.as_ref(),
+            crate::model::ConstraintPoint::FaceVertex { face, .. }
+            | crate::model::ConstraintPoint::FaceCircleCenter { face } => {
+                Some(face) == host_face.as_ref()
+            }
             crate::model::ConstraintPoint::TextAnchor { text, .. } => text_in(*text),
             // Gated to the host plane at creation; nothing sketch-foreign resolves here.
             crate::model::ConstraintPoint::ImageCalibrationPoint { .. }

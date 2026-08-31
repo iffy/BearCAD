@@ -170,7 +170,7 @@ pub fn scene_element_for_point(point: ConstraintPoint) -> SceneElement {
         // A face's own vertex tracks the feature that produced its face, same convention
         // as `document_health`/`hierarchy`'s owner mappings for `FaceVertex`/`FaceEdge`.
         // No owning feature means nothing to inherit from (#1055).
-        ConstraintPoint::FaceVertex { face, .. } => {
+        ConstraintPoint::FaceVertex { face, .. } | ConstraintPoint::FaceCircleCenter { face } => {
             crate::hierarchy::face_owner_element(&face).unwrap_or(SceneElement::Origin)
         }
     }
@@ -222,7 +222,10 @@ pub fn can_drag_point(doc: &Document, sketch: SketchId, point: ConstraintPoint) 
             .unwrap_or(false);
     }
     // A face's own vertex is fixed by the body's geometry, never draggable.
-    if let ConstraintPoint::FaceVertex { .. } | ConstraintPoint::Origin = point {
+    if let ConstraintPoint::FaceVertex { .. }
+    | ConstraintPoint::FaceCircleCenter { .. }
+    | ConstraintPoint::Origin = point
+    {
         return false;
     }
     true
@@ -374,6 +377,7 @@ fn constraint_point_sort_key(point: ConstraintPoint) -> (u8, usize, u8, u8) {
         ConstraintPoint::CircleCenter(circle) => (2, circle.index() as usize, 0, 0),
         ConstraintPoint::Origin => (2, usize::MAX, 0, 0),
         ConstraintPoint::FaceVertex { index, .. } => (3, index, 0, 0),
+        ConstraintPoint::FaceCircleCenter { .. } => (3, usize::MAX, 0, 0),
         ConstraintPoint::TextAnchor { text, anchor } => (4, text.index() as usize, anchor as u8, 0),
         ConstraintPoint::ImageCalibrationPoint { image, index } => {
             (5, image.index() as usize, index as u8, 0)
@@ -903,7 +907,10 @@ fn entity_point(entity: ConstraintEntity) -> Option<ConstraintPoint> {
     match entity {
         ConstraintEntity::Point(point) => Some(point),
         // The origin is a fixed reference, not a draggable vertex.
-        ConstraintEntity::Line(_) | ConstraintEntity::Circle(_) | ConstraintEntity::Origin => None,
+        ConstraintEntity::Line(_)
+        | ConstraintEntity::Circle(_)
+        | ConstraintEntity::FaceCircle { .. }
+        | ConstraintEntity::Origin => None,
     }
 }
 

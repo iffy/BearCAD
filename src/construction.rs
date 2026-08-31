@@ -826,7 +826,7 @@ pub fn point_sketch(doc: &Document, point: ConstraintPoint) -> Option<SketchId> 
         ConstraintPoint::ImageCalibrationPoint { .. } | ConstraintPoint::ImageAnchor { .. } => None,
         // A face's own vertex has no owning sketch of its own — it's referenced *from*
         // whichever sketch a constraint projects it into, not owned by one.
-        ConstraintPoint::FaceVertex { .. } => None,
+        ConstraintPoint::FaceVertex { .. } | ConstraintPoint::FaceCircleCenter { .. } => None,
         ConstraintPoint::Origin => None,
     }
 }
@@ -1886,6 +1886,7 @@ impl PickOcclusion {
                         doc.circles.get(*c).is_some_and(|c| c.shadow)
                     }
                     ConstraintPoint::FaceVertex { .. }
+                    | ConstraintPoint::FaceCircleCenter { .. }
                     | ConstraintPoint::TextAnchor { .. }
                     | ConstraintPoint::ImageCalibrationPoint { .. }
                     | ConstraintPoint::ImageAnchor { .. }
@@ -2919,6 +2920,10 @@ pub fn point_world_position(doc: &Document, point: ConstraintPoint) -> Option<Ve
         // Already a world-space point (#26/#27) — no sketch frame to project through.
         ConstraintPoint::FaceVertex { face, index } => {
             crate::extrude::face_boundary_loop_world(doc, &face)?.get(index).copied()
+        }
+        // A circular face's analytic centre (#1858) — also already world-space.
+        ConstraintPoint::FaceCircleCenter { face } => {
+            crate::extrude::face_circle_world(doc, &face).map(|(c, _)| c)
         }
         ConstraintPoint::TextAnchor { text, anchor } => {
             let entity = doc.sketch_texts.get(text)?;

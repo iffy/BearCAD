@@ -25448,7 +25448,8 @@ fn snap_icon(target: snapping::SnapTarget) -> icons::IconId {
         snapping::SnapTarget::Vertex(_)
         | snapping::SnapTarget::Origin
         | snapping::SnapTarget::OnLine(_)
-        | snapping::SnapTarget::OnLineExtension(_) => icons::IconId::Coincident,
+        | snapping::SnapTarget::OnLineExtension(_)
+        | snapping::SnapTarget::OnFaceCircle(_) => icons::IconId::Coincident,
         snapping::SnapTarget::NormalAtMidpoint(_) => icons::IconId::Perpendicular,
     }
 }

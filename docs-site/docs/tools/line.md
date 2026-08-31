@@ -31,7 +31,7 @@ Press **Esc** to stop chaining and keep what you've drawn.
 ## Snapping
 
 The cursor snaps to nearby endpoints, midpoints, and lines; finishing a point on a snap
-keeps that relationship as things move. Touching a corner arms dashed **guide lines**
+keeps that relationship as things move. On a round face the rim snaps as one circle. Touching a corner arms dashed **guide lines**
 along its edges, for lining a new point up with existing geometry at a distance. Snapping
 can be toggled in the Context pane.
 

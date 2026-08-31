@@ -183,7 +183,8 @@ fn scene_element_for_point(point: &ConstraintPoint) -> SceneElement {
     match point {
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(*line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(*circle),
-        ConstraintPoint::FaceVertex { face, .. } => scene_element_for_face(face),
+        ConstraintPoint::FaceVertex { face, .. }
+        | ConstraintPoint::FaceCircleCenter { face } => scene_element_for_face(face),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
         ConstraintPoint::ImageCalibrationPoint { image, .. }
         | ConstraintPoint::ImageAnchor { image, .. } => SceneElement::Image(*image),
@@ -606,6 +607,7 @@ fn geometry_elements_for_entity(entity: &ConstraintEntity) -> Vec<SceneElement> 
         ConstraintEntity::Point(point) => vec![point_owner_element(point)],
         ConstraintEntity::Line(line) => geometry_elements_for_line(line),
         ConstraintEntity::Circle(circle) => vec![SceneElement::Circle(*circle)],
+        ConstraintEntity::FaceCircle { face } => vec![scene_element_for_face(face)],
         ConstraintEntity::Origin => Vec::new(),
     }
 }
@@ -614,7 +616,8 @@ fn point_owner_element(point: &ConstraintPoint) -> SceneElement {
     match point {
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(*line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(*circle),
-        ConstraintPoint::FaceVertex { face, .. } => scene_element_for_face(face),
+        ConstraintPoint::FaceVertex { face, .. }
+        | ConstraintPoint::FaceCircleCenter { face } => scene_element_for_face(face),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
         ConstraintPoint::ImageCalibrationPoint { image, .. }
         | ConstraintPoint::ImageAnchor { image, .. } => SceneElement::Image(*image),

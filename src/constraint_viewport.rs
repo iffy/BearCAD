@@ -85,6 +85,9 @@ fn entity_world_position(
         ConstraintEntity::Circle(circle) => {
             point_world_position(doc, ConstraintPoint::CircleCenter(circle))
         }
+        ConstraintEntity::FaceCircle { face } => {
+            crate::extrude::face_circle_world(doc, &face).map(|(c, _)| c)
+        }
         ConstraintEntity::Origin => {
             let frame = sketch_geometry_frame(doc, sketch)?;
             Some(local_to_world(&frame, 0.0, 0.0))

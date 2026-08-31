@@ -1498,6 +1498,11 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
         // boundary loop (#26/#27's `FaceVertex`).
         let face_table: Table = table.get("face")?;
         let face = parse_face_id_table(lua, face_table)?;
+        // { kind = "face", face = { ... }, center = true } — the analytic centre of a
+        // *circular* face (#1858), which has no boundary-loop index.
+        if table.get::<Option<bool>>("center")?.unwrap_or(false) {
+            return Ok(ConstraintPoint::FaceCircleCenter { face });
+        }
         let index: usize = table.ordinal_req("index")?;
         return Ok(ConstraintPoint::FaceVertex { face, index });
     }

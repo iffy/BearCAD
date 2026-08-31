@@ -190,7 +190,7 @@ fn pane_element_for_constraint_point(
         ConstraintPoint::ImageCalibrationPoint { image, .. }
         | ConstraintPoint::ImageAnchor { image, .. } => SceneElement::Image(image),
         ConstraintPoint::Origin => SceneElement::Origin,
-        ConstraintPoint::FaceVertex { face, .. } => {
+        ConstraintPoint::FaceVertex { face, .. } | ConstraintPoint::FaceCircleCenter { face } => {
             crate::hierarchy::face_owner_element(&face).unwrap_or(SceneElement::Origin)
         }
     }

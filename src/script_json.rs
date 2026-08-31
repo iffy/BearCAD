@@ -1350,6 +1350,11 @@ fn constraint_point_from_json(
     }
     if kind.eq_ignore_ascii_case("face") {
         let face = face_id_from_json(doc, t.get("face").ok_or("face vertex requires `face`")?)?;
+        // `center: true` names a circular face's analytic centre (#1858) instead of a
+        // boundary-loop vertex.
+        if t.get("center").and_then(Value::as_bool).unwrap_or(false) {
+            return Ok(ConstraintPoint::FaceCircleCenter { face });
+        }
         let index = req_usize(t, "index", "point")?;
         return Ok(ConstraintPoint::FaceVertex { face, index });
     }

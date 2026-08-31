@@ -23,6 +23,11 @@ pub enum SnapTarget {
     /// edge's line but beyond its endpoints. Pinned with a point-on-line coincidence, just like
     /// [`SnapTarget::OnLine`], so the point stays collinear with the edge.
     OnLineExtension(ConstraintLine),
+    /// On the rim of a **circular** body face the sketch sits on (#1858). The face's
+    /// boundary is stored as 48 chords; those are never offered as snap lines, so the rim
+    /// snaps as one true circle instead of a ring of chord midpoints. Pinned with a
+    /// point-on-circle coincidence against the face's analytic centre and radius.
+    OnFaceCircle(crate::model::FaceId),
     /// The infinite line normal to `line`, through its midpoint (inference snapping: only
     /// reachable after first touching that line's midpoint — see `AppState`'s remembered anchor,
     /// mirroring `OnLineExtension`'s vertex-touch mechanic for #21). Committing this snap invents
@@ -147,6 +152,25 @@ pub fn find_snap(
             ));
         }
     }
+    // The rim of a circular body face the sketch sits on (#1858): the true circle, so the
+    // point lands exactly on it rather than on one of the 48 chords that approximate it.
+    if let Some((face, (cu, cv), radius)) = sketched_on_face_circle(doc, sketch) {
+        let d = dist_sq(query, (cu, cv)).sqrt();
+        if d > 1e-6 {
+            let scale = radius / d;
+            let foot = (cu + (query.0 - cu) * scale, cv + (query.1 - cv) * scale);
+            let d2 = dist_sq(query, foot);
+            if d2 <= radius_sq && best_on_line.as_ref().is_none_or(|(b, _)| d2 < *b) {
+                best_on_line = Some((
+                    d2,
+                    Snap {
+                        uv: foot,
+                        target: SnapTarget::OnFaceCircle(face),
+                    },
+                ));
+            }
+        }
+    }
     if let Some((_, snap)) = best_mid {
         return Some(snap);
     }
@@ -169,6 +193,10 @@ pub fn snap_constraint_kind(point: ConstraintPoint, target: SnapTarget) -> Const
             b: ConstraintEntity::Origin,
         },
         SnapTarget::Midpoint(line) => ConstraintKind::Midpoint { point, line },
+        SnapTarget::OnFaceCircle(face) => ConstraintKind::Coincident {
+            a: ConstraintEntity::Point(point),
+            b: ConstraintEntity::FaceCircle { face },
+        },
         SnapTarget::OnLine(line) | SnapTarget::OnLineExtension(line) => ConstraintKind::Coincident {
             a: ConstraintEntity::Point(point),
             b: ConstraintEntity::Line(line),
@@ -220,6 +248,7 @@ fn owning_lines(point: &ConstraintPoint) -> Vec<ConstraintLine> {
         ConstraintPoint::LineEndpoint { line, .. } => vec![ConstraintLine::Line(*line)],
         ConstraintPoint::CircleCenter(_)
         | ConstraintPoint::FaceVertex { .. }
+        | ConstraintPoint::FaceCircleCenter { .. }
         | ConstraintPoint::TextAnchor { .. }
         | ConstraintPoint::ImageCalibrationPoint { .. }
         | ConstraintPoint::ImageAnchor { .. }
@@ -299,6 +328,15 @@ pub fn sketch_vertices(doc: &Document, sketch: SketchId) -> Vec<ConstraintPoint>
             points.push(ConstraintPoint::ImageAnchor { image: index, anchor });
         }
     }
+    // A circular body face's analytic centre (#1858): unlike a polygon corner (rejected
+    // below), the centre of a circle is stable and meaningful — it stays the centre however
+    // the body's radius changes — so it is a first-class vertex snap. A cap sketched on an
+    // extruded circle already has its UV origin there, and that origin wins the tie.
+    if let Some(face) = doc.sketch_face(sketch) {
+        if crate::extrude::face_circle_world(doc, &face).is_some() {
+            points.push(ConstraintPoint::FaceCircleCenter { face });
+        }
+    }
     // The body face the sketch sits on (#26/#27, #139) is *not* exposed as FaceVertex
     // corners here (#1395): a sketch drawn on an extrusion cap/side wall snaps to that face's
     // boundary edges as FaceEdge **lines** (see `sketch_lines`) instead. Snapping to a face
@@ -321,12 +359,16 @@ pub fn sketch_lines(doc: &Document, sketch: SketchId) -> Vec<ConstraintLine> {
         }
         lines.push(ConstraintLine::Line(index));
     }
+    // A circular face's boundary is 48 chords, not 48 edges (#1858) — offering them would
+    // litter the rim with chord midpoints. `find_snap` snaps to the true circle instead.
     if let Some((face, count)) = sketched_on_face_boundary(doc, sketch) {
-        for index in 0..count {
-            lines.push(ConstraintLine::FaceEdge {
-                face: face.clone(),
-                index,
-            });
+        if crate::extrude::face_circle_world(doc, &face).is_none() {
+            for index in 0..count {
+                lines.push(ConstraintLine::FaceEdge {
+                    face: face.clone(),
+                    index,
+                });
+            }
         }
     }
     for (index, img) in doc.tracing_images.iter() {
@@ -347,6 +389,18 @@ fn sketched_on_face_boundary(doc: &Document, sketch: SketchId) -> Option<(crate:
     let face = doc.sketch_face(sketch)?;
     let boundary = crate::extrude::face_boundary_loop_world(doc, &face)?;
     (!boundary.is_empty()).then_some((face, boundary.len()))
+}
+
+/// The analytic circle of the body face a sketch sits on, in that sketch's UV (#1858):
+/// the face, its centre, and its radius. `None` when the face isn't round.
+fn sketched_on_face_circle(
+    doc: &Document,
+    sketch: SketchId,
+) -> Option<(crate::model::FaceId, (f32, f32), f32)> {
+    let face = doc.sketch_face(sketch)?;
+    let (center, radius) = crate::extrude::face_circle_world(doc, &face)?;
+    let frame = crate::face::sketch_geometry_frame(doc, sketch)?;
+    Some((face, crate::face::world_to_local(&frame, center), radius))
 }
 
 fn dist_sq(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -631,6 +685,81 @@ mod tests {
             snap.target,
             SnapTarget::OnLine(ConstraintLine::FaceEdge { face: cap_face, index: 0 })
         );
+    }
+
+    /// #1858: a sketch on a *circular* body face must treat that face as a circle, not as the
+    /// 48-segment mesh approximation its boundary loop is stored as. None of those chords are
+    /// offered as snap lines (they'd litter the rim with 48 midpoint snaps); instead the face
+    /// offers its analytic centre as a vertex and its true rim as an on-circle snap.
+    #[test]
+    fn circular_face_snaps_as_a_circle_not_a_mesh() {
+        use crate::model::{Circle, ExtrudeFace, Extrusion, FaceId};
+        let (mut doc, base) = sketch_doc();
+        doc.circles
+            .insert(Circle::from_local_center_radius(base, 0.0, 0.0, 10.0, 0.0));
+        let profile = ExtrudeFace::Circle(rkey(0));
+        doc.extrusions.insert(Extrusion {
+            sketch: base,
+            faces: vec![profile.clone()],
+            distance: 6.0,
+            target: None,
+            expression: String::new(),
+            name: None,
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
+            edge_treatments: Vec::new(),
+        });
+        let cap_face = FaceId::ExtrudeCap {
+            extrusion: xkey(0),
+            profile,
+            top: true,
+        };
+        let cap = doc.add_sketch(cap_face.clone());
+
+        // No faceted boundary edges at all — the rim is a circle, not 48 chords.
+        let face_edges = sketch_lines(&doc, cap)
+            .iter()
+            .filter(|l| matches!(l, ConstraintLine::FaceEdge { .. }))
+            .count();
+        assert_eq!(face_edges, 0, "a circular face must not expose mesh chords");
+
+        // The face's centre is a real snap-able vertex. (On an extruded circle's cap the
+        // sketch's own origin already sits there, and wins the tie — but the analytic centre
+        // is offered too, for round faces whose frame origin is elsewhere.)
+        let centre = ConstraintPoint::FaceCircleCenter { face: cap_face.clone() };
+        assert!(
+            sketch_vertices(&doc, cap).contains(&centre),
+            "circular face should offer its centre"
+        );
+        let (cu, cv) = point_uv(&doc, cap, centre).unwrap();
+        assert!(cu.abs() < EPS && cv.abs() < EPS, "centre at UV origin, got {cu},{cv}");
+        let snap = find_snap(&doc, cap, (0.3, 0.2), 1.0, &[]).expect("snap to centre");
+        assert!(matches!(
+            snap.target,
+            SnapTarget::Origin | SnapTarget::Vertex(ConstraintPoint::FaceCircleCenter { .. })
+        ));
+        assert!(snap.uv.0.abs() < EPS && snap.uv.1.abs() < EPS);
+
+        // The rim snaps onto the *exact* circle (radius 10), not onto a chord (which would
+        // sit ~0.02 mm inside it), and pins with a point-on-circle coincidence.
+        // (off the origin axes, which are on-line snaps too)
+        let q = 10.3 / 2f32.sqrt();
+        let snap = find_snap(&doc, cap, (q, q), 1.0, &[]).expect("snap to rim");
+        assert_eq!(snap.target, SnapTarget::OnFaceCircle(cap_face.clone()));
+        assert!(
+            (snap.uv.0.hypot(snap.uv.1) - 10.0).abs() < EPS,
+            "rim snap must land on the true circle, got {:?}",
+            snap.uv
+        );
+        assert!(matches!(
+            snap_constraint_kind(ConstraintPoint::CircleCenter(rkey(0)), snap.target),
+            ConstraintKind::Coincident {
+                b: ConstraintEntity::FaceCircle { face },
+                ..
+            } if face == cap_face
+        ));
     }
 
     #[test]

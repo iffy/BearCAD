@@ -4072,7 +4072,10 @@ pub fn instructions_for_snap_constraint(kind: &crate::model::ConstraintKind) -> 
                 | ConstraintLine::ImageEdge { .. }),
             ) => Some(SceneElement::FaceEdge(line.clone())),
             ConstraintEntity::Circle(index) => Some(SceneElement::Circle(*index)),
-            ConstraintEntity::Origin => None,
+            // A circular face's rim (#1858) has no selectable `SceneElement` of its own —
+            // its centre point would build a different constraint — so, like `Origin`
+            // below, emit nothing rather than an instruction that replays wrong.
+            ConstraintEntity::FaceCircle { .. } | ConstraintEntity::Origin => None,
         }
     }
 
@@ -5097,6 +5100,10 @@ fn point_lua_fields(point: &ConstraintPoint, doc: Option<&crate::model::Document
         // #26/#27: mirrors `lua_script::parse_constraint_point_table`'s `"face"` shape.
         ConstraintPoint::FaceVertex { face, index } => {
             format!("kind = \"face\", face = {}, index = {index}", face_id_lua_ref(face, doc))
+        }
+        // #1858: the analytic centre of a circular face.
+        ConstraintPoint::FaceCircleCenter { face } => {
+            format!("kind = \"face\", face = {}, center = true", face_id_lua_ref(face, doc))
         }
         // #408: mirrors `lua_script::parse_constraint_point_table`'s `"sketch_text"` shape.
         ConstraintPoint::TextAnchor { text, anchor } => {

@@ -342,6 +342,7 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
         ConstraintRef::Point(ConstraintPoint::CircleCenter(i)) => (4, i.index() as usize, 0, 0),
         ConstraintRef::Circle(i) => (5, i.index() as usize, 0, 0),
         ConstraintRef::Point(ConstraintPoint::FaceVertex { index, .. }) => (6, index, 0, 0),
+        ConstraintRef::Point(ConstraintPoint::FaceCircleCenter { .. }) => (6, usize::MAX, 0, 0),
         ConstraintRef::Line(ConstraintLine::FaceEdge { index, .. }) => (7, index, 0, 0),
         ConstraintRef::Point(ConstraintPoint::TextAnchor { text, anchor }) => {
             (8, text.index() as usize, anchor as u8, 0)
@@ -647,6 +648,14 @@ fn validate_entity_ref(
             }
             Ok(())
         }
+        // A circular face's rim has no owning sketch — valid as long as the face still
+        // resolves to a circle (#1858), like `ConstraintPoint::FaceVertex`'s arm below.
+        ConstraintEntity::FaceCircle { face } => {
+            if crate::extrude::face_circle_world(doc, face).is_none() {
+                return Err("Face circle no longer resolves".to_string());
+            }
+            Ok(())
+        }
         // The origin is a fixed point in every sketch; always valid.
         ConstraintEntity::Origin => Ok(()),
     }
@@ -685,6 +694,12 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
         ConstraintPoint::FaceVertex { face, index } => {
             if !face_vertex_valid(doc, face, *index) {
                 return Err(format!("Face vertex {index} no longer resolves"));
+            }
+        }
+        // Same rule for a circular face's analytic centre (#1858).
+        ConstraintPoint::FaceCircleCenter { face } => {
+            if crate::extrude::face_circle_world(doc, face).is_none() {
+                return Err("Face circle centre no longer resolves".to_string());
             }
         }
         ConstraintPoint::Origin => {}
@@ -760,7 +775,9 @@ fn coincident_point_mobility(point: &ConstraintPoint) -> u8 {
         | ConstraintPoint::ImageAnchor { .. } => 3,
         // Fixed by the body's own geometry: never the mover, so it always ranks below every
         // draggable sketch-native point (mirrors `ConstraintEntity::Origin`'s fixed treatment).
-        ConstraintPoint::FaceVertex { .. } | ConstraintPoint::Origin => 0,
+        ConstraintPoint::FaceVertex { .. }
+        | ConstraintPoint::FaceCircleCenter { .. }
+        | ConstraintPoint::Origin => 0,
     }
 }
 
@@ -953,6 +970,15 @@ pub fn point_uv(doc: &Document, sketch: SketchId, point: ConstraintPoint) -> Res
                 .ok_or_else(|| "Sketch frame not available".to_string())?;
             Ok(crate::face::world_to_local(&frame, world))
         }
+        // A circular face's analytic centre (#1858), projected into `sketch`'s frame the
+        // same way a face vertex is.
+        ConstraintPoint::FaceCircleCenter { face } => {
+            let (world, _) = crate::extrude::face_circle_world(doc, &face)
+                .ok_or_else(|| "Face circle not available".to_string())?;
+            let frame = crate::face::sketch_geometry_frame(doc, sketch)
+                .ok_or_else(|| "Sketch frame not available".to_string())?;
+            Ok(crate::face::world_to_local(&frame, world))
+        }
         // A calibration reference point is derived from the image's origin + stored uv
         // (#425).
         ConstraintPoint::ImageCalibrationPoint { image, index } => {
@@ -1034,6 +1060,9 @@ pub fn set_point_uv(
         // Fixed by the body's own geometry, not by the sketch — mirrors how
         // `ConstraintEntity::Origin` is treated as a fixed, undraggable reference.
         ConstraintPoint::FaceVertex { .. } => Err("Face vertices are fixed and cannot be moved".to_string()),
+        ConstraintPoint::FaceCircleCenter { .. } => {
+            Err("Face circle centres are fixed and cannot be moved".to_string())
+        }
         ConstraintPoint::Origin => Err("The origin is fixed and cannot be moved".to_string()),
         // Moving a calibration point translates the whole image (#425): the scale never
         // changes from constraints.

@@ -706,6 +706,12 @@ fn validate_point_in_sketch(
             }
             Ok(())
         }
+        ConstraintPoint::FaceCircleCenter { face } => {
+            if crate::extrude::face_circle_world(doc, &face).is_none() {
+                return Err("Face circle centre no longer resolves".to_string());
+            }
+            Ok(())
+        }
         ConstraintPoint::TextAnchor { text, .. } => {
             let entity = doc
                 .sketch_texts

@@ -140,6 +140,10 @@ fn point_owner_alive(
         ConstraintPoint::FaceVertex { face, index } => {
             crate::extrude::face_boundary_loop_world(doc, face).is_some_and(|l| *index < l.len())
         }
+        // A circular face's centre lives exactly as long as the face still reads as a circle.
+        ConstraintPoint::FaceCircleCenter { face } => {
+            crate::extrude::face_circle_world(doc, face).is_some()
+        }
         ConstraintPoint::TextAnchor { text, .. } => {
             doc.sketch_texts.contains(*text)
         }
@@ -173,7 +177,9 @@ fn point_owner_element(point: &crate::model::ConstraintPoint) -> Option<SceneEle
         ConstraintPoint::ImageCalibrationPoint { image, .. }
         | ConstraintPoint::ImageAnchor { image, .. } => SceneElement::Image(*image),
         ConstraintPoint::Origin => SceneElement::Origin,
-        ConstraintPoint::FaceVertex { .. } => return None,
+        ConstraintPoint::FaceVertex { .. } | ConstraintPoint::FaceCircleCenter { .. } => {
+            return None
+        }
     })
 }
 
@@ -1205,6 +1211,9 @@ pub fn constraint_entity_alive(doc: &Document, entity: &ConstraintEntity) -> boo
         ConstraintEntity::Point(point) => constraint_point_alive(doc, point),
         ConstraintEntity::Line(line) => constraint_line_alive(doc, line),
         ConstraintEntity::Circle(circle) => circle_alive(doc, *circle),
+        ConstraintEntity::FaceCircle { face } => {
+            crate::extrude::face_circle_world(doc, face).is_some()
+        }
         ConstraintEntity::Origin => true,
     }
 }
@@ -1216,6 +1225,10 @@ pub fn constraint_point_alive(doc: &Document, point: &ConstraintPoint) -> bool {
         ConstraintPoint::Origin => true,
         ConstraintPoint::FaceVertex { face, index } => {
             crate::extrude::face_boundary_loop_world(doc, face).is_some_and(|l| *index < l.len())
+        }
+        // A circular face's centre lives exactly as long as the face still reads as a circle.
+        ConstraintPoint::FaceCircleCenter { face } => {
+            crate::extrude::face_circle_world(doc, face).is_some()
         }
         ConstraintPoint::TextAnchor { text, .. } => {
             doc.sketch_texts.contains(*text)

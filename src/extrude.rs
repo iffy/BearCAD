@@ -9418,11 +9418,60 @@ fn face_plane(doc: &Document, face: &ExtrudeFace) -> Option<(Vec3, Vec3)> {
     Some((center, normal))
 }
 
+/// The analytic circle of a **round** body face (#1858): its world centre and radius, or
+/// `None` when the face isn't a circle.
+///
+/// Round faces are stored as a finely faceted boundary loop (see [`CIRCLE_SEGMENTS`]), so
+/// anything that reasons about the rim — snapping, constraints — would otherwise see 48
+/// chords and their midpoints instead of one circle. Roundness is decided from the
+/// `FaceId`'s *shape*, never by fitting the loop, so a 48-sided polygon profile is still a
+/// polygon; the centre and radius are then measured from the loop so taper and joint poses
+/// are already baked in.
+pub fn face_circle_world(doc: &Document, face: &FaceId) -> Option<(Vec3, f32)> {
+    if !face_id_is_round(face) {
+        return None;
+    }
+    // The loop is already placed (taper, joint pose, unit/repeat instance transform), so
+    // measuring it gives the true placed centre and radius.
+    circle_of_loop(&face_boundary_loop_world(doc, face)?)
+}
+
+/// Whether a `FaceId` names a round face. Decided from the id's *shape* alone — never by
+/// fitting the boundary loop — so a 48-sided polygon profile stays a polygon.
+fn face_id_is_round(face: &FaceId) -> bool {
+    match face {
+        FaceId::ExtrudeCap { profile, .. } => matches!(profile, ExtrudeFace::Circle(_)),
+        FaceId::PrimitiveFace { face, .. } => matches!(
+            face,
+            crate::model::PrimitiveFace::CylinderTop | crate::model::PrimitiveFace::CylinderBottom
+        ),
+        // A unit/repeat instance places its source face rigidly: the inner face decides.
+        FaceId::UnitFace { face, .. } => face_id_is_round(face),
+        FaceId::RepeatedFace { face, .. } => face_id_is_round(face),
+        _ => false,
+    }
+}
+
+/// Centre and radius of an already-known-circular boundary loop: the centroid of its
+/// vertices and their mean distance from it.
+fn circle_of_loop(loop_world: &[Vec3]) -> Option<(Vec3, f32)> {
+    if loop_world.len() < 3 {
+        return None;
+    }
+    let center = loop_world.iter().copied().sum::<Vec3>() / loop_world.len() as f32;
+    let radius =
+        loop_world.iter().map(|p| p.distance(center)).sum::<f32>() / loop_world.len() as f32;
+    (radius > 1e-6).then_some((center, radius))
+}
+
 pub fn constraint_point_world(doc: &Document, point: crate::model::ConstraintPoint) -> Option<Vec3> {
     // A face's own vertex is already a world-space point (#26/#27) — no sketch frame to
     // project through, unlike the other variants below.
     if let crate::model::ConstraintPoint::FaceVertex { face, index } = &point {
         return face_boundary_loop_world(doc, face)?.get(*index).copied();
+    }
+    if let crate::model::ConstraintPoint::FaceCircleCenter { face } = &point {
+        return face_circle_world(doc, face).map(|(c, _)| c);
     }
     let sketch = match &point {
         crate::model::ConstraintPoint::LineEndpoint { line, .. } => doc.lines.get(*line)?.sketch,
@@ -9450,7 +9499,10 @@ pub fn constraint_point_world(doc: &Document, point: crate::model::ConstraintPoi
             return Some(frame.origin + frame.u_axis * u + frame.v_axis * v);
         }
         crate::model::ConstraintPoint::Origin => return None,
-        crate::model::ConstraintPoint::FaceVertex { .. } => unreachable!("handled above"),
+        crate::model::ConstraintPoint::FaceVertex { .. }
+        | crate::model::ConstraintPoint::FaceCircleCenter { .. } => {
+            unreachable!("handled above")
+        }
     };
     let frame = sketch_geometry_frame(doc, sketch)?;
     let (u, v) = point_uv(doc, sketch, point).ok()?;

@@ -565,9 +565,30 @@ impl SketchBridge {
                     });
                 }
             }
+            // Point on a circular body face's rim (#1858): the face's analytic centre and
+            // radius are both fixed by the body, so only the sketch point moves.
+            (ConstraintEntity::Point(point), ConstraintEntity::FaceCircle { face })
+            | (ConstraintEntity::FaceCircle { face }, ConstraintEntity::Point(point)) => {
+                let (_, r) = crate::extrude::face_circle_world(doc, &face)
+                    .ok_or_else(|| "Face circle not available".to_string())?;
+                let center = ConstraintPoint::FaceCircleCenter { face };
+                let (px, py) = self.point_vars(doc, point)?;
+                let (cx, cy) = self.point_vars(doc, center)?;
+                let radius = self.system.add_var(r as f64, true);
+                self.system.add_equation(Equation::PointOnCircle {
+                    px,
+                    py,
+                    cx,
+                    cy,
+                    radius,
+                    weight: DEFAULT_WEIGHT,
+                });
+            }
             (ConstraintEntity::Circle(_), ConstraintEntity::Circle(_))
             | (ConstraintEntity::Line(_), ConstraintEntity::Circle(_))
             | (ConstraintEntity::Circle(_), ConstraintEntity::Line(_))
+            | (ConstraintEntity::FaceCircle { .. }, _)
+            | (_, ConstraintEntity::FaceCircle { .. })
             | (ConstraintEntity::Origin, _)
             | (_, ConstraintEntity::Origin) => {
                 return Err("Unsupported coincident entity pair".to_string());
@@ -587,7 +608,9 @@ impl SketchBridge {
         }
         if matches!(
             &point,
-            ConstraintPoint::FaceVertex { .. } | ConstraintPoint::Origin
+            ConstraintPoint::FaceVertex { .. }
+                | ConstraintPoint::FaceCircleCenter { .. }
+                | ConstraintPoint::Origin
         ) {
             let (u, v) = point_uv(doc, self.sketch, point.clone())?;
             let vars = self.system.add_point(u as f64, v as f64, true);
@@ -929,7 +952,7 @@ fn point_sketch(doc: &Document, point: ConstraintPoint) -> Option<SketchId> {
         ConstraintPoint::ImageCalibrationPoint { .. } | ConstraintPoint::ImageAnchor { .. } => None,
         // A face's own vertex has no owning sketch — it's referenced *from* whichever sketch a
         // constraint projects it into, not owned by one (mirrors `construction::point_sketch`).
-        ConstraintPoint::FaceVertex { .. } => None,
+        ConstraintPoint::FaceVertex { .. } | ConstraintPoint::FaceCircleCenter { .. } => None,
         ConstraintPoint::Origin => None,
     }
 }
