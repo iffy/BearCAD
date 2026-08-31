@@ -1371,11 +1371,9 @@ impl Instruction {
                 taper_expression,
                 ..
             } => {
-                let body = match body {
-                    crate::actions::ExtrudeBodyChoice::New => "",
-                    crate::actions::ExtrudeBodyChoice::Merge => ", body = \"merge\"",
-                    crate::actions::ExtrudeBodyChoice::Cut => ", body = \"cut\"",
-                    crate::actions::ExtrudeBodyChoice::JoinNew => ", body = \"join\"",
+                let body = match *body {
+                    crate::actions::ExtrudeBodyChoice::New => String::new(),
+                    other => format!(", body = {:?}", other.script_name()),
                 };
                 let to = target
                     .as_ref()
@@ -1409,11 +1407,9 @@ impl Instruction {
                 )
             }
             Instruction::ExtrudeBodyFace { face, distance, body, target } => {
-                let body = match body {
-                    crate::actions::ExtrudeBodyChoice::New => "",
-                    crate::actions::ExtrudeBodyChoice::Merge => ", body = \"merge\"",
-                    crate::actions::ExtrudeBodyChoice::Cut => ", body = \"cut\"",
-                    crate::actions::ExtrudeBodyChoice::JoinNew => ", body = \"join\"",
+                let body = match *body {
+                    crate::actions::ExtrudeBodyChoice::New => String::new(),
+                    other => format!(", body = {:?}", other.script_name()),
                 };
                 let to = target
                     .as_ref()
@@ -4305,12 +4301,7 @@ fn boolean_op_lua(
     if let Some(op) = op {
         parts.push(format!("index = {op}"));
     }
-    parts.push(format!("op = \"{}\"", match kind {
-        crate::model::BooleanOpKind::Combine => "combine",
-        crate::model::BooleanOpKind::Cut => "cut",
-        crate::model::BooleanOpKind::Intersect => "intersect",
-        crate::model::BooleanOpKind::Difference => "difference",
-    }));
+    parts.push(format!("op = \"{}\"", kind.script_name()));
     parts.push(format!("a = {{{}}}", list(a)));
     if !b.is_empty() {
         parts.push(format!("b = {{{}}}", list(b)));
@@ -4594,7 +4585,7 @@ fn joint_op_lua(
 pub fn mirror_mode_script_name(mode: crate::model::MirrorMode) -> Option<&'static str> {
     match mode {
         crate::model::MirrorMode::NewBody => None,
-        crate::model::MirrorMode::Join => Some("join"),
+        crate::model::MirrorMode::Join => Some("add"),
         crate::model::MirrorMode::Cut => Some("cut"),
     }
 }
@@ -4791,10 +4782,7 @@ fn boolean_face_lua_table(
     b: &crate::model::ExtrudeFace,
     doc: Option<&crate::model::Document>,
 ) -> String {
-    let op_str = match op {
-        crate::model::BooleanOp::Intersection => "intersection",
-        crate::model::BooleanOp::Difference => "difference",
-    };
+    let op_str = op.script_name();
     format!(
         "{{op = \"{op_str}\", a = {}, b = {}}}",
         extrude_face_spec_table(a, doc),

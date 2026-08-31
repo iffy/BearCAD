@@ -83,17 +83,17 @@ bearcad.project{ body?, bodies?, plane?, planes?, entities? }
 ## Solids
 
 ```
-bearcad.extrude{ polygon = {line, …} | circle = i | circles = {i, …} | text = i | boolean = {…}, distance?, to?, body = "new"|"merge"|"cut"|"join"?, name?, symmetric?, taper?, taper_mode = "distance"|"angle"? }
+bearcad.extrude{ polygon = {line, …} | circle = i | circles = {i, …} | text = i | boolean = {…}, distance?, to?, body = "new"|"add"|"cut"|"join"?, name?, symmetric?, taper?, taper_mode = "distance"|"angle"? }
 bearcad.edit_extrusion{ extrusion, distance? | by? | to? }
 bearcad.extrude_face{ face = {…}, distance, body? }
 bearcad.revolve{ polygon = {…} | circle = i | circles = {i, …}, axis = "x"|"y"|"z"|{ line = i }, angle? | revolutions?, pitch?, body = "new"|"add"|"cut"?, bodies?, symmetric?, name? }
 bearcad.sweep{ polygon = {…} | circle = i | circles = {i, …}, path = {line, …}, body = "add"|"cut"?, bodies? }
 bearcad.loft{ circles = {i, …}?, polygons = { {line, …}, … }?, body? }
-bearcad.combine{ op = "combine"|"union"|"cut"|"intersect"|"difference", a = {i, …}, b = {i, …}, keep_b?, keep_leftovers?, bake?, name? }   -- bake = true consumes the inputs and leaves one standalone body
+bearcad.combine{ op = "union"|"cut"|"intersect"|"xor", a = {i, …}, b = {i, …}, keep_b?, bake?, name? }   -- `difference` means cut; bake = true consumes the inputs and leaves one standalone body
 bearcad.slice{ bodies = {i, …}, cutters = {…}, extend?, name? }
 bearcad.shell{ bodies = {i, …}, faces = {…}?, thickness, name? }
 bearcad.move_bodies{ bodies = {i, …}, x?, y?, z?, rx?, ry?, rz?, name? }
-bearcad.mirror_bodies{ plane = i, bodies = {i, …}, output = "new"|"join"|"cut"?, name? }
+bearcad.mirror_bodies{ plane = i, bodies = {i, …}, output = "new"|"add"|"cut"?, name? }
 bearcad.repeat_bodies{ bodies = {i, …}, axis = "x"|"y"|"z", mode?, count?, spacing? | gap?, length?, around?, flip?, to?, name? }
 ```
 

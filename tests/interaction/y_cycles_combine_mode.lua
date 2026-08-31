@@ -2,9 +2,9 @@
 bearcad.new()
 bearcad.ui.tool("combine")
 bearcad.ui.wait(3)
-assert(bearcad.ui.tool_mode() == "combine", "SetTool arms Combine mode")
+assert(bearcad.ui.tool_mode() == "union", "SetTool arms Union mode")
 
-local expected = { "cut", "intersect", "difference", "combine" }
+local expected = { "cut", "intersect", "xor", "union" }
 for _, mode in ipairs(expected) do
   bearcad.ui.key("y")
   bearcad.ui.wait(3)

@@ -1447,6 +1447,27 @@ pub enum BooleanOp {
     Difference,
 }
 
+impl BooleanOp {
+    /// Script names `boolean.op` accepts (#1869): `intersect` / `difference` (`cut` is
+    /// the same subtraction).
+    pub const ACCEPTED: &'static str = "intersect|difference";
+
+    pub fn from_script(name: &str) -> Result<Self, String> {
+        match name.to_ascii_lowercase().as_str() {
+            "intersect" => Ok(Self::Intersection),
+            "difference" | "cut" => Ok(Self::Difference),
+            other => Err(format!("unknown boolean op '{other}' ({})", Self::ACCEPTED)),
+        }
+    }
+
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::Intersection => "intersect",
+            Self::Difference => "difference",
+        }
+    }
+}
+
 /// A closed sketch profile (face) included in an extrusion.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -3239,7 +3260,7 @@ pub enum BooleanOpKind {
     Cut,
     /// Only what's common to `a` and `b`.
     Intersect,
-    /// Symmetric difference: everything *not* common to `a` and `b`.
+    /// Symmetric difference (XOR): everything *not* common to `a` and `b`. Script name `xor`.
     Difference,
 }
 
@@ -3247,30 +3268,34 @@ pub enum BooleanOpKind {
 impl BooleanOpKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Combine => "Combine",
+            Self::Combine => "Union",
             Self::Cut => "Cut",
             Self::Intersect => "Intersect",
-            Self::Difference => "Difference",
+            Self::Difference => "Xor",
         }
     }
 
+    /// Canonical names: `union` / `cut` / `intersect` / `xor`. `difference` is A−B
+    /// (same as `cut` in 2D and 3D); XOR is `xor` (#1869).
+    pub const ACCEPTED: &'static str = "union|cut|intersect|xor";
+
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
-            "combine" | "union" | "fuse" | "merge" => Some(Self::Combine),
-            "cut" | "subtract" => Some(Self::Cut),
-            "intersect" | "intersection" | "common" => Some(Self::Intersect),
-            "difference" | "xor" | "symmetric_difference" => Some(Self::Difference),
+            "union" => Some(Self::Combine),
+            "cut" | "difference" => Some(Self::Cut),
+            "intersect" => Some(Self::Intersect),
+            "xor" => Some(Self::Difference),
             _ => None,
         }
     }
 
-    /// The name `bearcad.ui.tool_mode` reports (#1524).
+    /// The name `bearcad.ui.tool_mode` reports (#1524 / #1869).
     pub fn script_name(self) -> &'static str {
         match self {
-            Self::Combine => "combine",
+            Self::Combine => "union",
             Self::Cut => "cut",
             Self::Intersect => "intersect",
-            Self::Difference => "difference",
+            Self::Difference => "xor",
         }
     }
 
@@ -3927,6 +3952,26 @@ pub enum MirrorMode {
 }
 
 impl MirrorMode {
+    /// Script names `output =` accepts (#1869). `add` fuses each reflection with its source.
+    pub const ACCEPTED: &'static str = "new|add|cut";
+
+    pub fn from_script(name: Option<&str>) -> Result<Self, String> {
+        match name {
+            None | Some("new") => Ok(Self::NewBody),
+            Some("add") => Ok(Self::Join),
+            Some("cut") => Ok(Self::Cut),
+            Some(other) => Err(format!("unknown output '{other}' ({})", Self::ACCEPTED)),
+        }
+    }
+
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::NewBody => "new",
+            Self::Join => "add",
+            Self::Cut => "cut",
+        }
+    }
+
     /// Whether this mode consumes its input body into the output (shadowing it), the way Move
     /// and the edge treatments do. Driven by the mirror operation's [`crate::opsigs::Operation`]
     /// `HOST_EFFECT` (Join/Cut shadow; New body does not).
@@ -6423,8 +6468,8 @@ mod tests {
             kind = kind.next();
             seen.push(kind.script_name());
         }
-        assert_eq!(seen, vec!["combine", "cut", "intersect", "difference"]);
-        assert_eq!(kind.next().script_name(), "combine", "and round again");
+        assert_eq!(seen, vec!["union", "cut", "intersect", "xor"]);
+        assert_eq!(kind.next().script_name(), "union", "and round again");
     }
 
     /// #921: repeated J walks the joint kinds in the dropdown's order and comes back round.

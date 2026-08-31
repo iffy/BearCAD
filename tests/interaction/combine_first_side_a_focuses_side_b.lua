@@ -32,7 +32,7 @@ end
 
 local function ensure_combine_empty()
   bearcad.ui.tool("combine")
-  bearcad.ui.tool_mode("combine")
+  bearcad.ui.tool_mode("union")
   bearcad.ui.wait(3)
   local a = side_a()
   if a and #a.items > 0 then
@@ -41,7 +41,7 @@ local function ensure_combine_empty()
   end
 end
 
-for _, mode in ipairs({ "cut", "intersect", "difference" }) do
+for _, mode in ipairs({ "cut", "intersect", "xor" }) do
   ensure_combine_empty()
   bearcad.ui.tool_mode(mode)
   bearcad.ui.wait(5)

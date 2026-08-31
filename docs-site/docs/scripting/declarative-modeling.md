@@ -109,7 +109,7 @@ accepted keys listed:
 
 ```lua
 bearcad.combine{ kind = "cut", a = {0}, b = {1} }
--- error: combine: unknown key `kind` (accepted keys: op, a, b, keep_b, keep_leftovers, name)
+-- error: combine: unknown key `kind` (accepted keys: op, a, b, keep_b, bake, name)
 ```
 
 To sketch on a specific plane — `0`, `1` and `2` are the default ground/front/side datum
@@ -189,7 +189,7 @@ bearcad.extrude{ polygon = {0, 1, 2}, distance = 6 }
 `extrude_face` extrudes a bare face of an existing body — the scripted equivalent of
 pulling it with the Extrude tool. Give the face the same way `begin_sketch` names one,
 plus a `distance` (or a `to` target to snap onto another surface). `body = "cut"`
-subtracts; `body = "merge"` joins — both error if there's no body to cut or merge into.
+subtracts; `body = "add"` joins — both error if there's no body to cut or add into.
 Profiles that don't touch make one body each; `body = "join"` puts them in a single body.
 Positive `distance` extrudes along the face's outward normal; a cut that would miss the
 body is flipped inward. A side wall's `edge` is the profile **line index**, stable even
