@@ -194,6 +194,11 @@ impl UserData for LuaElement {
             })
         });
         methods.add_method("exists", |lua, this, ()| Ok(this.live_index(lua).is_some()));
+        // #1866: a line handle names its endpoints without the reserved-word `end` key.
+        methods.add_method("start", |lua, this, ()| line_endpoint_handle(lua, this, LineEnd::Start));
+        methods.add_method("endpoint", |lua, this, which: String| {
+            line_endpoint_handle(lua, this, parse_line_end_name(&which)?)
+        });
         methods.add_method("name", |lua, this, ()| {
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
@@ -656,8 +661,8 @@ fn kind_only_selector(table: &Table) -> mlua::Result<Option<String>> {
         return Ok(None);
     };
     for key in [
-        "index", "name", "end", "corner", "anchor", "point", "edge", "face", "axis", "drawing",
-        "view",
+        "index", "name", "endpoint", "end", "corner", "anchor", "point", "edge", "face", "axis",
+        "drawing", "view",
     ] {
         if table.contains_key(key)? {
             return Ok(None);
@@ -939,13 +944,14 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
         return parse_drawing_element_table(lua, table, &kind);
     }
     let index: usize = table.ordinal_req("index")?;
-    // Point-level selector (#68): a line endpoint (`end = "start"|"end"`), or an explicit
-    // `point = true` (e.g. a circle's center) — otherwise
-    // `kind`/`index` alone resolve to the whole element as before.
+    // Point-level selector (#68/#1866): a line endpoint (`endpoint = "start"|"end"`), or an
+    // explicit `point = true` (e.g. a circle's center) — otherwise `kind`/`index` alone
+    // resolve to the whole element as before.
     // `point` is `true` for a circle's centre (#68) or a calibration point index for an
     // image (#425); `false`/absent resolves to the whole element.
     let point_flagged = !matches!(table.get::<Value>("point")?, Value::Nil | Value::Boolean(false));
-    if table.contains_key("end")?
+    if table.contains_key("endpoint")?
+        || table.contains_key("end")?
         || table.contains_key("corner")?
         || table.contains_key("anchor")?
         || point_flagged
@@ -1528,6 +1534,53 @@ fn lua_amount_expr(opts: &Table, key: &str) -> mlua::Result<String> {
     }
 }
 
+/// `"start"` / `"end"` (or `"0"` / `"1"`) as a line endpoint.
+fn parse_line_end_name(name: &str) -> mlua::Result<LineEnd> {
+    match name.to_ascii_lowercase().as_str() {
+        "start" | "0" => Ok(LineEnd::Start),
+        "end" | "1" => Ok(LineEnd::End),
+        other => Err(mlua::Error::external(format!(
+            "unknown line endpoint '{other}' (expected \"start\" or \"end\")"
+        ))),
+    }
+}
+
+/// A line handle's start or end as a point element (#1866).
+fn line_endpoint_handle(lua: &Lua, this: &LuaElement, end: LineEnd) -> mlua::Result<Value> {
+    let SceneElement::Line(line) = this.element else {
+        return Err(mlua::Error::external(format!(
+            "{} has no line endpoints",
+            element_kind_name(this.element.clone())
+        )));
+    };
+    make_element(
+        lua,
+        SceneElement::Point(ConstraintPoint::LineEndpoint { line, end }),
+    )
+}
+
+/// A `ConstraintPoint` from a table or a point handle (`line:start()` / `line:endpoint`).
+fn parse_constraint_point(lua: &Lua, value: Value) -> mlua::Result<ConstraintPoint> {
+    match value {
+        Value::Table(table) => parse_constraint_point_table(lua, table),
+        Value::UserData(ud) => {
+            let el = ud.borrow::<LuaElement>().map_err(|_| {
+                mlua::Error::external("expected a point (table or line endpoint handle)")
+            })?;
+            match &el.element {
+                SceneElement::Point(p) => Ok(p.clone()),
+                other => Err(mlua::Error::external(format!(
+                    "expected a point, got a {}",
+                    element_kind_name(other.clone())
+                ))),
+            }
+        }
+        other => Err(mlua::Error::external(format!(
+            "expected a point table or handle, got {other:?}"
+        ))),
+    }
+}
+
 fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<ConstraintPoint> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     if kind.eq_ignore_ascii_case("origin") {
@@ -1549,19 +1602,19 @@ fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<Constra
     let index: usize = table.ordinal_req("index")?;
     match kind.to_ascii_lowercase().as_str() {
         "line" => {
-            let end_name: String = table.get("end")?;
-            let end = match end_name.to_ascii_lowercase().as_str() {
-                "start" | "0" => LineEnd::Start,
-                "end" | "1" => LineEnd::End,
-                other => {
-                    return Err(mlua::Error::external(format!(
-                        "unknown line endpoint '{other}'"
-                    )));
-                }
-            };
+            if table.contains_key("end")? && !table.contains_key("endpoint")? {
+                return Err(mlua::Error::external(
+                    "line point uses `endpoint` = \"start\" or \"end\" (`end` is a Lua reserved word)",
+                ));
+            }
+            let end_name: String = table.get("endpoint").map_err(|_| {
+                mlua::Error::external(
+                    "line point requires `endpoint` = \"start\" or \"end\"",
+                )
+            })?;
             Ok(ConstraintPoint::LineEndpoint {
                 line: line_key_from_ordinal(lua, index)?,
-                end,
+                end: parse_line_end_name(&end_name)?,
             })
         }
         "circle" => Ok(ConstraintPoint::CircleCenter(circle_key_from_ordinal(lua, index)?)),
@@ -1636,19 +1689,21 @@ fn parse_extrusion_edge_table(table: Table) -> mlua::Result<ExtrusionEdgeRef> {
 
 /// `point` shorthand or `points = { ... }` for `chamfer_vertex`/`fillet_vertex` (#1519).
 fn parse_vertex_treatment_points(lua: &Lua, opts: &Table) -> mlua::Result<Vec<ConstraintPoint>> {
-    if let Some(list) = opts.get::<Option<Vec<Table>>>("points")? {
+    if let Some(list) = opts.get::<Option<Vec<Value>>>("points")? {
         if list.is_empty() {
             return Err(mlua::Error::external("`points` must name at least one point"));
         }
         return list
             .into_iter()
-            .map(|t| parse_constraint_point_table(lua, t))
+            .map(|v| parse_constraint_point(lua, v))
             .collect();
     }
-    let point_table: Table = opts.get("point").map_err(|_| {
-        mlua::Error::external("chamfer_vertex/fillet_vertex requires `point` or `points`")
-    })?;
-    Ok(vec![parse_constraint_point_table(lua, point_table)?])
+    match opts.get::<Value>("point")? {
+        Value::Nil => Err(mlua::Error::external(
+            "chamfer_vertex/fillet_vertex requires `point` or `points`",
+        )),
+        v => Ok(vec![parse_constraint_point(lua, v)?]),
+    }
 }
 
 /// Parses the edge argument of `bearcad.chamfer_edge`/`fillet_edge`: either a single
@@ -2618,13 +2673,13 @@ fn parse_distance_target(lua: &Lua, table: Table) -> mlua::Result<DistanceTarget
         // current geometry by `constraints::finalize_distance_target`, exactly as it is for
         // an interactive pick, so a script only names the two things.
         "point_line" | "point_edge" => Ok(DistanceTarget::PointLineDistance {
-            point: parse_constraint_point_table(lua, table.get("point")?)?,
+            point: parse_constraint_point(lua, table.get("point")?)?,
             line: parse_constraint_line_table(lua, table.get("line")?)?,
             side: crate::model::default_constraint_sign(),
         }),
         "point_point" | "points" => Ok(DistanceTarget::PointPointDistance {
-            anchor: parse_constraint_point_table(lua, table.get("anchor")?)?,
-            mover: parse_constraint_point_table(lua, table.get("mover")?)?,
+            anchor: parse_constraint_point(lua, table.get("anchor")?)?,
+            mover: parse_constraint_point(lua, table.get("mover")?)?,
             dir_u: 0.0,
             dir_v: 0.0,
         }),
@@ -3801,8 +3856,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let source = match kind.as_str() {
                 "line_length" => PS::LineLength(line_key_from_ordinal(lua, opts.get("a")?)?),
                 "point_distance" => PS::PointDistance(
-                    parse_constraint_point_table(lua, opts.get("a")?)?,
-                    parse_constraint_point_table(lua, opts.get("b")?)?,
+                    parse_constraint_point(lua, opts.get("a")?)?,
+                    parse_constraint_point(lua, opts.get("b")?)?,
                 ),
                 "line_distance" => PS::LineDistance(
                     line_key_from_ordinal(lua, opts.get("a")?)?,
@@ -5451,15 +5506,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // constraints and raise (catchable via pcall) when the vertex is fully constrained.
     api.set(
         "drag_vertex",
-        lua.create_function(|lua, (first, u, v): (Table, Option<f32>, Option<f32>)| {
+        lua.create_function(|lua, (first, u, v): (Value, Option<f32>, Option<f32>)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (point, u, v) = match (u, v) {
-                (Some(u), Some(v)) => (parse_constraint_point_table(lua, first)?, u, v),
+                (Some(u), Some(v)) => (parse_constraint_point(lua, first)?, u, v),
                 _ => {
-                    let point_table: Table = first.get("point")?;
-                    let point = parse_constraint_point_table(lua, point_table)?;
-                    let du: Option<f32> = first.get("du")?;
-                    let dv: Option<f32> = first.get("dv")?;
+                    let Value::Table(opts) = first else {
+                        return Err(mlua::Error::external(
+                            "drag_vertex table form requires a table",
+                        ));
+                    };
+                    let point = parse_constraint_point(lua, opts.get("point")?)?;
+                    let du: Option<f32> = opts.get("du")?;
+                    let dv: Option<f32> = opts.get("dv")?;
                     if du.is_none() && dv.is_none() {
                         return Err(mlua::Error::external(
                             "drag_vertex table form requires `du` and/or `dv`",
@@ -11452,7 +11511,7 @@ pub mod tests {
             -- 40×80 px centred on the origin: origin = (−20, −40), centre = (0, 0).
             bearcad.line{{ x = 30, y = 40, x1 = 60, y1 = 40 }}
             bearcad.select{{ kind = "image", index = 0, anchor = "center" }}
-            bearcad.select({{ kind = "line", index = 0, ["end"] = "start" }}, true)
+            bearcad.select({{ kind = "line", index = 0, endpoint = "start" }}, true)
             bearcad.add_geometric_constraint("coincident")
             local img = bearcad.get{{ kind = "image", index = 0 }}
             assert(math.abs(img.origin_x - 10) < 1e-2
@@ -11523,7 +11582,7 @@ pub mod tests {
             -- A free point coincident with the image's left edge sits on that edge
             -- (the edge is a fixed reference; the point is the mover).
             bearcad.line{{ x = 15, y = 10, x1 = 25, y1 = 10 }}
-            bearcad.select{{ kind = "line", index = 0, ["end"] = "start" }}
+            bearcad.select{{ kind = "line", index = 0, endpoint = "start" }}
             bearcad.select({{ kind = "image", index = 0, edge = "left" }}, true)
             bearcad.add_geometric_constraint("coincident")
             local l = bearcad.get{{ kind = "line", index = 0 }}
@@ -13078,7 +13137,7 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.rect{ width = 80, height = 50 }
-            bearcad.select{ kind = "line", index = 2, ["end"] = "start" }
+            bearcad.select{ kind = "line", index = 2, endpoint = "start" }
             "#,
         );
     }
@@ -13659,7 +13718,7 @@ pub mod tests {
         let state = run_lua_against_a_right_angle_corner(
             r#"
             local f = bearcad.fillet_vertex{
-                point = { kind = "line", index = 0, ["end"] = "end" },
+                point = { kind = "line", index = 0, endpoint = "end" },
                 radius = 3,
             }
             assert(f ~= nil, "fillet_vertex returns what it made")
@@ -13675,7 +13734,7 @@ pub mod tests {
         let state = run_lua_against_a_right_angle_corner(
             r#"
             local c = bearcad.chamfer_vertex{
-                point = { kind = "line", index = 0, ["end"] = "end" },
+                point = { kind = "line", index = 0, endpoint = "end" },
                 distance = 3,
             }
             assert(c ~= nil, "chamfer_vertex returns what it made")
@@ -13728,7 +13787,7 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.line{ x = 5, y = 5, x1 = 12, y1 = 8 }
-            bearcad.select{ kind = "line", index = 0, ["end"] = "start" }
+            bearcad.select{ kind = "line", index = 0, endpoint = "start" }
             bearcad.select({ kind = "axis", axis = "x" }, true)
             bearcad.add_geometric_constraint("coincident")
         "#,
@@ -14378,7 +14437,7 @@ pub mod tests {
             bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
             bearcad.circle{ x = 12, y = 9, r = 3 }
             bearcad.add_constraint({ kind = "point_point",
-                                     anchor = { kind = "line", index = 0, ["end"] = "start" },
+                                     anchor = { kind = "line", index = 0, endpoint = "start" },
                                      mover  = { kind = "circle", index = 0 } }, "25mm")
         "#,
         );
@@ -14479,8 +14538,8 @@ pub mod tests {
             bearcad.new()
             bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0, name = "a" }
             bearcad.line{ x = 20, y = 0, x1 = 30, y1 = 0, name = "b" }
-            bearcad.select{ kind = "line", index = 0, ["end"] = "end" }
-            bearcad.select({ kind = "line", index = 1, ["end"] = "start" }, true)
+            bearcad.select{ kind = "line", index = 0, endpoint = "end" }
+            bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
             bearcad.add_geometric_constraint("coincident")
         "#,
         );
@@ -14502,6 +14561,94 @@ pub mod tests {
                     )
             }),
             "expected a Coincident constraint between the two selected line endpoints, got: {:?}",
+            state.doc.constraints
+        );
+    }
+
+    /// #1866: the point-table key is `endpoint`, not `end` (Lua's reserved word).
+    #[test]
+    fn lua_select_line_endpoint_field_is_endpoint() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            bearcad.line{ x = 20, y = 0, x1 = 30, y1 = 0 }
+            bearcad.select{ kind = "line", index = 0, endpoint = "end" }
+            bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
+            bearcad.add_geometric_constraint("coincident")
+        "#,
+        );
+        let end_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+            line: lkey(0),
+            end: LineEnd::End,
+        });
+        let start_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+            line: lkey(1),
+            end: LineEnd::Start,
+        });
+        assert!(
+            state.doc.constraints.values().any(|c| {
+                matches!(
+                        &c.kind,
+                        crate::model::ConstraintKind::Coincident { a, b }
+                            if (*a == end_point && *b == start_point)
+                                || (*a == start_point && *b == end_point)
+                    )
+            }),
+            "expected a Coincident constraint between the two selected line endpoints, got: {:?}",
+            state.doc.constraints
+        );
+    }
+
+    /// #1866: `["end"]` is no longer accepted — scripts must use `endpoint`.
+    #[test]
+    fn lua_select_line_end_key_is_rejected() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            local ok, err = pcall(function()
+                bearcad.select{ kind = "line", index = 0, ["end"] = "start" }
+            end)
+            assert(not ok, "the reserved-word `end` key must be rejected")
+            err = tostring(err)
+            assert(err:find("endpoint"), "error should name the canonical key, got: " .. err)
+        "#,
+        );
+        assert!(state.scene_selection.is_empty(), "failed select must not pick the line");
+    }
+
+    /// #1866: a line handle names its endpoints as `start()` / `endpoint("end")`.
+    #[test]
+    fn lua_line_handle_start_and_endpoint() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            local a = bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            local b = bearcad.line{ x = 20, y = 0, x1 = 30, y1 = 0 }
+            bearcad.select(a:endpoint("end"))
+            bearcad.select(b:start(), true)
+            bearcad.add_geometric_constraint("coincident")
+        "#,
+        );
+        let end_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+            line: lkey(0),
+            end: LineEnd::End,
+        });
+        let start_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+            line: lkey(1),
+            end: LineEnd::Start,
+        });
+        assert!(
+            state.doc.constraints.values().any(|c| {
+                matches!(
+                        &c.kind,
+                        crate::model::ConstraintKind::Coincident { a, b }
+                            if (*a == end_point && *b == start_point)
+                                || (*a == start_point && *b == end_point)
+                    )
+            }),
+            "expected a Coincident constraint from line handle endpoints, got: {:?}",
             state.doc.constraints
         );
     }
@@ -14773,7 +14920,7 @@ pub mod tests {
         let state = run_lua_against_a_right_angle_corner(
             r#"
             bearcad.chamfer_vertex{
-                point = { kind = "line", index = 0, ["end"] = "end" },
+                point = { kind = "line", index = 0, endpoint = "end" },
                 distance = 3,
             }
         "#,
@@ -14790,7 +14937,7 @@ pub mod tests {
         let state = run_lua_against_a_right_angle_corner(
             r#"
             bearcad.fillet_vertex{
-                point = { kind = "line", index = 0, ["end"] = "end" },
+                point = { kind = "line", index = 0, endpoint = "end" },
                 radius = 3,
             }
         "#,
@@ -14809,8 +14956,8 @@ pub mod tests {
             bearcad.new()
             bearcad.rect{ width = 40, height = 30 }
             bearcad.fillet_vertex{ points = {
-                { kind = "line", index = 0, ["end"] = "end" },
-                { kind = "line", index = 1, ["end"] = "end" },
+                { kind = "line", index = 0, endpoint = "end" },
+                { kind = "line", index = 1, endpoint = "end" },
             }, radius = 3 }
             "#,
         );
@@ -14832,8 +14979,8 @@ pub mod tests {
             bearcad.new()
             bearcad.rect{ width = 40, height = 30 }
             bearcad.chamfer_vertex{ points = {
-                { kind = "line", index = 0, ["end"] = "end" },
-                { kind = "line", index = 1, ["end"] = "end" },
+                { kind = "line", index = 0, endpoint = "end" },
+                { kind = "line", index = 1, endpoint = "end" },
             }, distance = 3 }
             "#,
         );
@@ -14850,7 +14997,7 @@ pub mod tests {
         let (state, error) = run_lua_against_corner(
             r#"
             local ok, err = pcall(bearcad.fillet_vertex, {
-                point = { kind = "line", index = 0, ["end"] = "end" },
+                point = { kind = "line", index = 0, endpoint = "end" },
                 radius = 3,
             })
             assert(not ok, "near-straight corner fillet should error")
@@ -14871,14 +15018,14 @@ pub mod tests {
             bearcad.new()
             bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
             local ok, err = pcall(bearcad.fillet_vertex, {
-                point = { kind = "line", index = 0, ["end"] = "end" },
+                point = { kind = "line", index = 0, endpoint = "end" },
                 radius = 3,
             })
             assert(not ok, "fillet at a one-line vertex should error")
             assert(tostring(err):find("exactly two lines"), "unexpected error: " .. tostring(err))
             assert(bearcad.count("line") == 1, "no bridging line should be created")
             local ok2, err2 = pcall(bearcad.chamfer_vertex, {
-                point = { kind = "line", index = 0, ["end"] = "end" },
+                point = { kind = "line", index = 0, endpoint = "end" },
                 distance = 3,
             })
             assert(not ok2, "chamfer at a one-line vertex should error")
@@ -14897,14 +15044,14 @@ pub mod tests {
             bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
             bearcad.line{ x = 10, y = 0, x1 = 20, y1 = 5 }
             bearcad.line{ x = 10, y = 0, x1 = 10, y1 = 10 }
-            bearcad.select{ kind = "line", index = 0, ["end"] = "end" }
-            bearcad.select({ kind = "line", index = 1, ["end"] = "start" }, true)
+            bearcad.select{ kind = "line", index = 0, endpoint = "end" }
+            bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
             bearcad.add_geometric_constraint("coincident")
-            bearcad.select{ kind = "line", index = 0, ["end"] = "end" }
-            bearcad.select({ kind = "line", index = 2, ["end"] = "start" }, true)
+            bearcad.select{ kind = "line", index = 0, endpoint = "end" }
+            bearcad.select({ kind = "line", index = 2, endpoint = "start" }, true)
             bearcad.add_geometric_constraint("coincident")
             local ok, err = pcall(bearcad.fillet_vertex, {
-                point = { kind = "line", index = 0, ["end"] = "end" },
+                point = { kind = "line", index = 0, endpoint = "end" },
                 radius = 3,
             })
             assert(not ok, "fillet at a three-line vertex should error")
@@ -15287,7 +15434,7 @@ pub mod tests {
             r#"
             bearcad.rect{ x = 0, y = 0, width = 40, height = 40 }
             bearcad.chamfer_vertex{
-                point = { kind = "line", index = 1, ["end"] = "end" },
+                point = { kind = "line", index = 1, endpoint = "end" },
                 distance = 5,
             }
             bearcad.extrude{ polygon = {0, 4, 6, 5, 3}, distance = 10 }
@@ -16084,8 +16231,8 @@ pub mod tests {
             bearcad.line{ x = 10, y = 0, x1 = 5, y1 = 8 }
             bearcad.line{ x = 5, y = 8, x1 = 0, y1 = 0 }
             for _, pair in ipairs({ {0, 1}, {1, 2}, {2, 0} }) do
-                bearcad.select{ kind = "line", index = pair[1], ["end"] = "end" }
-                bearcad.select({ kind = "line", index = pair[2], ["end"] = "start" }, true)
+                bearcad.select{ kind = "line", index = pair[1], endpoint = "end" }
+                bearcad.select({ kind = "line", index = pair[2], endpoint = "start" }, true)
                 bearcad.add_geometric_constraint("coincident")
             end
             bearcad.extrude{ polygon = {0, 1, 2}, distance = 6 }
@@ -17145,7 +17292,7 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.rect{ x = 0, y = 0, width = 30, height = 30 }
-            bearcad.fillet_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, radius = 5 }
+            bearcad.fillet_vertex{ point = { kind = "line", index = 0, endpoint = "end" }, radius = 5 }
             bearcad.extrude{ polygon = {4, 6, 5, 2, 3}, distance = 10 }
             bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0,
                 profile = "polygon", profile_lines = {4, 6, 5, 2, 3}, edge = 2 }
@@ -17177,7 +17324,7 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.rect{ x = 0, y = 0, width = 30, height = 30 }
-            bearcad.fillet_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, radius = 5 }
+            bearcad.fillet_vertex{ point = { kind = "line", index = 0, endpoint = "end" }, radius = 5 }
             bearcad.extrude{ polygon = {4, 6, 5, 2, 3}, distance = 10 }
         "#,
         );
@@ -20159,7 +20306,7 @@ pub mod tests {
         let state = run_lua(
             r#"
             bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
-            local p = { kind = "line", index = 0, ["end"] = "end" }
+            local p = { kind = "line", index = 0, endpoint = "end" }
             bearcad.drag_vertex{ point = p, du = 5, dv = 3 }
             local l = bearcad.get{ kind = "line", index = 0 }
             assert(math.abs(l.x1 - 15) < 1e-3 and math.abs(l.y1 - 3) < 1e-3,
@@ -20196,13 +20343,13 @@ pub mod tests {
         let state = run_lua(
             r#"
             bearcad.rect{ width = 10, height = 10 }
-            bearcad.select{ kind = "line", index = 0, ["end"] = "start" }
+            bearcad.select{ kind = "line", index = 0, endpoint = "start" }
             bearcad.select({ kind = "origin" }, true)
             bearcad.add_geometric_constraint("coincident")
             bearcad.clear_selection()
             local ok, err = pcall(function()
                 bearcad.drag_vertex{
-                    point = { kind = "line", index = 0, ["end"] = "end" },
+                    point = { kind = "line", index = 0, endpoint = "end" },
                     du = 3,
                 }
             end)
@@ -20223,7 +20370,7 @@ pub mod tests {
             r#"
             bearcad.rect{ x = 15, y = 10, width = 40, height = 20 }
             bearcad.drag_vertex{
-                point = { kind = "line", index = 0, ["end"] = "end" },
+                point = { kind = "line", index = 0, endpoint = "end" },
                 du = 10, dv = 5,
             }
         "#,
@@ -21324,7 +21471,7 @@ pub mod tests {
             bearcad.line{ x = 30, y = 40, x1 = 60, y1 = 40 }
             bearcad.text{ text = "Hi", x = 0, y = 0, size = 10 }
             bearcad.select{ kind = "sketch_text", index = 0, anchor = "center" }
-            bearcad.select({ kind = "line", index = 0, ["end"] = "start" }, true)
+            bearcad.select({ kind = "line", index = 0, endpoint = "start" }, true)
             bearcad.add_geometric_constraint("coincident")
         "#,
         );

@@ -20,8 +20,8 @@ bearcad.line{ x = 0,  y = 0,  x1 = 40, y1 = 3 }   -- 0 bottom
 bearcad.line{ x = 40, y = 3,  x1 = 38, y1 = 25 }  -- 1 right cap
 bearcad.line{ x = 38, y = 25, x1 = 2,  y1 = 22 }  -- 2 top
 for i = 0, 1 do
-  bearcad.select{ kind = "line", index = i, ["end"] = "end" }
-  bearcad.select({ kind = "line", index = i + 1, ["end"] = "start" }, true)
+  bearcad.select{ kind = "line", index = i, endpoint = "end" }
+  bearcad.select({ kind = "line", index = i + 1, endpoint = "start" }, true)
   bearcad.add_geometric_constraint("coincident")
 end
 bearcad.clear_selection()

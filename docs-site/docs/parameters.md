@@ -97,8 +97,8 @@ bearcad.derive_parameter{ kind = "line_length", a = 0, name = "leg" }
 bearcad.derive_parameter{ kind = "line_distance", a = 0, b = 1 }
 bearcad.derive_parameter{ kind = "line_angle", a = 0, b = 2 }
 bearcad.derive_parameter{ kind = "point_distance",
-  a = { kind = "line", index = 0, ["end"] = "start" },
-  b = { kind = "line", index = 0, ["end"] = "end" } }
+  a = { kind = "line", index = 0, endpoint = "start" },
+  b = { kind = "line", index = 0, endpoint = "end" } }
 -- Body geometry: a/b are mm points anywhere on the picked edge's ends or the corners.
 bearcad.derive_parameter{ kind = "body_edge_length", body = 0, a = {0, 0, 0}, b = {30, 0, 0} }
 bearcad.derive_parameter{ kind = "body_vertex_distance", body = 0,

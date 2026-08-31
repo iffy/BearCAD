@@ -21,7 +21,7 @@ bearcad.rect{ width = 40, height = 30, name = "Profile" }
 
 -- In a sketch: one corner picked, so the picker shows a filled count.
 bearcad.ui.tool("fillet")
-bearcad.select({ kind = "line", index = 1, ["end"] = "end" })
+bearcad.select({ kind = "line", index = 1, endpoint = "end" })
 bearcad.ui.wait(6)
 bearcad.ui.screenshot(out .. "-sketch.png", "context")
 

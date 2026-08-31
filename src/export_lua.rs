@@ -1968,7 +1968,7 @@ fn constraint_point_table(doc: &Document, p: &ConstraintPoint) -> String {
                 LineEnd::Start => "start",
                 LineEnd::End => "end",
             };
-            format!("{{ kind = \"line\", index = {ord}, [\"end\"] = \"{end}\" }}")
+            format!("{{ kind = \"line\", index = {ord}, endpoint = \"{end}\" }}")
         }
         ConstraintPoint::CircleCenter(c) => {
             let ord = doc.circles.keys().position(|k| k == *c).unwrap_or(0);
@@ -2338,15 +2338,15 @@ mod tests {
             "sketch fillet",
             r#"bearcad.new()
                bearcad.rect{ width = 40, height = 30 }
-               bearcad.fillet_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, radius = 3 }"#,
+               bearcad.fillet_vertex{ point = { kind = "line", index = 0, endpoint = "end" }, radius = 3 }"#,
         ),
         (
             "sketch fillet two corners",
             r#"bearcad.new()
                bearcad.rect{ width = 40, height = 30 }
                bearcad.fillet_vertex{ points = {
-                 { kind = "line", index = 0, ["end"] = "end" },
-                 { kind = "line", index = 1, ["end"] = "end" },
+                 { kind = "line", index = 0, endpoint = "end" },
+                 { kind = "line", index = 1, endpoint = "end" },
                }, radius = 3 }"#,
         ),
         (
@@ -2543,8 +2543,8 @@ mod tests {
             r#"bearcad.new()
                bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 0 }
                bearcad.line{ x = 21, y = 1, x1 = 30, y1 = 15 }
-               bearcad.select({ kind = "line", index = 0, ["end"] = "end" })
-               bearcad.select({ kind = "line", index = 1, ["end"] = "start" }, true)
+               bearcad.select({ kind = "line", index = 0, endpoint = "end" })
+               bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
                bearcad.add_geometric_constraint("coincident")"#,
         ),
         (
@@ -2682,8 +2682,8 @@ mod tests {
             bearcad.new()
             bearcad.rect{ width = 40, height = 30 }
             bearcad.fillet_vertex{ points = {
-                { kind = "line", index = 0, ["end"] = "end" },
-                { kind = "line", index = 1, ["end"] = "end" },
+                { kind = "line", index = 0, endpoint = "end" },
+                { kind = "line", index = 1, endpoint = "end" },
             }, radius = 3 }
             "#,
         );

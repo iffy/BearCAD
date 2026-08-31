@@ -113,7 +113,7 @@ bearcad.ui.key("`", { cmd = true })     -- next window (⌘` / Ctrl+`)
 ## Dragging constrained geometry
 
 ```lua
-bearcad.ui.drag_vertex({ kind = "line", index = 0, ["end"] = "end" }, u, v)
+bearcad.ui.drag_vertex({ kind = "line", index = 0, endpoint = "end" }, u, v)
 bearcad.ui.drag_line({ kind = "line", index = 0 }, au, av, u, v)
 bearcad.ui.focus_dim("length")          -- focus a dimension input field
 bearcad.ui.focus_calibrate()            -- focus a selected image's Real length field

@@ -4,7 +4,7 @@
 bearcad.new()
 bearcad.rect{ x = 0, y = 0, width = 40, height = 40 }
 bearcad.chamfer_vertex{
-  point = { kind = "line", index = 1, ["end"] = "end" },
+  point = { kind = "line", index = 1, endpoint = "end" },
   distance = 5,
 }
 bearcad.extrude{ polygon = {0, 4, 6, 5, 3}, distance = 10 }

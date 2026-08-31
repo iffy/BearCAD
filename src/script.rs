@@ -5083,9 +5083,8 @@ fn point_lua_fields(point: &ConstraintPoint, doc: Option<&crate::model::Document
                 LineEnd::Start => "start",
                 LineEnd::End => "end",
             };
-            // `end` is a Lua reserved word, so it can't be a bareword table key; bracket it.
             format!(
-                "kind = \"line\", index = {}, [\"end\"] = \"{end_name}\"",
+                "kind = \"line\", index = {}, endpoint = \"{end_name}\"",
                 line.index()
             )
         }
@@ -10271,7 +10270,7 @@ mod tests {
         };
         assert_eq!(
             chamfer.as_lua(),
-            "bearcad.chamfer_vertex{ point = { kind = \"line\", index = 0, [\"end\"] = \"end\" }, distance = 3 }"
+            "bearcad.chamfer_vertex{ point = { kind = \"line\", index = 0, endpoint = \"end\" }, distance = 3 }"
         );
         let fillet = Instruction::VertexTreatment {
             points: vec![point.clone()],
@@ -10280,7 +10279,7 @@ mod tests {
         };
         assert_eq!(
             fillet.as_lua(),
-            "bearcad.fillet_vertex{ point = { kind = \"line\", index = 0, [\"end\"] = \"end\" }, radius = 2.5 }"
+            "bearcad.fillet_vertex{ point = { kind = \"line\", index = 0, endpoint = \"end\" }, radius = 2.5 }"
         );
         // A parametric amount records as a quoted string so it survives replay.
         let parametric = Instruction::VertexTreatment {
@@ -10290,7 +10289,7 @@ mod tests {
         };
         assert_eq!(
             parametric.as_lua(),
-            "bearcad.fillet_vertex{ point = { kind = \"line\", index = 0, [\"end\"] = \"end\" }, radius = \"r\" }"
+            "bearcad.fillet_vertex{ point = { kind = \"line\", index = 0, endpoint = \"end\" }, radius = \"r\" }"
         );
         let two = Instruction::VertexTreatment {
             points: vec![
@@ -10302,7 +10301,7 @@ mod tests {
         };
         assert_eq!(
             two.as_lua(),
-            "bearcad.fillet_vertex{ points = { { kind = \"line\", index = 0, [\"end\"] = \"end\" }, { kind = \"line\", index = 1, [\"end\"] = \"end\" } }, radius = 3 }"
+            "bearcad.fillet_vertex{ points = { { kind = \"line\", index = 0, endpoint = \"end\" }, { kind = \"line\", index = 1, endpoint = \"end\" } }, radius = 3 }"
         );
     }
 
