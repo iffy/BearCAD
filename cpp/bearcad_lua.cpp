@@ -279,9 +279,14 @@ bearcad = setmetatable({}, {
     return function(...) return call(name, ...) end
   end,
 })
--- `bearcad.ui.*` and `bearcad.fps.*` are the same flat verbs under grouping tables, matching
+-- `bearcad.ui.*` and `bearcad.debug.*` are the same flat verbs under grouping tables, matching
 -- the desktop namespacing (e.g. bearcad.ui.orbit -> the "orbit" verb).
 bearcad.ui = setmetatable({}, {
+  __index = function(_, name)
+    return function(...) return call(name, ...) end
+  end,
+})
+bearcad.debug = setmetatable({}, {
   __index = function(_, name)
     return function(...) return call(name, ...) end
   end,

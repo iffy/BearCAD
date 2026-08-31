@@ -30,6 +30,6 @@ bearcad.ui.wait(4)
 assert(bearcad.drawing_views(d)[1].style == "watercolor")
 assert(bearcad.drawing_views(d)[2].style == "colorful", "the default is still colorful")
 
-assert(bearcad.ui.widget_id_warnings() == 0, "and the new row keeps its widget ids stable")
+assert(bearcad.debug.widget_id_warnings() == 0, "and the new row keeps its widget ids stable")
 print("ok: a drawing sets the style its new projections start in")
 bearcad.quit()

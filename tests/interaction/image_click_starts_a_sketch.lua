@@ -15,7 +15,7 @@ bearcad.ui.camera{ target = {-80, -200, 0}, distance = 2800 }
 bearcad.ui.wait(10)
 
 local seen = {}
-for _, row in ipairs(bearcad.tool_table()) do
+for _, row in ipairs(bearcad.debug.tool_table()) do
   if row.opens_sketch and not seen[row.tool] then
     seen[row.tool] = true
     bearcad.new()
@@ -38,7 +38,7 @@ for _, row in ipairs(bearcad.tool_table()) do
       row.tool .. " should hover the image, got " .. (h and h.kind or "nothing"))
     bearcad.ui.click_ground(-80, -200)
     bearcad.ui.wait(8)
-    local live = bearcad.tool_row()
+    local live = bearcad.debug.tool_row()
     assert(live.space == "sketch",
       row.tool .. " image click should start a sketch, space=" .. tostring(live.space)
         .. " status=" .. bearcad.status())

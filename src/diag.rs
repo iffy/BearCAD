@@ -324,7 +324,7 @@ const ISSUE_URL: &str = "https://github.com/iffy/BearCAD/issues";
 
 /// How many egui "Widget rect … changed id between passes" warnings this process has logged.
 ///
-/// Scripts read this via `bearcad.ui.widget_id_warnings()` so a layout that flashes red
+/// Scripts read this via `bearcad.debug.widget_id_warnings()` so a layout that flashes red
 /// fails the interaction test that produced it (#1614).
 pub fn widget_id_change_warnings() -> u64 {
     WIDGET_ID_CHANGE_WARNINGS.load(Ordering::Relaxed)

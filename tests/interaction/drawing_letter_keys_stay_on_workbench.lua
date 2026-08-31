@@ -11,8 +11,8 @@ bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 bearcad.ui.wait(5)
 
-assert(bearcad.tool_row().space == "drawing",
-  "drawing should be open, space is " .. tostring(bearcad.tool_row().space))
+assert(bearcad.debug.tool_row().space == "drawing",
+  "drawing should be open, space is " .. tostring(bearcad.debug.tool_row().space))
 
 local allowed = {}
 for _, name in ipairs(bearcad.ui.toolbar_tools()) do
@@ -28,7 +28,7 @@ for _, key in ipairs({ "e", "r", "l" }) do
   bearcad.ui.wait(2)
   bearcad.ui.key(key)
   bearcad.ui.wait(2)
-  local tool = bearcad.tool_row().tool
+  local tool = bearcad.debug.tool_row().tool
   assert(allowed[tool],
     "after " .. key .. " the tool must stay a drawing-workbench tool, got " .. tool)
 end
@@ -38,8 +38,8 @@ bearcad.ui.tool("select")
 bearcad.ui.wait(2)
 bearcad.ui.key("d")
 bearcad.ui.wait(2)
-assert(bearcad.tool_row().tool == "dimension",
-  "D should still arm Dimension in a drawing, got " .. bearcad.tool_row().tool)
+assert(bearcad.debug.tool_row().tool == "dimension",
+  "D should still arm Dimension in a drawing, got " .. bearcad.debug.tool_row().tool)
 
 print("ok: drawing letter keys stay on the workbench")
 bearcad.quit()

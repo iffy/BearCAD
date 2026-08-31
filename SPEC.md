@@ -5254,7 +5254,7 @@ A completely different control scheme for walking around (and inside) models lik
 first-person game. **Experimental** — labeled as such in the command palette
 ("Toggle FPS Mode (experimental)"), the View menu ("FPS Mode (experimental)", checked
 while active), status bar, shortcuts window, and docs. Toggled via those UI surfaces,
-`Action::ToggleFpsMode`, or `bearcad.ui.fps()`. The document is millimeters, so the
+`Action::ToggleFpsMode`, or `bearcad.ui.first_person()`. The document is millimeters, so the
 player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
 
 - **Seamless entry (#135):** toggling FPS mode on never moves the view — the player's eye
@@ -5298,13 +5298,14 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   1/100×–100× human scale, i.e. eye height 17&nbsp;mm–170&nbsp;m), so mm-detail work and
   building/meter-scale walkthroughs are both comfortable without leaving FPS mode. Eye
   height, walk/fly speed, jump speed, and gravity all scale together (an intentionally
-  smaller/larger person, not a world zoom); look sensitivity and `fps_move`'s explicit mm
-  offsets are unaffected.
-- **Scripting:** `bearcad.ui.fps(on?)`, `fps_look(dx, dy)` (degrees; positive dx looks
-  right, dy up), `fps_move{ forward?, strafe? }` (mm along the ground), `fps_jump()`,
-  `fps_fly(on?)`, `fps_advance(seconds)` (integrates physics with no keys held, e.g. to
-  land a jump), and `fps_scale(value)` (sets the player scale directly, clamped as above).
-  Outside FPS mode these raise catchable errors.
+  smaller/larger person, not a world zoom); look sensitivity and `first_person_move`'s
+  explicit mm offsets are unaffected.
+- **Scripting:** `bearcad.ui.first_person(on?)`, `first_person_look(dx, dy)` (degrees;
+  positive dx looks right, dy up), `first_person_move{ forward?, strafe? }` (mm along the
+  ground), `first_person_jump()`, `first_person_fly(on?)`, `first_person_advance(seconds)`
+  (integrates physics with no keys held, e.g. to land a jump), and
+  `first_person_scale(value)` (sets the player scale directly, clamped as above).
+  Outside first-person mode these raise catchable errors.
 
 ---
 

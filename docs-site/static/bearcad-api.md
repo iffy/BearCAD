@@ -232,9 +232,16 @@ bearcad.constrain(kind, a, b, …)
 bearcad.constraint_shortcut(key)
 bearcad.copy()
 bearcad.count(kind)
+bearcad.count_saved(kind)
 bearcad.cross_section{ name }
 bearcad.cuboid{ width, depth, height, at?, normal?, u_axis?, name? }
 bearcad.cylinder{ radius, height, at?, normal?, u_axis?, name? }
+bearcad.debug.mesh_cache()
+bearcad.debug.session_writes()
+bearcad.debug.sqlite_scalar(sql)
+bearcad.debug.tool_row()
+bearcad.debug.tool_table()
+bearcad.debug.widget_id_warnings()
 bearcad.delete(element_or_list)
 bearcad.delete_drawing_loupe{ drawing, view, index }
 bearcad.delete_parameter(name)
@@ -310,11 +317,11 @@ bearcad.find(name)
 bearcad.get{ kind, index }
 bearcad.gizmo(name)
 bearcad.gizmos()
+bearcad.globals()
 bearcad.hovered()
 bearcad.id(element)   -- the element's stable, never-reused id
 bearcad.image_corners(index)
 bearcad.image_opacity{ image, opacity }
-bearcad.import()
 bearcad.import_image("path" | { path, plane? })
 bearcad.import_lua(value)
 bearcad.import_step(path)
@@ -325,7 +332,6 @@ bearcad.line{ x, y, x1, y1, length, angle, bezier, dimension, name }
 bearcad.line_endpoints(index)
 bearcad.loft{ circle, circles, polygon, polygons, bodies, body, name }
 bearcad.material{ name, color, bodies }   -- no color + an existing name applies that material
-bearcad.mesh_cache()
 bearcad.mirror_bodies{ plane, bodies, output, name }
 bearcad.mirror_sketch{ sketch, line, lines, circles }
 bearcad.move_bodies{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c, name }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
@@ -365,7 +371,6 @@ bearcad.section_stats(index)   -- body as the open cross-section shows it: { vol
 bearcad.select(…)
 bearcad.selection()
 bearcad.session_log()
-bearcad.session_writes()
 bearcad.set_body_shadow{ body, shadow }
 bearcad.set_construction(element, construction)
 bearcad.set_dim(axis, value)
@@ -384,15 +389,12 @@ bearcad.sketch_dof(sketch?)
 bearcad.slice{ bodies, cutters, extend, name }
 bearcad.slice_sketch{ sketch, lines, circles, faces, cutters }
 bearcad.sphere{ radius, at?, name? }
-bearcad.sqlite_scalar(sql)
 bearcad.status()
 bearcad.sweep{ circle, circles, polygon, path, bodies, body, name }
 bearcad.sync_unit(value)
 bearcad.text{ text, x, y, size, font, bold, italic, underline, rotation, wrap, flip, name }
 bearcad.toggle_construction()
 bearcad.toggle_visibility()
-bearcad.tool_row()
-bearcad.tool_table()
 bearcad.ui.add_geometric_constraint(name)
 bearcad.ui.ai_mcp(how)
 bearcad.ui.ai_pane_sections()
@@ -423,17 +425,17 @@ bearcad.ui.drawing_view_rect(view)
 bearcad.ui.elements_graph{ shadow_bodies? }
 bearcad.ui.elements_row_rect(label)
 bearcad.ui.elements_view(name)
+bearcad.ui.first_person(on?)
+bearcad.ui.first_person_advance(seconds)
+bearcad.ui.first_person_fly(on?)
+bearcad.ui.first_person_jump()
+bearcad.ui.first_person_look(dx, dy)
+bearcad.ui.first_person_move{ forward, strafe }
+bearcad.ui.first_person_scale(scale)
 bearcad.ui.focus_calibrate()
 bearcad.ui.focus_dim(axis)
 bearcad.ui.focus_name()
 bearcad.ui.focused_window()
-bearcad.ui.fps(on?)
-bearcad.ui.fps_advance(seconds)
-bearcad.ui.fps_fly(on?)
-bearcad.ui.fps_jump()
-bearcad.ui.fps_look(dx, dy)
-bearcad.ui.fps_move{ forward, strafe }
-bearcad.ui.fps_scale(scale)
 bearcad.ui.ground(name)
 bearcad.ui.headless()   -- true when the run has no OS window
 bearcad.ui.help(on?)
@@ -501,7 +503,6 @@ bearcad.ui.viewport() -- { width, height, x, y }
 bearcad.ui.wait(frames)
 bearcad.ui.wait_ms(ms)
 bearcad.ui.wheel(scroll)
-bearcad.ui.widget_id_warnings()
 bearcad.ui.window_count()
 bearcad.ui.windows()
 bearcad.ui.workbench(name)

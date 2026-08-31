@@ -92,13 +92,13 @@ screenshots) work. **Ctrl-D** ends the session; with `--exit` it also closes the
 `--repl` and `--script` are mutually exclusive. Piping works:
 `echo '...' | bearcad --repl --exit`.
 
-## Import shorthand
+## Globals shorthand
 
-`bearcad.import()` copies the top-level modeling functions into the global namespace
-(`bearcad.ui.*` stays namespaced):
+`bearcad.globals()` copies the top-level modeling functions into the global namespace
+(`bearcad.ui.*` and `bearcad.debug.*` stay namespaced):
 
 ```lua
-bearcad.import()
+bearcad.globals()
 new()
 rect{ width = 80, height = 50 }
 ```

@@ -2355,22 +2355,28 @@ impl Instruction {
                 format!("bearcad.ui.focus_dim({:?})", plane_dim_lua_name(*dim))
             }
             Instruction::FpsMode { on } => match on {
-                Some(on) => format!("bearcad.ui.fps({on})"),
-                None => "bearcad.ui.fps()".to_string(),
+                Some(on) => format!("bearcad.ui.first_person({on})"),
+                None => "bearcad.ui.first_person()".to_string(),
             },
-            Instruction::FpsLook { dx, dy } => format!("bearcad.ui.fps_look({dx}, {dy})"),
-            Instruction::FpsMove { forward, strafe } => {
-                format!("bearcad.ui.fps_move{{ forward = {forward}, strafe = {strafe} }}")
+            Instruction::FpsLook { dx, dy } => {
+                format!("bearcad.ui.first_person_look({dx}, {dy})")
             }
-            Instruction::FpsJump => "bearcad.ui.fps_jump()".to_string(),
+            Instruction::FpsMove { forward, strafe } => {
+                format!(
+                    "bearcad.ui.first_person_move{{ forward = {forward}, strafe = {strafe} }}"
+                )
+            }
+            Instruction::FpsJump => "bearcad.ui.first_person_jump()".to_string(),
             Instruction::FpsFly { on } => match on {
-                Some(on) => format!("bearcad.ui.fps_fly({on})"),
-                None => "bearcad.ui.fps_fly()".to_string(),
+                Some(on) => format!("bearcad.ui.first_person_fly({on})"),
+                None => "bearcad.ui.first_person_fly()".to_string(),
             },
             Instruction::FpsAdvance { seconds } => {
-                format!("bearcad.ui.fps_advance({seconds})")
+                format!("bearcad.ui.first_person_advance({seconds})")
             }
-            Instruction::FpsScale { scale } => format!("bearcad.ui.fps_scale({scale})"),
+            Instruction::FpsScale { scale } => {
+                format!("bearcad.ui.first_person_scale({scale})")
+            }
             Instruction::Orbit { dx, dy } => format!("bearcad.ui.orbit({dx}, {dy})"),
             Instruction::Pan { dx, dy } => format!("bearcad.ui.pan({dx}, {dy})"),
             Instruction::Zoom { scroll } => format!("bearcad.ui.wheel({scroll})"),
@@ -8801,7 +8807,7 @@ impl ScriptRunner {
                         player.clone().apply_to_camera(&mut state.cam);
                     }
                     None => self.record_action_error(crate::actions::ActionResult::Err(
-                        "Not in FPS mode".to_string(),
+                        "Not in first-person mode".to_string(),
                     )),
                 }
                 StepResult::Continue
@@ -8815,7 +8821,7 @@ impl ScriptRunner {
                         player.clone().apply_to_camera(&mut state.cam);
                     }
                     None => self.record_action_error(crate::actions::ActionResult::Err(
-                        "Not in FPS mode".to_string(),
+                        "Not in first-person mode".to_string(),
                     )),
                 }
                 StepResult::Continue
@@ -8833,7 +8839,7 @@ impl ScriptRunner {
                         player.clone().apply_to_camera(&mut state.cam);
                     }
                     None => self.record_action_error(crate::actions::ActionResult::Err(
-                        "Not in FPS mode".to_string(),
+                        "Not in first-person mode".to_string(),
                     )),
                 }
                 StepResult::Continue
@@ -8848,7 +8854,7 @@ impl ScriptRunner {
                         }
                     }
                     None => self.record_action_error(crate::actions::ActionResult::Err(
-                        "Not in FPS mode".to_string(),
+                        "Not in first-person mode".to_string(),
                     )),
                 }
                 StepResult::Continue
@@ -8865,7 +8871,7 @@ impl ScriptRunner {
                         player.clone().apply_to_camera(&mut state.cam);
                     }
                     None => self.record_action_error(crate::actions::ActionResult::Err(
-                        "Not in FPS mode".to_string(),
+                        "Not in first-person mode".to_string(),
                     )),
                 }
                 StepResult::Continue
@@ -8877,7 +8883,7 @@ impl ScriptRunner {
                         player.clone().apply_to_camera(&mut state.cam);
                     }
                     None => self.record_action_error(crate::actions::ActionResult::Err(
-                        "Not in FPS mode".to_string(),
+                        "Not in first-person mode".to_string(),
                     )),
                 }
                 StepResult::Continue
@@ -10989,6 +10995,45 @@ pub fn count_kind(doc: &crate::model::Document, kind: &str) -> Option<usize> {
         "image" | "tracing_image" => doc.tracing_images.len(),
         "joint" => doc.joints.len(),
         "unit_instance" | "unit" => doc.unit_instances.len(),
+        _ => return None,
+    })
+}
+
+/// SQLite table `bearcad.count_saved(kind)` reads on the last Save (#1886).
+/// `None` means the name isn't a kind, or that kind has no file table.
+pub fn saved_table_for_kind(kind: &str) -> Option<&'static str> {
+    Some(match kind.to_ascii_lowercase().as_str() {
+        "shape" | "primitive" => "primitives",
+        "line" => "lines",
+        "circle" => "circles",
+        "sketch" => "sketches",
+        "constraint" => "constraints",
+        "construction_plane" | "plane" => "construction_planes",
+        "extrusion" => "extrusions",
+        "revolution" | "revolve" => "revolutions",
+        "sweep" => "sweeps",
+        "loft" => "lofts",
+        "combine" | "boolean" | "boolean_op" => "boolean_ops",
+        "move" | "move_op" => "move_ops",
+        "mirror" | "mirror_op" => "mirror_ops",
+        "repeat" | "repeat_op" => "repeat_ops",
+        "slice" | "slice_op" => "slice_ops",
+        "shell" | "shell_op" => "shell_ops",
+        "edge_treatment" => "edge_treatment_ops",
+        "sketch_offset" | "offset" => "sketch_offset_ops",
+        "sketch_mirror" => "sketch_mirror_ops",
+        "sketch_repeat" => "sketch_repeat_ops",
+        "sketch_slice" => "sketch_slice_ops",
+        "sketch_chamfer" | "sketch_fillet" => "sketch_vertex_treatment_ops",
+        "body" => "bodies",
+        "drawing" => "drawings",
+        "cross_section" | "section" => "cross_sections",
+        "parameter" => "parameters",
+        "sketch_text" | "text" => "sketch_texts",
+        "component" => "components",
+        "image" | "tracing_image" => "tracing_images",
+        "joint" => "joints",
+        "unit_instance" | "unit" => "unit_instances",
         _ => return None,
     })
 }

@@ -12,7 +12,7 @@ bearcad.ui.camera{ target = {0, 0, 0}, distance = 200 }
 bearcad.ui.wait(5)
 
 local seen = {}
-for _, row in ipairs(bearcad.tool_table()) do
+for _, row in ipairs(bearcad.debug.tool_table()) do
   if row.opens_sketch and not seen[row.tool] then
     seen[row.tool] = true
     bearcad.new()
@@ -29,7 +29,7 @@ for _, row in ipairs(bearcad.tool_table()) do
     bearcad.ui.wait(3)
     bearcad.ui.click_ground(0, 0)
     bearcad.ui.wait(8)
-    local live = bearcad.tool_row()
+    local live = bearcad.debug.tool_row()
     assert(live.space == "sketch",
       row.tool .. " face click should start a sketch, space=" .. tostring(live.space)
         .. " status=" .. bearcad.status())
