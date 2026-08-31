@@ -107,8 +107,8 @@ edge (four calls would make four bodies):
 bearcad.fillet_edge{ extrusion = i, edges = { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, radius }
 bearcad.chamfer_edge{ extrusion = i, edges = { … }, distance }
 bearcad.extrude_edges(i)               -- the edge refs fillet/chamfer accept on extrusion i
-bearcad.fillet_vertex{ point = { kind = "line", index = i, ["end"] = "start"|"end" }, radius }
-bearcad.chamfer_vertex{ point = { kind = "line", index = i, ["end"] = "start"|"end" }, distance }
+bearcad.fillet_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, radius }
+bearcad.chamfer_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, distance }
 ```
 
 Shape-tool cuboids use the same edge calls with `kind = "vertical"` etc. on the primitive.
@@ -118,7 +118,9 @@ Shape-tool cuboids use the same edge calls with `kind = "vertical"` etc. on the 
 ```
 bearcad.parameter("add", "w", "24")
 bearcad.parameter("value", i, "30")
-bearcad.select{ kind, index }                          -- second arg true = add
+bearcad.select{ kind, index, endpoint? }               -- second arg true = add
+                                                       -- line vertex: endpoint = "start"|"end"
+                                                       -- or line:start() / line:endpoint("end")
                                                        -- drawing page items: kind "projection"|"annotation"|"dimension"
                                                        --   + drawing (+ view / a,b / index); selecting opens the drawing
 bearcad.add_constraint({ kind = "line", index = i }, "25mm")

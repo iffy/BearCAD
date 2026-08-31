@@ -1345,7 +1345,7 @@ fn vertex_treatment_points_from_json(
 }
 
 /// A `ConstraintPoint` from a point object (mirrors `parse_constraint_point_table`): a line
-/// endpoint (`{kind="line", index, end}`), a circle center (`{kind="circle", index}`), or a
+/// endpoint (`{kind="line", index, endpoint}`), a circle center (`{kind="circle", index}`), or a
 /// body-face vertex (`{kind="face", face={...}, index}`).
 fn constraint_point_from_json(
     doc: &crate::model::Document,
@@ -1373,7 +1373,13 @@ fn constraint_point_from_json(
     let index = req_usize(t, "index", "point")?;
     match kind.to_ascii_lowercase().as_str() {
         "line" => {
-            let end = match req_str(t, "end", "point")?.to_ascii_lowercase().as_str() {
+            if t.get("end").is_some() && t.get("endpoint").is_none() {
+                return Err(
+                    "line point uses `endpoint` = \"start\" or \"end\" (`end` is a Lua reserved word)"
+                        .into(),
+                );
+            }
+            let end = match req_str(t, "endpoint", "point")?.to_ascii_lowercase().as_str() {
                 "start" | "0" => LineEnd::Start,
                 "end" | "1" => LineEnd::End,
                 other => return Err(format!("unknown line endpoint '{other}'")),
@@ -3777,7 +3783,7 @@ mod tests {
         assert_eq!(
             instruction_from_json(&doc,
                 "chamfer_vertex",
-                &json!({ "point": { "kind": "line", "index": 0, "end": "start" }, "distance": 2 })
+                &json!({ "point": { "kind": "line", "index": 0, "endpoint": "start" }, "distance": 2 })
             ),
             Ok(Instruction::VertexTreatment {
                 points: vec![ConstraintPoint::LineEndpoint { line: lkey(0), end: LineEnd::Start }],
@@ -3800,8 +3806,8 @@ mod tests {
             instruction_from_json(&doc,
                 "fillet_vertex",
                 &json!({ "points": [
-                    { "kind": "line", "index": 0, "end": "end" },
-                    { "kind": "line", "index": 1, "end": "end" }
+                    { "kind": "line", "index": 0, "endpoint": "end" },
+                    { "kind": "line", "index": 1, "endpoint": "end" }
                 ], "radius": 3 })
             ),
             Ok(Instruction::VertexTreatment {

@@ -634,7 +634,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   kernel-backed BREP fillet (BearCAD has no BREP/NURBS kernel — see §10). Scriptable via
   `bearcad.chamfer_vertex{ point = {...}, distance = }`
   and `bearcad.fillet_vertex{ point = {...}, radius = }`, where `point` is the usual
-  `ConstraintPoint` table (e.g. `{ kind = "line", index = 0, ["end"] = "end" }`).
+  `ConstraintPoint` table (e.g. `{ kind = "line", index = 0, endpoint = "end" }`).
   `points = { ... }` treats several corners in one operation (mirroring `edges` on
   the solid verbs).
   - **Live geometry preview (#76):** while the gizmo is being placed or dragged (before commit),
@@ -4065,13 +4065,14 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   {op, a, b}` — the same descriptor `extrude` takes — for a boolean-combined profile's cap,
   #406), profile_index, top?` and `kind = "extrude_side", extrusion, profile, profile_index,
   edge?`. (This makes sketching on a solid's face scriptable, e.g. for testing.)
-- **Point-level selection (#68):** `bearcad.select{ kind = "line", index, ["end"] = "start"|"end" }`
+- **Point-level selection (#68):** `bearcad.select{ kind = "line", index, endpoint = "start"|"end" }`
   selects an individual vertex (a `ConstraintPoint`) rather than the whole element, so e.g.
   `bearcad.select{...}` + `bearcad.select({...}, true)` + `bearcad.add_geometric_constraint("coincident")`
   can join two line endpoints (closing a polygon loop — including a rectangle's four corners)
   purely from a script — a line's two points are `start`/`end`, i.e. `(x0,y0)`/`(x1,y1)`.
-  A table with no `end` still resolves to the whole element as before; pass an explicit
+  A table with no `endpoint` still resolves to the whole element as before; pass an explicit
   `point = true` to target a point that has no such field (e.g. a circle's center).
+  A line handle names the same points as `line:start()` / `line:endpoint("end")`.
 - **Positioning dimensions (#809):** `bearcad.add_constraint` takes the two-thing targets the
   Dimension tool picks interactively, not just `line` (length) and `circle` (diameter):
   `{ kind = "point_line", point = <point>, line = <line> }` (perpendicular distance from a

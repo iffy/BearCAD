@@ -757,8 +757,8 @@ fn kind_only_selector(v: &Value) -> Option<String> {
     let o = v.as_object()?;
     let kind = o.get("kind").or_else(|| o.get("type"))?.as_str()?;
     let names_one = [
-        "index", "name", "end", "corner", "anchor", "point", "edge", "face", "axis", "drawing",
-        "view",
+        "index", "name", "endpoint", "end", "corner", "anchor", "point", "edge", "face", "axis",
+        "drawing", "view",
     ]
     .iter()
     .any(|key| o.contains_key(*key));

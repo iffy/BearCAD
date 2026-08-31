@@ -54,6 +54,8 @@ box:name()      -- its name, or nil
 box:exists()    -- false once deleted
 ```
 
+A line handle names its vertices: `line:start()` or `line:endpoint("end")`.
+
 Anywhere an index is accepted — `bodies`, `polygon`, `extrusion`, `{ kind, index }` — a
 handle, its `id` string, or a name works too. `bearcad.element(id)` turns an id back into a
 handle; `bearcad.id(el)` is the method spelled as a function.
@@ -230,13 +232,13 @@ corner; `points` treats several in **one** operation — the same rule as `edges
 the solid verbs:
 
 ```lua
-local corner = { kind = "line", index = 0, ["end"] = "end" }
+local corner = { kind = "line", index = 0, endpoint = "end" }
 bearcad.chamfer_vertex{ point = corner, distance = 3 }
 bearcad.fillet_vertex{ point = corner, radius = 3 }
 
 bearcad.fillet_vertex{ points = {
-  { kind = "line", index = 0, ["end"] = "end" },
-  { kind = "line", index = 1, ["end"] = "end" },
+  { kind = "line", index = 0, endpoint = "end" },
+  { kind = "line", index = 1, endpoint = "end" },
 }, radius = 3 }
 ```
 

@@ -18,7 +18,7 @@ bearcad.ui.pane("parameters", "hide")
 
 bearcad.rect{ x = 0, y = 0, width = 40, height = 30, name = "Profile" }
 -- Cut the top-right corner (line 1's end = line 2's start) 10 mm flat.
-bearcad.chamfer_vertex{ point = { kind = "line", index = 1, ["end"] = "end" }, distance = 10 }
+bearcad.chamfer_vertex{ point = { kind = "line", index = 1, endpoint = "end" }, distance = 10 }
 
 bearcad.clear_selection()
 bearcad.ui.tool("dimension")

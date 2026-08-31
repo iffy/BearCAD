@@ -18,7 +18,7 @@ bearcad.ui.pane("parameters", "hide")
 
 bearcad.rect{ x = 0, y = 0, width = 40, height = 30, name = "Profile" }
 -- Round the top-right corner (line 1's end = line 2's start) at 10 mm.
-bearcad.fillet_vertex{ point = { kind = "line", index = 1, ["end"] = "end" }, radius = 10 }
+bearcad.fillet_vertex{ point = { kind = "line", index = 1, endpoint = "end" }, radius = 10 }
 
 bearcad.clear_selection()
 bearcad.ui.tool("dimension")

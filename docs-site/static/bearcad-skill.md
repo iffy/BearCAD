@@ -132,7 +132,7 @@ bearcad.fillet_edge{
   },
   radius = 8,
 }
-bearcad.chamfer_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, distance = 3 }
+bearcad.chamfer_vertex{ point = { kind = "line", index = 0, endpoint = "end" }, distance = 3 }
 ```
 
 ## Parameters and constraints
