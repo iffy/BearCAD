@@ -5729,7 +5729,7 @@ fn face_id_lua_ref(face: &FaceId, doc: Option<&crate::model::Document>) -> Strin
             extrude_face_profile_lua_fields(profile, doc)
         ),
         FaceId::RevolveCap { revolution: r, profile, end } => format!(
-            "{{ kind = \"revolve_cap\", revolution = {}, {}, [\"end\"] = {end} }}",
+            "{{ kind = \"revolve_cap\", revolution = {}, {}, endpoint = {end} }}",
             revolution(*r),
             extrude_face_profile_lua_fields(profile, doc)
         ),

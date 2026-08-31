@@ -52,6 +52,7 @@ bearcad.circle{ x, y, r | radius | diameter, name? }
 bearcad.edit_circle{ index, r | radius | diameter, name? }
 bearcad.text{ text, x, y, size?, font?, bold?, italic?, underline?, rotation?, wrap?, flip?, name? }
 bearcad.begin_sketch{ kind = "plane", index = i }
+bearcad.begin_sketch(box:face("top"))            -- or a body_faces entry
 bearcad.begin_sketch{ kind = "extrude_cap"|"extrude_side"|…, … }
 bearcad.open_sketch(i)
 bearcad.exit_sketch()
@@ -90,16 +91,15 @@ Rounding is one call per operation — a set of edges in a single call, never on
 edge (four calls would make four bodies):
 
 ```
-bearcad.fillet_edge{ extrusion = i | shape = i, edges = { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, r | radius | diameter }
+bearcad.fillet{ body = h, edges = bearcad.body_edges(h) | { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, r | radius | diameter }
+bearcad.chamfer{ body = h, edges = …, distance }
 bearcad.edit_fillet{ index, radius? }
-bearcad.chamfer_edge{ extrusion = i | shape = i, edges = { … }, distance }
 bearcad.edit_chamfer{ index, distance? }
-bearcad.extrude_edges(i)               -- the edge refs fillet/chamfer accept on extrusion i
+bearcad.fillet_edge / chamfer_edge     -- aliases; `extrusion=` / `shape=` still accepted
+bearcad.extrude_edges(i)               -- analytic edge refs on extrusion i
 bearcad.fillet_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, r | radius | diameter }
 bearcad.chamfer_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, distance }
 ```
-
-Shape-tool cuboids use the same edge calls with `shape = i` (`primitive` still accepted).
 
 ## Parameters and constraints
 
@@ -139,9 +139,9 @@ bearcad.id(el)                     -- el:id(): a stable id, unique and never reu
 bearcad.line_endpoints(i)          -- x0, y0, x1, y1
 bearcad.image_corners(i)           -- tracing image quad in world mm, live Move included
 bearcad.body_stats(i)              -- volume, triangles, bbox = { min = {x,y,z}, max = {x,y,z} }
-bearcad.body_faces(i)
+bearcad.body_faces(i)              -- pass an entry to begin_sketch / extrude_face / fillet
 bearcad.drawing_views(i)           -- a drawing's page: orientation, style, dimensions
-bearcad.body_edges(i)
+bearcad.body_edges(i)              -- pass entries to fillet{ body, edges } / chamfer{ body, edges }
 bearcad.body_cylinders(i)
 bearcad.selection()
 bearcad.visible(el)                -- effective visibility, component chain included
@@ -234,7 +234,8 @@ bearcad.body_stats(index)
 bearcad.box{ width, depth, height, at?, normal?, u_axis?, name? }
 bearcad.calibrate_image{ image, from, to, length }
 bearcad.calibration_point{ image, index, x, y }
-bearcad.chamfer_edge{ edges, edge, extrusion, shape, distance }
+bearcad.chamfer{ body, edges, edge, extrusion, shape, primitive, distance }
+bearcad.chamfer_edge{ body, edges, edge, extrusion, shape, primitive, distance }
 bearcad.chamfer_vertex{ points, point, distance }
 bearcad.circle{ x, y, r, radius, diameter, name }
 bearcad.clear()
@@ -294,12 +295,12 @@ bearcad.drawing_view_section{ drawing, view, cross_section }
 bearcad.drawing_view_size{ drawing, view, width, height, size_x, size_y }
 bearcad.drawing_view_style{ drawing, view, style }   -- visible, wireframe, shaded, colorful, loose_pencil, color_pencil, watercolor
 bearcad.drawing_views(index)
-bearcad.edit_chamfer{ index, edge, edges, extrusion, primitive, distance }
+bearcad.edit_chamfer{ index, edge, edges, body, extrusion, primitive, distance }
 bearcad.edit_circle{ index, r, radius, diameter, name }
 bearcad.edit_combine{ index, op, a, b, keep_b }
 bearcad.edit_drawing_loupe{ drawing, view, index, at?, radius?, to?, to_radius?, style? }   -- style is a drawing view style, or "view" to follow the projection's
 bearcad.edit_extrusion{ index, extrusion, distance, by, to }
-bearcad.edit_fillet{ index, edge, edges, extrusion, primitive, radius }
+bearcad.edit_fillet{ index, edge, edges, body, extrusion, primitive, radius }
 bearcad.edit_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.edit_loft{ index, circle, circles, polygon, polygons, bodies, body, name }
 bearcad.edit_mirror{ index, plane, bodies, output }
@@ -327,7 +328,8 @@ bearcad.export_stl(path, body?)
 bearcad.extrude{ distance, to, profiles, circle, circles, polygon, polygons, text, boolean, body, name, symmetric, taper, taper_mode }
 bearcad.extrude_edges(index)   -- edge refs fillet_edge/chamfer_edge accept: kind vertical|top|bottom
 bearcad.extrude_face{ to, distance, body, name }
-bearcad.fillet_edge{ edges, edge, extrusion, shape, radius }
+bearcad.fillet{ body, edges, edge, extrusion, shape, primitive, r, radius, diameter }
+bearcad.fillet_edge{ body, edges, edge, extrusion, shape, primitive, r, radius, diameter }
 bearcad.fillet_vertex{ points, point, radius }
 bearcad.find(name)
 bearcad.get{ kind, index }

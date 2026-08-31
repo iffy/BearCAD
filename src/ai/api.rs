@@ -78,6 +78,7 @@ bearcad.circle{ x, y, r | radius | diameter, name? }
 bearcad.edit_circle{ index, r | radius | diameter, name? }
 bearcad.text{ text, x, y, size?, font?, bold?, italic?, underline?, rotation?, wrap?, flip?, name? }
 bearcad.begin_sketch{ kind = "plane", index = i }
+bearcad.begin_sketch(box:face("top"))            -- or a body_faces entry
 bearcad.begin_sketch{ kind = "extrude_cap"|"extrude_side"|…, … }
 bearcad.open_sketch(i)
 bearcad.exit_sketch()
@@ -116,16 +117,15 @@ Rounding is one call per operation — a set of edges in a single call, never on
 edge (four calls would make four bodies):
 
 ```
-bearcad.fillet_edge{ extrusion = i | shape = i, edges = { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, r | radius | diameter }
+bearcad.fillet{ body = h, edges = bearcad.body_edges(h) | { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, r | radius | diameter }
+bearcad.chamfer{ body = h, edges = …, distance }
 bearcad.edit_fillet{ index, radius? }
-bearcad.chamfer_edge{ extrusion = i | shape = i, edges = { … }, distance }
 bearcad.edit_chamfer{ index, distance? }
-bearcad.extrude_edges(i)               -- the edge refs fillet/chamfer accept on extrusion i
+bearcad.fillet_edge / chamfer_edge     -- aliases; `extrusion=` / `shape=` still accepted
+bearcad.extrude_edges(i)               -- analytic edge refs on extrusion i
 bearcad.fillet_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, r | radius | diameter }
 bearcad.chamfer_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, distance }
 ```
-
-Shape-tool cuboids use the same edge calls with `shape = i` (`primitive` still accepted).
 
 ## Parameters and constraints
 
@@ -165,9 +165,9 @@ bearcad.id(el)                     -- el:id(): a stable id, unique and never reu
 bearcad.line_endpoints(i)          -- x0, y0, x1, y1
 bearcad.image_corners(i)           -- tracing image quad in world mm, live Move included
 bearcad.body_stats(i)              -- volume, triangles, bbox = { min = {x,y,z}, max = {x,y,z} }
-bearcad.body_faces(i)
+bearcad.body_faces(i)              -- pass an entry to begin_sketch / extrude_face / fillet
 bearcad.drawing_views(i)           -- a drawing's page: orientation, style, dimensions
-bearcad.body_edges(i)
+bearcad.body_edges(i)              -- pass entries to fillet{ body, edges } / chamfer{ body, edges }
 bearcad.body_cylinders(i)
 bearcad.selection()
 bearcad.visible(el)                -- effective visibility, component chain included

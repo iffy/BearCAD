@@ -2533,6 +2533,111 @@ pub fn live_body_for_treatable_solid(
     }
 }
 
+/// Analytic solids a body's source chain still names (#1871/#1872): the extrusion or
+/// Shape-tool primitive `fillet{ body = … }` / `chamfer{ body = … }` treat, walking
+/// through move/mirror/repeat/fillet/boolean so a live output still addresses the
+/// same edges as the body it came from.
+pub fn treatable_solids_of_body(
+    doc: &Document,
+    body: crate::model::BodyKey,
+) -> Vec<TreatableSolid> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    collect_treatable_solids_of_body(doc, body, &mut seen, &mut out);
+    out
+}
+
+fn collect_treatable_solids_of_body(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    seen: &mut std::collections::HashSet<crate::model::BodyKey>,
+    out: &mut Vec<TreatableSolid>,
+) {
+    if !seen.insert(body) {
+        return;
+    }
+    let Some(b) = doc.bodies.get(body) else {
+        return;
+    };
+    let push = |solid: TreatableSolid, out: &mut Vec<TreatableSolid>| {
+        if !out.contains(&solid) {
+            out.push(solid);
+        }
+    };
+    match &b.source {
+        crate::model::BodySource::Extrusion(k) => push(TreatableSolid::Extrusion(*k), out),
+        crate::model::BodySource::Extrusions(ks) => {
+            for &k in ks {
+                push(TreatableSolid::Extrusion(k), out);
+            }
+        }
+        crate::model::BodySource::Primitive(k) => push(TreatableSolid::Primitive(*k), out),
+        crate::model::BodySource::Solid { base, add, .. } => {
+            if let Some(p) = base {
+                push(TreatableSolid::Primitive(*p), out);
+            }
+            for &k in add {
+                push(TreatableSolid::Extrusion(k), out);
+            }
+        }
+        crate::model::BodySource::EdgeTreated {
+            op, target, add, ..
+        } => {
+            if let Some(operation) = doc.edge_treatment_ops.get(*op) {
+                for edge in &operation.edges {
+                    if edge.target == *target {
+                        push(edge.solid, out);
+                    }
+                }
+                if let Some(&input) = operation.targets.get(*target) {
+                    collect_treatable_solids_of_body(doc, input, seen, out);
+                }
+            }
+            for &k in add {
+                push(TreatableSolid::Extrusion(k), out);
+            }
+        }
+        crate::model::BodySource::Boolean { op, add, .. } => {
+            if let Some(operation) = doc.boolean_ops.get(*op) {
+                for &input in operation.a.iter().chain(operation.b.iter()) {
+                    collect_treatable_solids_of_body(doc, input, seen, out);
+                }
+            }
+            for &k in add {
+                push(TreatableSolid::Extrusion(k), out);
+            }
+        }
+        crate::model::BodySource::Fused { inner, add, .. } => {
+            match inner.as_ref() {
+                crate::model::BodySource::Extrusion(k) => {
+                    push(TreatableSolid::Extrusion(*k), out)
+                }
+                crate::model::BodySource::Extrusions(ks) => {
+                    for &k in ks {
+                        push(TreatableSolid::Extrusion(k), out);
+                    }
+                }
+                crate::model::BodySource::Primitive(k) => {
+                    push(TreatableSolid::Primitive(*k), out)
+                }
+                other => {
+                    if let Some(input) = other.input_body(doc) {
+                        collect_treatable_solids_of_body(doc, input, seen, out);
+                    }
+                }
+            }
+            for &k in add {
+                push(TreatableSolid::Extrusion(k), out);
+            }
+        }
+        other => {
+            if let Some(input) = other.input_body(doc) {
+                collect_treatable_solids_of_body(doc, input, seen, out);
+            }
+        }
+    }
+}
+
 /// Rigid pose from a body's analytic source (the primitive / extrusion it came
 /// from) to the body as presented. Move / mirror / repeat compose; shell /
 /// slice / fillet keep the input's frame. Same transform `body_solid_mesh`

@@ -35,13 +35,14 @@ local step = size + gap
 local half = step / 2
 local i = 0
 local at = {}
+local cubes = {}
 for z = 0, 1 do
   for y = 0, 1 do
     for x = 0, 1 do
       i = i + 1
       local spec = palette[i]
       at[i] = { (x * 2 - 1) * half, (y * 2 - 1) * half, z * step }
-      bearcad.cuboid{
+      cubes[i] = bearcad.cuboid{
         at = at[i],
         width = size,
         depth = size,
@@ -78,7 +79,7 @@ end
 
 -- Orange (right-front-top): a circle through the centre of the top face, cut
 -- down through the cube. Sketch (0, 0) is the top face's −u −v corner.
-bearcad.begin_sketch{ kind = "primitive_face", primitive = 5, face = "top" }
+bearcad.begin_sketch(cubes[6]:face("top"))
 bearcad.circle{ x = size / 2, y = size / 2, r = 5, name = "Hole" }
 bearcad.extrude{ circle = 0, distance = -(size + 2), body = "cut" }
 bearcad.exit_sketch()
@@ -99,16 +100,16 @@ bearcad.combine{ op = "cut", a = {1}, b = { last_body() } }
 bearcad.set_material{ body = last_body(), material = 2 }
 
 -- Purple (left-front-top): chamfer the four vertical sides.
-bearcad.chamfer_edge{
-  primitive = 4,
+bearcad.chamfer{
+  body = cubes[5],
   edges = vertical_sides(),
   distance = 4,
 }
 bearcad.set_material{ body = last_body(), material = 5 }
 
 -- Pink (right-back-top): fillet the four vertical sides.
-bearcad.fillet_edge{
-  primitive = 7,
+bearcad.fillet{
+  body = cubes[8],
   edges = vertical_sides(),
   radius = 4,
 }

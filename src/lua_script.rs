@@ -215,6 +215,22 @@ impl UserData for LuaElement {
             Ok(crate::names::element_name(unsafe { &tick.state().doc }, this.element.clone())
                 .map(str::to_string))
         });
+        // #1871: `box:face("top")` is the same object `body_faces` lists — begin_sketch,
+        // extrude_face, and fillet/chamfer all accept it.
+        methods.add_method("face", |lua, this, name: String| {
+            let key = match this.element {
+                SceneElement::Body(key) => key,
+                SceneElement::Shape(pi) => {
+                    let tick = lua
+                        .app_data_ref::<ScriptTickData>()
+                        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+                    crate::model::body_index_for_primitive(unsafe { &tick.state().doc }, pi)
+                        .ok_or_else(|| mlua::Error::external("shape has no body"))?
+                }
+                _ => return Err(mlua::Error::external("face() is for bodies")),
+            };
+            named_body_face_table(lua, key, &name)
+        });
         methods.add_meta_method(mlua::MetaMethod::ToString, |_, this, ()| {
             Ok(crate::hierarchy::element_id(&this.element)
                 .unwrap_or_else(|| element_kind_name(this.element.clone()).to_string()))
@@ -1331,9 +1347,172 @@ fn parse_extrude_profile(lua: &Lua, table: &Table) -> mlua::Result<crate::model:
     }
 }
 
+fn parse_face_id_value(lua: &Lua, value: Value) -> mlua::Result<FaceId> {
+    match value {
+        Value::UserData(ud) => {
+            let element = ud
+                .borrow::<LuaElement>()
+                .map_err(|_| mlua::Error::external("expected a face handle or face spec"))?
+                .element
+                .clone();
+            face_id_from_scene_element(lua, &element)
+        }
+        Value::Table(table) => parse_face_id_table(lua, table),
+        other => Err(mlua::Error::external(format!(
+            "expected a face spec or handle, got {other:?}"
+        ))),
+    }
+}
+
+fn face_id_from_scene_element(lua: &Lua, element: &SceneElement) -> mlua::Result<FaceId> {
+    match element {
+        SceneElement::SketchFace(face) => Ok(face.clone()),
+        SceneElement::BodyFace {
+            body,
+            centroid,
+            normal,
+        } => Ok(upgrade_mesh_face(lua, *body, *centroid, *normal)?),
+        other => Err(mlua::Error::external(format!(
+            "expected a face, got {}",
+            element_kind_name(other.clone())
+        ))),
+    }
+}
+
+fn upgrade_mesh_face(
+    lua: &Lua,
+    body: crate::model::BodyKey,
+    centroid: [i32; 3],
+    normal: [i32; 3],
+) -> mlua::Result<FaceId> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let doc = unsafe { &tick.state().doc };
+    Ok(
+        crate::face::analytic_face_from_mesh(doc, body, centroid, normal).unwrap_or(
+            FaceId::BodyMeshFace {
+                body,
+                centroid,
+                normal,
+            },
+        ),
+    )
+}
+
+fn mesh_face_from_table(lua: &Lua, table: &Table) -> mlua::Result<FaceId> {
+    let body = body_key_from_ordinal(lua, table.ordinal_req("body")?)?;
+    let centroid = if table.contains_key("centroid")? {
+        parse_quantized_ints(table, "centroid")?
+    } else {
+        parse_world_mm(table, "face")?
+    };
+    let normal = parse_quantized_or_world(table, "normal")?;
+    upgrade_mesh_face(lua, body, centroid, normal)
+}
+
+fn body_face_table(
+    lua: &Lua,
+    body_ordinal: usize,
+    tris: &[[glam::Vec3; 3]],
+) -> mlua::Result<Table> {
+    let face = lua.create_table()?;
+    face.set("kind", "body_mesh_face")?;
+    face.set("body", body_ordinal)?;
+    face.set("face", vec3_lua(lua, crate::extrude::face_group_center(tris))?)?;
+    face.set(
+        "normal",
+        vec3_lua(
+            lua,
+            (tris[0][1] - tris[0][0])
+                .cross(tris[0][2] - tris[0][0])
+                .normalize_or_zero(),
+        )?,
+    )?;
+    Ok(face)
+}
+
+fn named_body_face_table(
+    lua: &Lua,
+    key: crate::model::BodyKey,
+    name: &str,
+) -> mlua::Result<Value> {
+    let want = match name.to_ascii_lowercase().as_str() {
+        "top" | "cuboid_top" | "cylinder_top" => glam::Vec3::Z,
+        "bottom" | "cuboid_bottom" | "cylinder_bottom" => -glam::Vec3::Z,
+        "right" => glam::Vec3::X,
+        "left" => -glam::Vec3::X,
+        "back" => glam::Vec3::Y,
+        "front" => -glam::Vec3::Y,
+        other => {
+            return Err(mlua::Error::external(format!(
+                "unknown face '{other}' (top|bottom|front|back|left|right)"
+            )))
+        }
+    };
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let doc = unsafe { &tick.state().doc };
+    let index = doc.bodies.keys().position(|k| k == key).unwrap_or(0);
+    let Some(mesh) = crate::extrude::body_solid_mesh_unposed(doc, key) else {
+        return Err(mlua::Error::external("body has no solid mesh"));
+    };
+    let mut best: Option<(f32, Vec<[glam::Vec3; 3]>)> = None;
+    for tris in crate::gpu_viewport::solid_mesh_coplanar_faces(&mesh)
+        .iter()
+        .filter(|tris| crate::extrude::fit_cylinder(tris).is_none())
+    {
+        let n = (tris[0][1] - tris[0][0])
+            .cross(tris[0][2] - tris[0][0])
+            .normalize_or_zero();
+        let score = n.dot(want);
+        if best.as_ref().is_none_or(|(s, _)| score > *s) {
+            best = Some((score, tris.clone()));
+        }
+    }
+    let Some((score, tris)) = best else {
+        return Err(mlua::Error::external(format!("no face '{name}' on this body")));
+    };
+    if score < 0.5 {
+        return Err(mlua::Error::external(format!(
+            "no face '{name}' on this body"
+        )));
+    }
+    Ok(Value::Table(body_face_table(lua, index, &tris)?))
+}
+
 fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
-    let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
-    match kind.to_ascii_lowercase().as_str() {
+    if let Some(Value::UserData(_)) = table.get::<Option<Value>>("handle")? {
+        return parse_face_id_value(lua, table.get("handle")?);
+    }
+    if let Some(Value::Table(spec)) = table.get::<Option<Value>>("spec")? {
+        return parse_face_id_table(lua, spec);
+    }
+    let kind: String = table
+        .get("kind")
+        .or_else(|_| table.get("type"))
+        .unwrap_or_default();
+    let kind_lc = kind.to_ascii_lowercase();
+    // A `body_faces` / hover table: centroid + normal, with or without `kind`.
+    if kind_lc.is_empty()
+        || kind_lc == "face"
+        || kind_lc == "body_face"
+        || kind_lc == "body_mesh_face"
+    {
+        if table.contains_key("body")?
+            && (table.contains_key("face")? || table.contains_key("centroid")?)
+            && table.contains_key("normal")?
+        {
+            return mesh_face_from_table(lua, &table);
+        }
+        if kind_lc.is_empty() {
+            return Err(mlua::Error::external(
+                "face spec requires a string `kind`, or body/face/normal",
+            ));
+        }
+    }
+    match kind_lc.as_str() {
         "extrude_cap" | "extrude_side" => {
             let extrusion = extrusion_key_from_ordinal(lua, table.get("extrusion")?)
                 .map_err(|e| {
@@ -1377,7 +1556,10 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
             drop(tick);
             let profile = parse_extrude_profile(lua, &table)?;
             if kind.eq_ignore_ascii_case("revolve_cap") {
-                let end: bool = table.get::<Option<bool>>("end")?.unwrap_or(false);
+                let end: bool = table
+                    .get::<Option<bool>>("endpoint")?
+                    .or(table.get::<Option<bool>>("end")?)
+                    .unwrap_or(false);
                 Ok(FaceId::RevolveCap {
                     revolution,
                     profile,
@@ -2253,50 +2435,190 @@ fn parse_vertex_treatment_points(lua: &Lua, opts: &Table) -> mlua::Result<Vec<Co
     }
 }
 
-/// Parses the edge argument of `bearcad.chamfer_edge`/`fillet_edge`: either a single
-/// `edge = { ... }` alongside a top-level `extrusion` or `primitive`, or `edges = { {...}, ... }`
-/// — a whole set treated by one operation (#672). Each entry of `edges` may name its own
-/// host, falling back to the top-level one. The plural form matters: two one-edge operations
-/// each bevel the solid's own body, so their outputs overlap instead of compounding.
+/// Parses the edge argument of `bearcad.fillet`/`chamfer` (and the `*_edge` aliases):
+/// a single `edge` or `edges = { … }` treated by one operation (#672/#1872). Each
+/// entry may be an analytic `{ kind, face, edge }`, a `body_edges` centroid pair, or
+/// a body-edge handle. A top-level `body` is enough — `extrusion=`/`primitive=` stay
+/// as an advanced spelling.
+fn exec_script_edge_treatment(
+    lua: &Lua,
+    opts: Table,
+    call: &'static str,
+    kind: VertexTreatmentKind,
+) -> mlua::Result<Created> {
+    let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+    let amount_keys: &[&str] = match kind {
+        VertexTreatmentKind::Chamfer => &["distance"],
+        VertexTreatmentKind::Fillet => &["r", "radius", "diameter"],
+    };
+    let mut allowed = vec![
+        "body",
+        "edges",
+        "edge",
+        "extrusion",
+        "shape",
+        "primitive",
+    ];
+    allowed.extend_from_slice(amount_keys);
+    check_keys(&opts, call, &allowed)?;
+    let edges = parse_extrusion_edge_set(lua, &opts)?;
+    let expression = match kind {
+        VertexTreatmentKind::Chamfer => lua_amount_expr(&opts, "distance")?,
+        VertexTreatmentKind::Fillet => radial_amount_expr(&opts)?,
+    };
+    let amount =
+        crate::value::eval_length_mm_in_doc(&expression, unsafe { &tick.state().doc }).unwrap_or(0.0);
+    unsafe {
+        tick.exec(Instruction::EdgeTreatment {
+            edges,
+            kind,
+            amount,
+            expression,
+        })
+    }
+}
+
 fn parse_extrusion_edge_set(
+    lua: &Lua,
     opts: &Table,
 ) -> mlua::Result<Vec<(TreatableSolidRef, ExtrusionEdgeRef)>> {
-    let default_host = parse_treatable_solid_ref(opts)?;
-    if let Some(list) = opts.get::<Option<Vec<Table>>>("edges")? {
+    let default_host = parse_treatable_solid_ref(lua, opts)?;
+    if let Some(list) = opts.get::<Option<Vec<Value>>>("edges")? {
         if list.is_empty() {
             return Err(mlua::Error::external("`edges` must name at least one edge"));
         }
         return list
             .into_iter()
-            .map(|entry| {
-                // An entry is either { extrusion/primitive = i, edge = {...} } or the edge
-                // table itself, whose own `edge` field is an index — so the shape, not the
-                // key, decides.
-                let wrapped = match entry.get::<Value>("edge")? {
-                    Value::Table(inner) => Some(inner),
-                    _ => None,
-                };
-                let (host, edge_table) = match wrapped {
-                    Some(inner) => (parse_treatable_solid_ref(&entry)?, inner),
-                    None => (None, entry),
-                };
-                let host = host.or(default_host).ok_or_else(|| {
-                    mlua::Error::external(
-                        "each `edges` entry needs an `extrusion` or `shape`",
-                    )
-                })?;
-                Ok((host, parse_extrusion_edge_table(edge_table)?))
-            })
+            .map(|entry| parse_one_treated_edge(lua, entry, default_host))
             .collect();
     }
-    let host = default_host.ok_or_else(|| {
-        mlua::Error::external("chamfer_edge/fillet_edge requires an `extrusion` or `shape`")
-    })?;
-    let edge_table: Table = opts.get("edge")?;
-    Ok(vec![(host, parse_extrusion_edge_table(edge_table)?)])
+    match opts.get::<Value>("edge")? {
+        Value::Nil => Err(mlua::Error::external(
+            "fillet/chamfer requires `edges` or `edge`",
+        )),
+        v => Ok(vec![parse_one_treated_edge(lua, v, default_host)?]),
+    }
 }
 
-fn parse_treatable_solid_ref(opts: &Table) -> mlua::Result<Option<TreatableSolidRef>> {
+fn parse_one_treated_edge(
+    lua: &Lua,
+    value: Value,
+    default_host: Option<TreatableSolidRef>,
+) -> mlua::Result<(TreatableSolidRef, ExtrusionEdgeRef)> {
+    if let Value::UserData(ud) = &value {
+        if let Ok(el) = ud.borrow::<LuaElement>() {
+            if let SceneElement::BodyEdge { body, a, b } = el.element {
+                return mesh_edge_to_treatable(lua, body, a, b);
+            }
+        }
+    }
+    let Value::Table(entry) = value else {
+        return Err(mlua::Error::external("edge spec must be a table"));
+    };
+    if let Some((body, a, b)) = mesh_edge_endpoints(lua, &entry)? {
+        return mesh_edge_to_treatable(lua, body, a, b);
+    }
+    let wrapped = match entry.get::<Value>("edge")? {
+        Value::Table(inner) if !is_vec3_pair(&inner)? => Some(inner),
+        _ => None,
+    };
+    let (host, edge_table) = match wrapped {
+        Some(inner) => (parse_treatable_solid_ref(lua, &entry)?, inner),
+        None => (None, entry),
+    };
+    let host = host.or(default_host).ok_or_else(|| {
+        mlua::Error::external("fillet/chamfer needs a `body` (or `extrusion` / `shape`)")
+    })?;
+    Ok((host, parse_extrusion_edge_table(edge_table)?))
+}
+
+fn is_vec3_pair(table: &Table) -> mlua::Result<bool> {
+    if table.raw_len() != 2 {
+        return Ok(false);
+    }
+    Ok(matches!(table.get::<Value>(1)?, Value::Table(_))
+        && matches!(table.get::<Value>(2)?, Value::Table(_)))
+}
+
+fn mesh_edge_endpoints(
+    lua: &Lua,
+    table: &Table,
+) -> mlua::Result<Option<(crate::model::BodyKey, [i32; 3], [i32; 3])>> {
+    let ends = match table.get::<Value>("edge")? {
+        Value::Table(t) if is_vec3_pair(&t)? => t,
+        _ if is_vec3_pair(table)? => table.clone(),
+        _ => return Ok(None),
+    };
+    let a = vec3_from_lua(&ends.get::<Table>(1)?)?;
+    let b = vec3_from_lua(&ends.get::<Table>(2)?)?;
+    let body = if let Some(i) = table.ordinal_opt("body")? {
+        body_key_from_ordinal(lua, i)?
+    } else {
+        return Err(mlua::Error::external(
+            "a mesh edge needs a `body` (pass `body` on the call or on the entry)",
+        ));
+    };
+    Ok(Some((
+        body,
+        crate::hierarchy::quantize_body_point(glam::Vec3::new(a.0, a.1, a.2)),
+        crate::hierarchy::quantize_body_point(glam::Vec3::new(b.0, b.1, b.2)),
+    )))
+}
+
+fn mesh_edge_to_treatable(
+    lua: &Lua,
+    body: crate::model::BodyKey,
+    a: [i32; 3],
+    b: [i32; 3],
+) -> mlua::Result<(TreatableSolidRef, ExtrusionEdgeRef)> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let doc = unsafe { &tick.state().doc };
+    let pose = crate::extrude::body_source_pose(doc, body);
+    let posed = |p: [i32; 3]| {
+        crate::hierarchy::quantize_body_point(
+            pose.transform_point3(crate::hierarchy::dequantize_body_point(p)),
+        )
+    };
+    let resolved = crate::extrude::treatable_edge_for_selection(doc, body, a, b)
+        .or_else(|| crate::extrude::treatable_edge_for_selection(doc, body, posed(a), posed(b)));
+    let Some((solid, edge)) = resolved else {
+        return Err(mlua::Error::external(
+            "edge is not fillet/chamfer-able on this body",
+        ));
+    };
+    Ok((treatable_solid_to_ref(doc, solid)?, edge))
+}
+
+fn treatable_solid_to_ref(
+    doc: &crate::model::Document,
+    solid: crate::model::TreatableSolid,
+) -> mlua::Result<TreatableSolidRef> {
+    match solid {
+        crate::model::TreatableSolid::Extrusion(k) => {
+            let i = doc
+                .extrusions
+                .keys()
+                .position(|x| x == k)
+                .ok_or_else(|| mlua::Error::external("no such extrusion"))?;
+            Ok(TreatableSolidRef::Extrusion(i))
+        }
+        crate::model::TreatableSolid::Primitive(k) => {
+            let i = doc
+                .primitives
+                .keys()
+                .position(|x| x == k)
+                .ok_or_else(|| mlua::Error::external("no such shape"))?;
+            Ok(TreatableSolidRef::Primitive(i))
+        }
+    }
+}
+
+fn parse_treatable_solid_ref(
+    lua: &Lua,
+    opts: &Table,
+) -> mlua::Result<Option<TreatableSolidRef>> {
     let extrusion: Option<usize> = opts.ordinal_opt("extrusion")?;
     let shape: Option<usize> = match (opts.ordinal_opt("shape")?, opts.ordinal_opt("primitive")?) {
         (Some(_), Some(_)) => {
@@ -2311,8 +2633,39 @@ fn parse_treatable_solid_ref(opts: &Table) -> mlua::Result<Option<TreatableSolid
         (Some(_), Some(_)) => Err(mlua::Error::external(
             "give `extrusion` or `shape`, not both",
         )),
-        (None, None) => Ok(None),
+        (None, None) => {
+            if let Some(i) = opts.ordinal_opt("body")? {
+                treatable_solid_ref_from_body(lua, i).map(Some)
+            } else {
+                Ok(None)
+            }
+        }
     }
+}
+
+fn treatable_solid_ref_from_body(lua: &Lua, ordinal: usize) -> mlua::Result<TreatableSolidRef> {
+    let body = body_key_from_ordinal(lua, ordinal)?;
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let doc = unsafe { &tick.state().doc };
+    let solids = crate::extrude::treatable_solids_of_body(doc, body);
+    let solid = match solids.as_slice() {
+        [one] => *one,
+        [] => {
+            return Err(mlua::Error::external(
+                "this body has no fillet/chamfer-able edges",
+            ))
+        }
+        many => {
+            let live = crate::extrude::live_edge_treated_body(doc, body);
+            many.iter()
+                .copied()
+                .find(|s| crate::extrude::live_body_for_treatable_solid(doc, *s) == Some(live))
+                .unwrap_or(many[0])
+        }
+    };
+    treatable_solid_to_ref(doc, solid)
 }
 
 /// Closed sketch profiles named by `circle`/`circles`/`polygon` (`polygons` when allowed).
@@ -4327,6 +4680,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let args = args.into_vec();
             let face = if let Some(Value::Table(table)) = args.first() {
                 parse_face_id_table(lua, table.clone())?
+            } else if let Some(Value::UserData(_)) = args.first() {
+                parse_face_id_value(lua, args[0].clone())?
             } else {
                 let kind = match args.first() {
                     Some(Value::String(s)) => s.to_str()?.to_string(),
@@ -5721,22 +6076,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .filter(|tris| crate::extrude::fit_cylinder(tris).is_none())
                 .enumerate()
             {
-                let face = lua.create_table()?;
-                face.set("body", index)?;
-                face.set(
-                    "face",
-                    vec3_lua(lua, crate::extrude::face_group_center(tris))?,
-                )?;
-                face.set(
-                    "normal",
-                    vec3_lua(
-                        lua,
-                        (tris[0][1] - tris[0][0])
-                            .cross(tris[0][2] - tris[0][0])
-                            .normalize_or_zero(),
-                    )?,
-                )?;
-                out.set(i + 1, face)?;
+                out.set(i + 1, body_face_table(lua, index, tris)?)?;
             }
             Ok(Value::Table(out))
         })?,
@@ -5909,6 +6249,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 entry.set("index", element_index(doc, element.clone()))?;
                 if let Some(label) = face_element_label(doc, &element) {
                     entry.set("label", label)?;
+                }
+                if let SceneElement::BodyFace {
+                    body,
+                    centroid,
+                    normal,
+                } = &element
+                {
+                    let ordinal = doc.bodies.keys().position(|k| k == *body).unwrap_or(0);
+                    entry.set("body", ordinal)?;
+                    entry.set(
+                        "face",
+                        vec3_lua(lua, crate::hierarchy::dequantize_body_point(*centroid))?,
+                    )?;
+                    entry.set(
+                        "normal",
+                        vec3_lua(
+                            lua,
+                            crate::hierarchy::dequantize_body_point(*normal).normalize_or_zero(),
+                        )?,
+                    )?;
                 }
                 Ok(entry)
             };
@@ -8859,10 +9219,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "extrude_face",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let face_table: Table = opts
-                .get("face")
-                .map_err(|_| mlua::Error::external("extrude_face requires a `face` table"))?;
-            let face = parse_face_id_table(lua, face_table)?;
+            let face = parse_face_id_value(
+                lua,
+                opts.get("face")
+                    .map_err(|_| mlua::Error::external("extrude_face requires a `face`"))?,
+            )?;
             let target = match opts.get::<Option<Table>>("to")? {
                 Some(t) => Some(parse_extrude_target_table(lua, &t)?),
                 None => None,
@@ -11557,62 +11918,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Chamfer/fillet an analytic edge of an extrusion's 3D solid (#77): `extrusion` is an
-    // index into the document's extrusions, `edge` resolves via `parse_extrusion_edge_table`
-    // (`{ kind = "vertical", face = 0, edge = 2 }` or `{ kind = "cap", face = 0, edge = 2,
-    // top = true }`). Scoped to `Rect`/`Polygon`-profiled extrusions' vertical and side/cap
-    // edges — see SPEC §3.4.
-    api.set(
-        "chamfer_edge",
-        lua.create_function(|lua, opts: Table| {
-            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let edges = parse_extrusion_edge_set(&opts)?;
-            let expression = lua_amount_expr(&opts, "distance")?;
-            let amount = crate::value::eval_length_mm_in_doc(
-                &expression,
-                unsafe { &tick.state().doc },
-            )
-            .unwrap_or(0.0);
-            unsafe {
-                tick.exec(Instruction::EdgeTreatment {
-                    edges,
-                    kind: VertexTreatmentKind::Chamfer,
-                    amount,
-                    expression,
-                })
-            }
-        })?,
-    )?;
-
-    api.set(
-        "fillet_edge",
-        lua.create_function(|lua, opts: Table| {
-            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(
-                &opts,
-                "fillet_edge",
-                &[
-                    "edges", "edge", "extrusion", "shape", "primitive", "r", "radius",
-                    "diameter",
-                ],
-            )?;
-            let edges = parse_extrusion_edge_set(&opts)?;
-            let expression = radial_amount_expr(&opts)?;
-            let amount = crate::value::eval_length_mm_in_doc(
-                &expression,
-                unsafe { &tick.state().doc },
-            )
-            .unwrap_or(0.0);
-            unsafe {
-                tick.exec(Instruction::EdgeTreatment {
-                    edges,
-                    kind: VertexTreatmentKind::Fillet,
-                    amount,
-                    expression,
-                })
-            }
-        })?,
-    )?;
+    // #1872: `fillet` / `chamfer` take a body. `fillet_edge` / `chamfer_edge` keep the
+    // older extrusion-vs-primitive spelling as aliases.
+    for (name, kind) in [
+        ("chamfer", VertexTreatmentKind::Chamfer),
+        ("chamfer_edge", VertexTreatmentKind::Chamfer),
+        ("fillet", VertexTreatmentKind::Fillet),
+        ("fillet_edge", VertexTreatmentKind::Fillet),
+    ] {
+        api.set(
+            name,
+            lua.create_function(move |lua, opts: Table| {
+                exec_script_edge_treatment(lua, opts, name, kind)
+            })?,
+        )?;
+    }
 
     api.set(
         "edit_chamfer",
@@ -11621,11 +11941,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_chamfer",
-                &["index", "edge", "edges", "extrusion", "primitive", "distance"],
+                &[
+                    "index", "edge", "edges", "body", "extrusion", "shape", "primitive",
+                    "distance",
+                ],
             )?;
             let op: usize = opts.ordinal_req("index")?;
             let edges = if opts.contains_key("edge")? || opts.contains_key("edges")? {
-                Some(parse_extrusion_edge_set(&opts)?)
+                Some(parse_extrusion_edge_set(lua, &opts)?)
             } else {
                 None
             };
@@ -11660,11 +11983,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_fillet",
-                &["index", "edge", "edges", "extrusion", "primitive", "radius"],
+                &[
+                    "index", "edge", "edges", "body", "extrusion", "shape", "primitive",
+                    "radius",
+                ],
             )?;
             let op: usize = opts.ordinal_req("index")?;
             let edges = if opts.contains_key("edge")? || opts.contains_key("edges")? {
-                Some(parse_extrusion_edge_set(&opts)?)
+                Some(parse_extrusion_edge_set(lua, &opts)?)
             } else {
                 None
             };
@@ -14571,7 +14897,8 @@ pub mod tests {
                                     "constrain", "dimension", "add_parameter", "export_stl", "export_3mf",
                                     "export_step", "export_preview",
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
-                                    "fillet_vertex", "chamfer_edge", "fillet_edge", "project",
+                                    "fillet_vertex", "chamfer", "chamfer_edge", "fillet",
+                                    "fillet_edge", "project",
                                     "sketch_faces",
                                     "combine", "move_bodies", "joint", "begin_sketch",
                                     "edit_section_plane",
@@ -17067,6 +17394,110 @@ pub mod tests {
             .map(|(k, _)| k)
             .collect();
         assert_eq!(live.len(), 1, "one live filleted body");
+    }
+
+    /// #1871/#1872: `body_faces` entries, `body:face("top")`, and `body_edges` feed
+    /// `begin_sketch` / `extrude_face` / `fillet` / `chamfer` without restating an
+    /// extrusion-vs-primitive encoding. One `fillet{ body, edges }` is one operation.
+    #[test]
+    fn lua_body_faces_and_edges_are_the_identity_fillet_and_sketch_accept() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            local box = bearcad.cuboid{ width = 40, depth = 30, height = 20 }
+            local v0 = bearcad.body_stats(box).volume
+            local faces = bearcad.body_faces(box)
+            assert(#faces >= 6, "a cuboid has six flats")
+            local top
+            for _, f in ipairs(faces) do
+                assert(f.body ~= nil and f.face ~= nil and f.normal ~= nil,
+                    "body_faces keeps the joint centroid form")
+                if f.normal[3] > 0.9 then top = f end
+            end
+            assert(top, "cuboid has a +Z face")
+            bearcad.begin_sketch(top)
+            bearcad.exit_sketch()
+            assert(bearcad.count("sketch") >= 1, "begin_sketch accepted a body_faces entry")
+
+            local named = box:face("top")
+            bearcad.begin_sketch(named)
+            bearcad.circle{ x = 20, y = 15, r = 4 }
+            bearcad.extrude{ profiles = 0, distance = -8, body = "cut" }
+            local after_cut = bearcad.body_stats(bearcad.count("body") - 1).volume
+            assert(after_cut < v0 - 50, "cut through box:face('top') must remove material")
+
+            bearcad.new()
+            local block = bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            local n_ext = bearcad.count("extrusion")
+            local raised = bearcad.extrude_face{ face = block:face("top"), distance = 5 }
+            assert(raised ~= nil, "extrude_face returns what it made")
+            assert(bearcad.count("extrusion") == n_ext + 1, "extrude_face accepted box:face('top')")
+
+            bearcad.new()
+            local solid = bearcad.cuboid{ width = 40, depth = 40, height = 20 }
+            local v1 = bearcad.body_stats(solid).volume
+            local edges = bearcad.body_edges(solid)
+            assert(#edges >= 12, "a cuboid has twelve edges")
+            local vertical = {}
+            for _, e in ipairs(edges) do
+                local a, b = e.edge[1], e.edge[2]
+                if math.abs(a[3] - b[3]) > 5 then
+                    vertical[#vertical + 1] = e
+                end
+            end
+            assert(#vertical == 4, "four vertical edges, got " .. #vertical)
+            local op = bearcad.fillet{ body = solid, edges = vertical, radius = 3 }
+            assert(op ~= nil, "fillet returns what it made")
+            assert(bearcad.count("edge_treatment") == 1, "one call is one operation")
+            local v2 = bearcad.body_stats(bearcad.count("body") - 1).volume
+            assert(v2 < v1 - 10, "fillet{ body, edges } must cut the cuboid")
+
+            bearcad.new()
+            local sides = bearcad.rect{ width = 20, height = 10 }
+            local extruded = bearcad.extrude{ profiles = sides, distance = 8 }
+            local c0 = bearcad.body_stats(extruded).volume
+            bearcad.chamfer{
+                body = extruded,
+                edges = {
+                    { kind = "vertical", face = 0, edge = 0 },
+                    { kind = "vertical", face = 0, edge = 1 },
+                },
+                distance = 2,
+            }
+            assert(bearcad.count("edge_treatment") == 1)
+            local c1 = bearcad.body_stats(bearcad.count("body") - 1).volume
+            assert(c1 < c0 - 1, "chamfer{ body, edges } must cut the extrusion")
+            "#,
+        );
+    }
+
+    /// #1872: `fillet` / `chamfer` are the modeling names; `fillet_edge` / `chamfer_edge`
+    /// stay as aliases. Analytic `extrusion=` / `primitive=` remain optional.
+    #[test]
+    fn lua_fillet_and_chamfer_are_aliases_of_the_edge_verbs() {
+        run_lua_expect_ok(
+            r#"
+            assert(type(bearcad.fillet) == "function")
+            assert(type(bearcad.chamfer) == "function")
+            bearcad.new()
+            bearcad.cuboid{ width = 30, depth = 30, height = 20 }
+            bearcad.fillet{
+                primitive = 0,
+                edge = { kind = "vertical", face = 0, edge = 0 },
+                radius = 2,
+            }
+            assert(bearcad.count("edge_treatment") == 1)
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8 }
+            bearcad.chamfer_edge{
+                body = 0,
+                edges = { { kind = "vertical", face = 0, edge = 0 } },
+                distance = 1,
+            }
+            assert(bearcad.count("edge_treatment") == 1)
+            "#,
+        );
     }
 
     /// #1324: fillets created through the scripted API must not draw a Document spoke

@@ -113,10 +113,7 @@ To cut into a body, sketch **on one of its faces**, then extrude with `body = "c
 pointing away from the body is flipped inward for you.
 
 ```lua
-bearcad.begin_sketch{
-  kind = "extrude_cap", extrusion = 0,
-  profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
-}
+bearcad.begin_sketch(box:face("top"))
 bearcad.circle{ x = 40, y = 25, r = 5 }            -- r is a radius; (0,0) is the rect corner
 bearcad.extrude{ profiles = 0, distance = 20, body = "cut" }
 ```
@@ -125,14 +122,7 @@ Rounding takes **one call per operation** — a set of edges in a single call, n
 per edge (four calls would make four bodies stacked on each other):
 
 ```lua
-bearcad.fillet_edge{
-  extrusion = 0,
-  edges = {
-    { kind = "vertical", face = 0, edge = 0 },
-    { kind = "vertical", face = 0, edge = 1 },
-  },
-  radius = 8,
-}
+bearcad.fillet{ body = box, edges = bearcad.body_edges(box), radius = 8 }
 bearcad.chamfer_vertex{ point = { kind = "line", index = 0, endpoint = "end" }, distance = 3 }
 ```
 
@@ -166,8 +156,9 @@ local x0, y0, x1, y1 = bearcad.line_endpoints(0)
 local s = bearcad.body_stats(0)                           -- volume, triangles, bbox
 assert(math.abs(s.volume - 80 * 50 * 20) < 200)           -- tessellated, so allow a tolerance
 
-bearcad.body_faces(0)      -- { body, face = {x,y,z}, normal = {x,y,z} }
-bearcad.body_edges(0)
+bearcad.body_faces(0)      -- { kind = "body_mesh_face", body, face = {x,y,z}, normal = {x,y,z} }
+                          -- pass an entry to begin_sketch / extrude_face / fillet
+bearcad.body_edges(0)      -- pass entries to fillet{ body, edges } / chamfer{ body, edges }
 bearcad.body_cylinders(0)  -- holes and bosses: radius, length, axis — the reliable way to
                            -- check a hole is really there and really the right size
 bearcad.selection()        -- what is selected

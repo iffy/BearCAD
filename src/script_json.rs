@@ -879,8 +879,8 @@ pub fn instruction_from_json(
                 amount: req_amount_expr(o, amount_key, name)?,
             })
         }
-        "chamfer_edge" | "fillet_edge" => {
-            let (kind, amount_key) = if name == "chamfer_edge" {
+        "chamfer" | "chamfer_edge" | "fillet" | "fillet_edge" => {
+            let (kind, amount_key) = if name == "chamfer" || name == "chamfer_edge" {
                 (VertexTreatmentKind::Chamfer, "distance")
             } else {
                 (VertexTreatmentKind::Fillet, "radius")
@@ -888,7 +888,7 @@ pub fn instruction_from_json(
             let expression = req_amount_expr(o, amount_key, name)?;
             let amount = expression.trim().parse::<f32>().unwrap_or(0.0);
             Ok(Instruction::EdgeTreatment {
-                edges: extrusion_edge_set_from_json(o, name)?,
+                edges: extrusion_edge_set_from_json(doc, o, name)?,
                 kind,
                 amount,
                 expression,
@@ -902,7 +902,7 @@ pub fn instruction_from_json(
             };
             let op = req_usize(o, "index", name)?;
             let edges = if o.get("edge").is_some() || o.get("edges").is_some() {
-                Some(extrusion_edge_set_from_json(o, name)?)
+                Some(extrusion_edge_set_from_json(doc, o, name)?)
             } else {
                 None
             };
@@ -1746,10 +1746,11 @@ fn extrusion_edge_from_json(v: &Value) -> Result<ExtrusionEdgeRef, String> {
 /// is `{ "extrusion": i, "edge": {...} }`, or the edge object itself when the top-level
 /// `extrusion` covers it.
 fn extrusion_edge_set_from_json(
+    doc: &crate::model::Document,
     o: &serde_json::Map<String, Value>,
     name: &str,
 ) -> Result<Vec<(crate::script::TreatableSolidRef, ExtrusionEdgeRef)>, String> {
-    let default_host = treatable_solid_ref_from_json(o)?;
+    let default_host = treatable_solid_ref_from_json(doc, o)?;
     if let Some(list) = o.get("edges") {
         let list = list.as_array().ok_or_else(|| format!("{name} `edges` must be an array"))?;
         if list.is_empty() {
@@ -1762,11 +1763,11 @@ fn extrusion_edge_set_from_json(
                 // `edge` is an object in the wrapped form and an index in the bare edge spec,
                 // whose own `edge` field numbers the edge — so the shape, not the key, decides.
                 let (host, edge_value) = match obj.get("edge").filter(|v| v.is_object()) {
-                    Some(inner) => (treatable_solid_ref_from_json(obj)?, inner),
+                    Some(inner) => (treatable_solid_ref_from_json(doc, obj)?, inner),
                     None => (None, entry),
                 };
                 let host = host.or(default_host).ok_or_else(|| {
-                    format!("{name} `edges` entry requires an `extrusion` or `primitive`")
+                    format!("{name} `edges` entry requires a `body` (or `extrusion` / `primitive`)")
                 })?;
                 Ok((host, extrusion_edge_from_json(edge_value)?))
             })
@@ -1776,11 +1777,12 @@ fn extrusion_edge_set_from_json(
         o.get("edge").ok_or_else(|| format!("{name} requires an `edge`"))?,
     )?;
     let host = default_host
-        .ok_or_else(|| format!("{name} requires an `extrusion` or `primitive`"))?;
+        .ok_or_else(|| format!("{name} requires a `body` (or `extrusion` / `primitive`)"))?;
     Ok(vec![(host, edge)])
 }
 
 fn treatable_solid_ref_from_json(
+    doc: &crate::model::Document,
     o: &serde_json::Map<String, Value>,
 ) -> Result<Option<crate::script::TreatableSolidRef>, String> {
     let extrusion = opt_usize(o, "extrusion")?;
@@ -1789,7 +1791,52 @@ fn treatable_solid_ref_from_json(
         (Some(i), None) => Ok(Some(crate::script::TreatableSolidRef::Extrusion(i))),
         (None, Some(i)) => Ok(Some(crate::script::TreatableSolidRef::Primitive(i))),
         (Some(_), Some(_)) => Err("give `extrusion` or `primitive`, not both".into()),
-        (None, None) => Ok(None),
+        (None, None) => {
+            if let Some(i) = opt_usize(o, "body")? {
+                treatable_solid_ref_from_body(doc, i).map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn treatable_solid_ref_from_body(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Result<crate::script::TreatableSolidRef, String> {
+    let body = doc
+        .body_at(ordinal)
+        .ok_or_else(|| format!("no body {ordinal}"))?;
+    let solids = crate::extrude::treatable_solids_of_body(doc, body);
+    let solid = match solids.as_slice() {
+        [one] => *one,
+        [] => return Err("this body has no fillet/chamfer-able edges".into()),
+        many => {
+            let live = crate::extrude::live_edge_treated_body(doc, body);
+            many.iter()
+                .copied()
+                .find(|s| crate::extrude::live_body_for_treatable_solid(doc, *s) == Some(live))
+                .unwrap_or(many[0])
+        }
+    };
+    match solid {
+        crate::model::TreatableSolid::Extrusion(k) => {
+            let i = doc
+                .extrusions
+                .keys()
+                .position(|x| x == k)
+                .ok_or_else(|| "no such extrusion".to_string())?;
+            Ok(crate::script::TreatableSolidRef::Extrusion(i))
+        }
+        crate::model::TreatableSolid::Primitive(k) => {
+            let i = doc
+                .primitives
+                .keys()
+                .position(|x| x == k)
+                .ok_or_else(|| "no such shape".to_string())?;
+            Ok(crate::script::TreatableSolidRef::Primitive(i))
+        }
     }
 }
 

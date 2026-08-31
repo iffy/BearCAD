@@ -27,8 +27,8 @@ bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
 -- Round all four vertical edges of the box in one operation (edges 0-3 of face 0).
 -- One call per edge would give four operations each rounding the *same* sharp box, and
 -- the overlapping outputs would render as an unfilleted block (#672).
-bearcad.fillet_edge{
-  extrusion = 0,
+bearcad.fillet{
+  body = 0,
   edges = {
     { kind = "vertical", face = 0, edge = 0 },
     { kind = "vertical", face = 0, edge = 1 },

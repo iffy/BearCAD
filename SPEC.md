@@ -311,7 +311,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   edges not perpendicular to the axis sweep curved surfaces and are not offered. Sketches on
   either kind depend on the revolution that produced the face, and both faces hover-highlight
   and pick like extrusion caps (a full washer's pick is hole-blind, matching extrusion caps).
-  Scripts address them as `{ kind = "revolve_cap", revolution = i, profile = …, ["end"] =
+  Scripts address them as `{ kind = "revolve_cap", revolution = i, profile = …, endpoint =
   bool }` / `{ kind = "revolve_side", revolution = i, profile = …, edge = i }`.
   When several faces project onto the cursor (e.g. the near and far faces of a solid), face
   picking resolves to the one nearest the camera, so a hover/click never selects a face hidden

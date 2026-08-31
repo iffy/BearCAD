@@ -20,8 +20,8 @@ bearcad.rect{ x = 0, y = 0, width = 80, height = 50, name = "Base" }
 bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
 
 -- Every top-cap edge in one operation (a face click does the same).
-bearcad.chamfer_edge{
-  extrusion = 0,
+bearcad.chamfer{
+  body = 0,
   edges = {
     { kind = "cap", face = 0, edge = 0, top = true },
     { kind = "cap", face = 0, edge = 1, top = true },

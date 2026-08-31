@@ -97,8 +97,8 @@ shot("quickstart-extrude.png")
 -- Step 5: the rounded bend — fillet the two swept bend edges (inner bend, outer
 -- bend + thick), concentric like bent sheet metal. Vertical edge k is the junction
 -- of side walls k and k+1, so the L2/L3 corner is edge 2 and the L5/L0 corner is 5.
-bearcad.fillet_edge{ extrusion = 0, edge = { kind = "vertical", face = 0, edge = 2 }, radius = 4 }
-bearcad.fillet_edge{ extrusion = 0, edge = { kind = "vertical", face = 0, edge = 5 }, radius = 9 }
+bearcad.fillet{ body = 0, edge = { kind = "vertical", face = 0, edge = 2 }, radius = 4 }
+bearcad.fillet{ body = 0, edge = { kind = "vertical", face = 0, edge = 5 }, radius = 9 }
 shot("quickstart-bend.png")
 
 -- Step 6: two screw holes cut through the base flange, drilled from the inner
@@ -119,10 +119,14 @@ shot("quickstart-holes.png")
 -- Step 7: countersink the holes — chamfer each hole's outer rim. Frame the two
 -- countersunk holes up close, looking at the inner base face from above (#421),
 -- so the cone-shaped seats actually read in the capture.
-for face = 0, 1 do
-  bearcad.chamfer_edge{ extrusion = 1,
-    edge = { kind = "cap", face = face, edge = 0, top = false }, distance = 1.2 }
-end
+bearcad.chamfer{
+  extrusion = 1,
+  edges = {
+    { kind = "cap", face = 0, edge = 0, top = false },
+    { kind = "cap", face = 1, edge = 0, top = false },
+  },
+  distance = 1.2,
+}
 bearcad.ui.view("corner", "back_right_top")
 bearcad.ui.wait(1)
 bearcad.ui.camera{ target = {28, 5, 20}, distance = 90 }
@@ -132,10 +136,16 @@ bearcad.ui.view("corner", "front_left_top")
 bearcad.ui.wait(1)
 
 -- Step 8: round the flange tip corners (the four remaining sharp junctions).
-for _, k in ipairs({0, 1, 3, 4}) do
-  bearcad.fillet_edge{ extrusion = 0,
-    edge = { kind = "vertical", face = 0, edge = k }, radius = 2.0 }
-end
+bearcad.fillet{
+  body = 0,
+  edges = {
+    { kind = "vertical", face = 0, edge = 0 },
+    { kind = "vertical", face = 0, edge = 1 },
+    { kind = "vertical", face = 0, edge = 3 },
+    { kind = "vertical", face = 0, edge = 4 },
+  },
+  radius = 2.0,
+}
 shot("quickstart-corners.png")
 
 -- Step 9: engrave a "BearCAD" label on the outer face of the base flange (edge 0, the wall

@@ -45,6 +45,9 @@ local h = bearcad.ui.hovered()
 assert(h, "hovering a remaining flat on the filleted body should highlight a face")
 assert(h.kind == "face",
   "Extrude should hover the flat face, got " .. tostring(h.kind))
+-- #1871: identity is the body + centroid, not a dummy index=0 + display label.
+assert(h.body ~= nil and h.face ~= nil and h.normal ~= nil,
+  "hovered face should carry a stable body/centroid/normal identity")
 
 bearcad.ui.click_ground(20, 15)
 bearcad.ui.wait(10)

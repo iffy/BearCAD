@@ -248,7 +248,7 @@ bearcad.line{
 
 ## Chamfer and fillet
 
-Both operate on a sketch vertex where exactly two plain lines meet. `point` is one
+In a sketch, both operate on a vertex where exactly two plain lines meet. `point` is one
 corner; `points` treats several in **one** operation — the same rule as `edges` on
 the solid verbs:
 
@@ -263,53 +263,22 @@ bearcad.fillet_vertex{ points = {
 }, radius = 3 }
 ```
 
-On a solid, `chamfer_edge`/`fillet_edge` take an analytic edge of an extrusion or a
-Shape-tool cuboid (`shape = 0` instead of `extrusion = 0`) — a vertical
-edge between two side walls, or a cap edge where a side wall meets the top or base
-(`kind = "cap"` with `top = true`/`false`, or the shorthand `kind = "top"` / `"bottom"`).
-On a circle-profile extrusion the whole rim is one edge — `{ kind = "top", face = 0, edge = 0 }`:
+On a solid, `fillet`/`chamfer` take the body and its edges — `body_edges` entries, a
+handle, or the older analytic `{ kind = "vertical"|"top"|"bottom", face, edge }` form.
+`fillet_edge`/`chamfer_edge` remain as aliases. Sketch on a face the same way:
+`begin_sketch(box:face("top"))` or `begin_sketch(bearcad.body_faces(box)[1])`.
 
 ```lua
-bearcad.fillet_edge{
-  extrusion = 0,
-  edge = { kind = "vertical", face = 0, edge = 2 },
-  radius = 8,
-}
-bearcad.chamfer_edge{
-  extrusion = 0,
-  edge = { kind = "cap", face = 0, edge = 1, top = true },
+bearcad.fillet{ body = box, edges = bearcad.body_edges(box), radius = 8 }
+bearcad.chamfer{
+  body = box,
+  edges = { { kind = "cap", face = 0, edge = 1, top = true } },
   distance = 3,
 }
 ```
 
-`extrude_edges(i)` lists every edge ref extrusion `i` accepts, in exactly the shape the
-calls take — pass an entry straight back in:
-
-```lua
-local edges = bearcad.extrude_edges(0)
-bearcad.fillet_edge{ extrusion = 0, edge = edges[1], radius = 2 }
-```
-
-Rounding several edges at once takes **one call** with `edges`, matching what a Shift+click
-multi-edge commit does in the app:
-
-```lua
-bearcad.fillet_edge{
-  extrusion = 0,
-  edges = {
-    { kind = "vertical", face = 0, edge = 0 },
-    { kind = "vertical", face = 0, edge = 1 },
-    { kind = "vertical", face = 0, edge = 2 },
-    { kind = "vertical", face = 0, edge = 3 },
-  },
-  radius = 8,
-}
-```
-
-One call is one operation, and an operation bevels the body its extrusion built. Four
-separate one-edge calls would each round that same sharp box and leave four bodies sitting
-on top of each other, so keep a set in a single call. An entry may name its own
-`extrusion = i, edge = {...}` to span several extrusions in the one operation.
+One call is one operation. Four separate one-edge calls stack four bodies; keep a set in
+a single `edges` list. Analytic `extrusion=` / `primitive=` is still accepted.
 
 ## Constraints and parameters
 
