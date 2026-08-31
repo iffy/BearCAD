@@ -56,6 +56,8 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::FaceEdge(line) => constraint_line_alive(doc, &line),
         // The origin and the world axes always exist (#189/#952).
         SceneElement::Origin | SceneElement::GlobalAxis(_) => true,
+        // Derived from the circle: alive exactly as long as it is (#1859).
+        SceneElement::CircleNormal(ci) => circle_alive(doc, ci),
         // Geometry-keyed 3D sub-elements (#156): alive as long as their body is (an exact
         // edge/vertex existence check would need a mesh rebuild; a stale selection is
         // harmless because it simply stops matching anything).
@@ -292,6 +294,7 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::FaceEdge(_)
         | SceneElement::Origin
         | SceneElement::GlobalAxis(_)
+        | SceneElement::CircleNormal(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::ProjectedEdge { .. }

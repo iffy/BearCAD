@@ -4855,7 +4855,8 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "How many cut operations are replayed at each step — a row of holes from one.",
         ),
         (Some(Tool::Repeat), "Path") => Some(
-            "What the pattern follows — a straight edge, a sketch line, or a global axis.",
+            "What the pattern follows — a straight edge, a sketch line, or a global axis; \
+             a circle to ride around, or a circle's centre for the normal to turn about.",
         ),
         (Some(Tool::Repeat), "Repeat") => Some(
             "Lay the copies out along the path, or turn them around it as an axis.",

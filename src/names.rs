@@ -52,6 +52,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
+        | SceneElement::CircleNormal(_)
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -140,6 +141,9 @@ pub fn revolve_axis_label(doc: &Document, axis: crate::model::RevolveAxis) -> St
         RevolveAxis::BodyEdge { body, .. } => element_name(doc, SceneElement::Body(body))
             .map(|n| format!("an edge of {n}"))
             .unwrap_or_else(|| format!("an edge of body {}", body.index())),
+        RevolveAxis::CircleNormal(ci) => element_name(doc, SceneElement::Circle(ci))
+            .map(|n| format!("{n}'s normal"))
+            .unwrap_or_else(|| format!("circle {}'s normal", ci.index())),
         RevolveAxis::X => "the X axis".to_string(),
         RevolveAxis::Y => "the Y axis".to_string(),
         RevolveAxis::Z => "the Z axis".to_string(),
@@ -199,6 +203,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
+        | SceneElement::CircleNormal(_)
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -482,6 +487,7 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
+        | SceneElement::CircleNormal(_)
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -906,6 +912,9 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         // A hole, a boss, a shaft (#1013) — and its centre line.
         SceneElement::BodyCylinder { body, .. } => format!("Cylinder of {}", body_label(doc, *body)),
         SceneElement::BodyAxis { body, .. } => format!("Axis of {}", body_label(doc, *body)),
+        SceneElement::CircleNormal(i) => {
+            format!("Normal of {}", scene_element_label(doc, &SceneElement::Circle(*i)))
+        }
         SceneElement::SketchFace(face) => crate::face::face_label(doc, face.clone()),
         // An analytic edge reads as its owner plus where it sits in the profile (#955) — the
         // wording the Chamfer/Fillet picker's own row builder used before it became a picker.

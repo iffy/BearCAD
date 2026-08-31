@@ -3215,6 +3215,37 @@ fn image_hosts_a_sketch(doc: &Document, img: &crate::model::TracingImage) -> boo
     })
 }
 
+/// The circle whose **centre** the cursor is over (#1859), and how far away in pixels.
+///
+/// Its normal is the straight reference a circular Repeat turns about. Offered only to
+/// pickers that want a straight reference (see `pick_into`), so an ordinary click near a
+/// circle's centre still takes the centre point.
+pub fn nearest_circle_normal(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+) -> Option<(crate::model::CircleKey, f32)> {
+    let mut best: Option<(crate::model::CircleKey, f32)> = None;
+    for (ci, _) in doc.circles.iter() {
+        if !crate::document_lifecycle::circle_alive(doc, ci) {
+            continue;
+        }
+        let Some((origin, _)) =
+            plane_frame_from_element(doc, &crate::hierarchy::SceneElement::Circle(ci))
+        else {
+            continue;
+        };
+        let Some(sp) = project(origin) else { continue };
+        let dist = (screen - sp).length();
+        if dist <= crate::touch::hit(POINT_PICK_RADIUS_PX)
+            && best.as_ref().is_none_or(|(_, d)| dist < *d)
+        {
+            best = Some((ci, dist));
+        }
+    }
+    best
+}
+
 fn nearest_sketch_point(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,

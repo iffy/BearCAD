@@ -24,7 +24,8 @@ wall, teeth on a rack.
 1. Pick the **Repeat** tool and click one or more bodies (a body selected beforehand is
    picked automatically).
 2. Pick the **path**: click any body edge, sketch line, or origin axis in the viewport — each
-   lights up under the cursor while the path is what you're picking.
+   lights up under the cursor while the path is what you're picking. A circle's centre offers
+   the circle's normal, for turning around it.
 3. Choose a spacing mode and fill in the values — every value is an expression, so
    parameters work. Ghost previews show the pattern.
 4. Press **Enter**.
@@ -66,6 +67,15 @@ the first) or ending there so five items space 72° apart.
 bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
                        mode = "count_fit_ends", count = 5, length = 360 }
 bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
+                       mode = "count_gap", count = 6, spacing = "60deg" }
+```
+
+A **circle's own normal** is the easiest axis to turn about: with the Path picker focused,
+hover the circle's centre and its normal appears; click it and the pattern turns around it.
+Since that is the only thing a normal is for, picking one switches to **around**.
+
+```lua
+bearcad.repeat_bodies{ bodies = {0}, axis = { circle_normal = 0 }, around = true,
                        mode = "count_gap", count = 6, spacing = "60deg" }
 ```
 

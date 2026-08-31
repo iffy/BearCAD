@@ -2975,6 +2975,12 @@ fn element_script_tokens(
             index: 0,
             point: None,
         },
+        // #1859: a circle's normal is spelled by the circle it belongs to.
+        SceneElement::CircleNormal(i) => ElementScriptTokens {
+            kind: "circle_normal",
+            index: ordinal_or_slot(doc.map(|d| d.circles.keys().position(|k| k == i)), i.index()),
+            point: None,
+        },
         // The image's **slot**, not its ordinal (#1055): `as_lua` has no document to count
         // live images against. The two agree until an image is deleted.
         SceneElement::Image(i) => ElementScriptTokens {
@@ -5262,6 +5268,10 @@ pub fn revolve_axis_lua(axis: crate::model::RevolveAxis) -> String {
         crate::model::RevolveAxis::Y => "\"y\"".to_string(),
         crate::model::RevolveAxis::Z => "\"z\"".to_string(),
         crate::model::RevolveAxis::Line(li) => format!("{{ line = {} }}", li.index()),
+        // #1859: a circle's own normal.
+        crate::model::RevolveAxis::CircleNormal(ci) => {
+            format!("{{ circle_normal = {} }}", ci.index())
+        }
         crate::model::RevolveAxis::BodyEdge { body, a, b } => format!(
             "{{ body = {}, from = {{ {}, {}, {} }}, to = {{ {}, {}, {} }} }}",
             body.index(),

@@ -3035,6 +3035,10 @@ pub enum RevolveAxis {
         a: glam::Vec3,
         b: glam::Vec3,
     },
+    /// A **circle's own normal** (#1859): the axis through its centre, square to the sketch
+    /// it is drawn on. What a circular Repeat turns about — the pattern's centre and its
+    /// axis are the same pick, and both follow the circle if it moves.
+    CircleNormal(CircleKey),
     X,
     Y,
     Z,

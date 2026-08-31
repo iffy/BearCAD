@@ -22093,6 +22093,24 @@ fn pick_into(
                 Some((rank, taken))
             })
             .collect();
+    // A circle's own **normal** (#1859) has no place in the general crowd — an ordinary click
+    // near a circle's centre must still take the centre point — so it is offered here, and
+    // only to a picker that wants a straight reference (the Repeat path, the Revolve axis).
+    // First among equal ranks: right at the centre, the normal is what was aimed at.
+    if focused
+        .picker
+        .active_filter()
+        .rules()
+        .contains(&crate::element_picker::PickRule::Straight)
+    {
+        if let Some((ci, _)) = construction::nearest_circle_normal(pp, project, doc) {
+            let element = SceneElement::CircleNormal(ci);
+            if focused.picker.accepts(doc, &element) {
+                let rank = focused.picker.rank(crate::element_picker::ElementKind::Axis);
+                candidates.insert(0, (rank, vec![element]));
+            }
+        }
+    }
     candidates.sort_by_key(|(rank, _)| *rank);
     let taken = candidates.into_iter().next().map(|(_, t)| t)?;
     (!taken.is_empty()).then_some((focused.target, taken))

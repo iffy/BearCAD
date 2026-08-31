@@ -354,6 +354,11 @@ pub enum SceneElement {
         origin: [i32; 3],
         dir: [i32; 3],
     },
+    /// A **circle's own normal** (#1859): the axis through its centre, square to its sketch.
+    /// Derived geometry with no entity of its own, like [`SceneElement::BodyAxis`] — it is
+    /// offered only where a straight reference is wanted (a Repeat path, a Revolve axis),
+    /// so an ordinary click near a circle's centre still takes the centre point.
+    CircleNormal(crate::model::CircleKey),
     /// A tracing image (#163/#169).
     Image(crate::model::TracingImageKey),
     /// A boolean operation between bodies (Combine tool).
@@ -611,6 +616,7 @@ impl SceneElement {
                 let (qa, qb) = if qa <= qb { (qa, qb) } else { (qb, qa) };
                 SceneElement::BodyEdge { body, a: qa, b: qb }
             }
+            RevolveAxis::CircleNormal(ci) => SceneElement::CircleNormal(ci),
             RevolveAxis::X => SceneElement::GlobalAxis(crate::construction::GlobalAxis::X),
             RevolveAxis::Y => SceneElement::GlobalAxis(crate::construction::GlobalAxis::Y),
             RevolveAxis::Z => SceneElement::GlobalAxis(crate::construction::GlobalAxis::Z),
@@ -665,6 +671,7 @@ impl SceneElement {
                 let (o, d) = (dequantize_body_point(*origin), dequantize_body_point(*dir));
                 RevolveAxis::BodyEdge { body: *body, a: o - d, b: o + d }
             }
+            SceneElement::CircleNormal(ci) => RevolveAxis::CircleNormal(*ci),
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::X) => RevolveAxis::X,
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::Y) => RevolveAxis::Y,
             SceneElement::GlobalAxis(crate::construction::GlobalAxis::Z) => RevolveAxis::Z,
@@ -1038,6 +1045,10 @@ impl ElementVisibility {
             SceneElement::Joint(_) => true,
             // The origin and the world axes are always visible (#189/#952).
             SceneElement::Origin | SceneElement::GlobalAxis(_) => true,
+            // Shown exactly when the circle it belongs to is (#1859).
+            SceneElement::CircleNormal(ci) => {
+                self.effective_visible(doc, SceneElement::Circle(ci))
+            }
         }
     }
 }
@@ -2122,6 +2133,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
+        | SceneElement::CircleNormal(_)
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -3337,6 +3349,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
+        | SceneElement::CircleNormal(_)
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -3515,6 +3528,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
+        | SceneElement::CircleNormal(_)
         | SceneElement::SketchFace(_)
         | SceneElement::MovePoint(_)
         | SceneElement::ExtrusionEdge { .. }
@@ -10400,6 +10414,7 @@ label_hidden: false,
             | SceneElement::BodyFace { .. }
             | SceneElement::BodyCylinder { .. }
             | SceneElement::BodyAxis { .. }
+            | SceneElement::CircleNormal(_)
             | SceneElement::Image(_)
             | SceneElement::Origin
             | SceneElement::GlobalAxis(_)
@@ -10575,6 +10590,8 @@ pub fn element_live_index(
         // An arena-backed element reports its **ordinal** among the live ones of its kind
         // (#1055) — the same integer `scene_element_from_kind` takes back.
         SceneElement::Image(key) => doc.tracing_images.keys().position(|k| k == *key),
+        // A circle's normal reports the circle it belongs to (#1859).
+        SceneElement::CircleNormal(key) => doc.circles.keys().position(|k| k == *key),
         SceneElement::CrossSection(key) => doc.cross_sections.keys().position(|k| k == *key),
         SceneElement::SectionPlane { view, cut } => {
             crate::model::section_plane_ordinal(doc, *view, *cut)

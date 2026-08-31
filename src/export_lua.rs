@@ -2820,6 +2820,34 @@ mod tests {
         assert_eq!(kinds(&rebuilt.doc), kinds(&state.doc), "\n{script}");
     }
 
+    /// #1859: a circular repeat about a circle's normal exports with that axis and rebuilds
+    /// the same six copies.
+    #[test]
+    fn repeat_about_a_circle_normal_round_trips() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 40 }
+            bearcad.rect{ width = 8, height = 8, x = 36, y = -4 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 6 }
+            bearcad.exit_sketch()
+            bearcad.repeat_bodies{ bodies = {0}, axis = { circle_normal = 0 }, around = true,
+                                   mode = "count_gap", count = 6, spacing = "60deg" }
+            "#,
+        );
+        let script = document_to_lua(&state.doc);
+        assert!(
+            script.contains("circle_normal"),
+            "the axis should export as the circle's normal:\n{script}"
+        );
+        let rebuilt = run_lua(&script);
+        // (Full `document_diff` equality is out of reach here: the export emits the rect
+        // before the circle, so the sketch's constraints come back in a different order.)
+        assert_eq!(rebuilt.doc.bodies.len(), state.doc.bodies.len(), "\n{script}");
+        let axis = |d: &Document| d.repeat_ops.values().next().map(|r| r.axis.clone());
+        assert_eq!(axis(&rebuilt.doc), axis(&state.doc), "\n{script}");
+    }
+
     #[test]
     fn line_circle_round_trips() {
         let state = run_lua(

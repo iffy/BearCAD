@@ -55,6 +55,17 @@ fn line_key_from_ordinal(
         .ok_or_else(|| format!("no line {ordinal}"))
 }
 
+/// The circle at `ordinal` among the live ones (#1055).
+fn circle_key_from_ordinal(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Result<crate::model::CircleKey, String> {
+    doc.circles
+        .keys()
+        .nth(ordinal)
+        .ok_or_else(|| format!("no circle {ordinal}"))
+}
+
 /// The lines named by a list of ordinals (#1055).
 fn line_keys_from_ordinals(
     doc: &crate::model::Document,
@@ -146,6 +157,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::BodyFace { .. } => "body_face",
         SceneElement::BodyCylinder { .. } => "cylinder",
         SceneElement::BodyAxis { .. } => "body_axis",
+        SceneElement::CircleNormal(_) => "circle_normal",
         SceneElement::SketchFace(_) => "face",
         SceneElement::MovePoint(_) => "move_point",
         SceneElement::ExtrusionEdge { .. } => "extrusion_edge",
@@ -2052,6 +2064,13 @@ fn revolve_axis_from_value(
                 return Ok(RevolveAxis::Line(line_key_from_ordinal(
                     doc,
                     req_usize(t, "line", "axis")?,
+                )?));
+            }
+            // A circle's own normal (#1859).
+            if t.contains_key("circle_normal") {
+                return Ok(RevolveAxis::CircleNormal(circle_key_from_ordinal(
+                    doc,
+                    req_usize(t, "circle_normal", "axis")?,
                 )?));
             }
             // A body feature edge (#643), by the body plus the edge's world endpoints in mm.

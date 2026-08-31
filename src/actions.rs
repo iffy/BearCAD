@@ -9344,6 +9344,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::BodyFace { body, .. } => format!("Face of Body {}", body.index()),
         SceneElement::BodyCylinder { body, .. } => format!("Cylinder of Body {}", body.index()),
         SceneElement::BodyAxis { body, .. } => format!("Axis of Body {}", body.index()),
+        SceneElement::CircleNormal(i) => format!("Normal of Circle {}", i.index()),
         SceneElement::SketchFace(_) => "Face".to_string(),
         SceneElement::MovePoint(_) => "Point".to_string(),
         SceneElement::ExtrusionEdge { extrusion, .. } => {
@@ -21541,6 +21542,12 @@ pub fn apply_pick(
         (P::RepeatPath, element) => {
             let Some(axis) = element.as_revolve_axis() else { return false };
             let cr = state.creating_repeat.get_or_insert_with(CreatingRepeat::default);
+            // A circle's own normal (#1859) is only ever picked to turn about: the circle's
+            // centre is the pivot and the normal the axis, which is a circular pattern by
+            // construction. Every other straight reference keeps whatever mode is set.
+            if matches!(axis, crate::model::RevolveAxis::CircleNormal(_)) {
+                cr.around_axis = true;
+            }
             cr.axis = Some(axis);
             cr.path_circle = None;
             true
@@ -28380,6 +28387,32 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.apply(Action::SetTool(Tool::Repeat));
         let cr = state.creating_sketch_repeat.as_ref().unwrap();
         assert_eq!(cr.line_targets, vec![lkey(0)]);
+    }
+
+    /// #1859: picking a circle's normal into the Repeat path gives a circular pattern —
+    /// the circle's centre is the pivot and its normal the axis, and the repeat turns
+    /// **around** it rather than sliding along it.
+    #[test]
+    fn repeat_path_takes_a_circle_normal_and_turns_around_it() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(pkey(0)),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        state.doc.circles.insert(crate::model::Circle::from_local_center_radius(
+            sketch, 0.0, 0.0, 20.0, 0.0,
+        ));
+        state.doc.shape_order.push(crate::model::ShapeKind::Circle);
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::RepeatPath,
+            &crate::hierarchy::SceneElement::CircleNormal(rkey(0)),
+        ));
+        let cr = state.creating_repeat.as_ref().expect("a repeat draft");
+        assert_eq!(cr.axis, Some(crate::model::RevolveAxis::CircleNormal(rkey(0))));
+        assert_eq!(cr.path_circle, None, "the normal is an axis, not a ride-round path");
+        assert!(cr.around_axis, "a circle's normal is what a circular repeat turns about");
     }
 
     /// #1486: re-opening a sketch repeat restores its stored direction, not the U-axis default.

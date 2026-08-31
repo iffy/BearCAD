@@ -2408,6 +2408,14 @@ pub fn free_move_rotation_gizmo_name(axis: usize) -> &'static str {
     }
 }
 
+/// The world segment to draw for a **circle's normal** (#1859): centred on the circle and as
+/// long as its diameter each way, so the line reads as belonging to that circle at any zoom.
+pub fn circle_normal_segment(doc: &Document, circle: crate::model::CircleKey) -> Option<(Vec3, Vec3)> {
+    let (origin, dir) = axis_world(doc, crate::model::RevolveAxis::CircleNormal(circle))?;
+    let half = (doc.circles.get(circle)?.r * 2.0).max(1.0);
+    Some((origin - dir * half, origin + dir * half))
+}
+
 /// Resolve a rotation/revolve axis to world origin + unit direction.
 pub fn axis_world(doc: &Document, axis: crate::model::RevolveAxis) -> Option<(Vec3, Vec3)> {
     match axis {
@@ -2429,6 +2437,17 @@ pub fn axis_world(doc: &Document, axis: crate::model::RevolveAxis) -> Option<(Ve
             }
             let dir = (b - a).normalize_or_zero();
             (dir.length_squared() > 1e-8).then_some((a, dir))
+        }
+        // A circle's normal (#1859): its centre, square to the sketch plane it sits on.
+        crate::model::RevolveAxis::CircleNormal(ci) => {
+            if !crate::document_lifecycle::circle_alive(doc, ci) {
+                return None;
+            }
+            let (origin, normal) = crate::construction::plane_frame_from_element(
+                doc,
+                &crate::hierarchy::SceneElement::Circle(ci),
+            )?;
+            (normal.length_squared() > 1e-8).then_some((origin, normal.normalize()))
         }
         crate::model::RevolveAxis::X => Some((Vec3::ZERO, Vec3::X)),
         crate::model::RevolveAxis::Y => Some((Vec3::ZERO, Vec3::Y)),
@@ -6607,6 +6626,15 @@ pub fn selection_world_bounds(
                         extend(b);
                     }
                     None => extend(crate::hierarchy::dequantize_body_point(origin)),
+                }
+            }
+            // A circle's normal frames its centre (#1859).
+            SceneElement::CircleNormal(ci) => {
+                if let Some((origin, _)) = crate::construction::plane_frame_from_element(
+                    doc,
+                    &SceneElement::Circle(ci),
+                ) {
+                    extend(origin);
                 }
             }
             // A unit instance frames its placed evaluated meshes (#723).
@@ -12488,6 +12516,24 @@ mod tests {
             b: Vec3::X
         })
         .is_none());
+    }
+
+    /// #1859: a circle's own normal is a straight reference — the axis through its centre,
+    /// square to the sketch it is drawn on. Picking it is how a circular Repeat gets its axis.
+    #[test]
+    fn axis_world_resolves_a_circle_normal() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        let ci = doc
+            .circles
+            .insert(crate::model::Circle::from_local_center_radius(sketch, 4.0, 7.0, 3.0, 0.0));
+        let (origin, dir) =
+            axis_world(&doc, crate::model::RevolveAxis::CircleNormal(ci)).expect("resolves");
+        assert!((origin - Vec3::new(4.0, 7.0, 0.0)).length() < 1e-4, "centre, got {origin:?}");
+        assert!((dir - Vec3::Z).length() < 1e-6, "the sketch plane's normal, got {dir:?}");
+        // It dies with the circle.
+        doc.circles.remove(ci);
+        assert!(axis_world(&doc, crate::model::RevolveAxis::CircleNormal(ci)).is_none());
     }
 
     /// #260: descendants walk forward through operations — a body feeding a boolean whose output

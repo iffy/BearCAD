@@ -127,6 +127,8 @@ impl ElementKind {
                 ElementKind::Vertex
             }
             SceneElement::GlobalAxis(_) => ElementKind::Axis,
+            // A circle's normal is a straight reference like any other axis (#1859).
+            SceneElement::CircleNormal(_) => ElementKind::Axis,
             // An analytic face (#952/#957). `from_face_id` has already peeled off the
             // construction-plane case, so anything left here really is a profile.
             SceneElement::SketchFace(_) => ElementKind::Profile,
@@ -2062,6 +2064,17 @@ mod tests {
             &doc,
             &SceneElement::BodyEdge { body: bkey(0), a: [0; 3], b: [1; 3] }
         ));
+    }
+
+    /// #1859: a circle's own normal is an axis — the Repeat path picker takes it, which is
+    /// how a circular repeat gets its centre and its axis in one pick.
+    #[test]
+    fn the_repeat_path_takes_a_circle_normal() {
+        let doc = doc_with_two_bodies();
+        let normal = SceneElement::CircleNormal(crate::model::circle_key_for_slot(0));
+        assert_eq!(ElementKind::of(&normal), ElementKind::Axis);
+        let f = crate::context::picker_filter(crate::context::PickerTarget::RepeatPath);
+        assert!(f.accepts(&doc, &normal), "the Repeat path should take a circle's normal");
     }
 
     /// #983: the Projection tool's rule — outside sources (bodies, their edges/corners,

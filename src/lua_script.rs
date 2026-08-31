@@ -355,6 +355,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::BodyFace { .. } | SceneElement::SketchFace(_) => "face",
         SceneElement::BodyCylinder { .. } => "cylinder",
         SceneElement::BodyAxis { .. } => "body_axis",
+        SceneElement::CircleNormal(_) => "circle_normal",
         SceneElement::MovePoint(_) => "move_point",
         SceneElement::ExtrusionEdge { .. } => "extrusion_edge",
         SceneElement::PrimitiveEdge { .. } => "primitive_edge",
@@ -454,7 +455,9 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::ConstructionPlane(key) => {
             doc.construction_planes.keys().position(|k| k == key).unwrap_or(0)
         }
-        SceneElement::Circle(key) => doc.circles.keys().position(|k| k == key).unwrap_or(0),
+        SceneElement::Circle(key) | SceneElement::CircleNormal(key) => {
+            doc.circles.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::Sketch(key) => doc.sketches.keys().position(|k| k == key).unwrap_or(0),
         SceneElement::Constraint(key) => {
             doc.constraints.keys().position(|k| k == key).unwrap_or(0)
@@ -584,6 +587,8 @@ pub fn scene_element_from_kind(
         "sketch_slice_op" => Some(SceneElement::SketchSliceOp(
             doc.sketch_slice_ops.keys().nth(index)?,
         )),
+        // A circle's own normal (#1859), by the circle's ordinal.
+        "circle_normal" => Some(SceneElement::CircleNormal(doc.circles.keys().nth(index)?)),
         // The world axes (#952) index as 0/1/2 for X/Y/Z, matching `element_index`.
         "axis" | "global_axis" => Some(SceneElement::GlobalAxis(match index {
             0 => crate::construction::GlobalAxis::X,
@@ -1701,7 +1706,7 @@ fn parse_revolve_axis(
     value: Value,
     what: &str,
 ) -> mlua::Result<crate::model::RevolveAxis> {
-    const SHAPES: &str = "\"x\"|\"y\"|\"z\", {line = i}, or {body = i, from = {x,y,z}, to = {x,y,z}}";
+    const SHAPES: &str = "\"x\"|\"y\"|\"z\", {line = i}, {circle_normal = i}, or {body = i, from = {x,y,z}, to = {x,y,z}}";
     match value {
         Value::String(sv) => match sv.to_string_lossy().to_lowercase().as_str() {
             "x" => Ok(crate::model::RevolveAxis::X),
@@ -1715,8 +1720,16 @@ fn parse_revolve_axis(
             if let Some(li) = t.ordinal_opt("line")? {
                 return Ok(crate::model::RevolveAxis::Line(line_key_from_ordinal(lua, li)?));
             }
+            // A circle's own normal (#1859): the axis through its centre, square to its sketch.
+            if let Some(ci) = t.ordinal_opt("circle_normal")? {
+                return Ok(crate::model::RevolveAxis::CircleNormal(circle_key_from_ordinal(
+                    lua, ci,
+                )?));
+            }
             let ordinal: usize = t.get("body").map_err(|_| {
-                mlua::Error::external(format!("{what} `axis` table needs `line` or `body` ({SHAPES})"))
+                mlua::Error::external(format!(
+                    "{what} `axis` table needs `line`, `circle_normal` or `body` ({SHAPES})"
+                ))
             })?;
             let body = body_key_from_ordinal(lua, ordinal)?;
             let point = |key: &str| -> mlua::Result<glam::Vec3> {
@@ -2618,6 +2631,7 @@ fn revolve_axis_name(axis: &crate::model::RevolveAxis) -> &'static str {
         A::Z => "z",
         A::Line(_) => "line",
         A::BodyEdge { .. } => "body_edge",
+        A::CircleNormal(_) => "circle_normal",
     }
 }
 
@@ -4968,6 +4982,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         | SceneElement::BodyFace { .. }
         | SceneElement::BodyCylinder { .. }
         | SceneElement::BodyAxis { .. }
+        | SceneElement::CircleNormal(_)
                 ) {
                     entry.set("index", element_index(&state.doc, element))?;
                 }

@@ -3980,7 +3980,9 @@ impl<'a> SceneMesh<'a> {
                     self.set_index_layer(restore);
                 }
                 // A selected cylinder or centre line (#1013): the same marks the hover draws.
-                SceneElement::BodyCylinder { .. } | SceneElement::BodyAxis { .. } => {
+                SceneElement::BodyCylinder { .. }
+                | SceneElement::BodyAxis { .. }
+                | SceneElement::CircleNormal(_) => {
                     self.push_element_hover(
                         doc,
                         element.clone(),
@@ -4967,6 +4969,13 @@ impl<'a> SceneMesh<'a> {
                         view_proj,
                         &project,
                     );
+                }
+            }
+            // A circle's own normal (#1859): the line a Repeat path or Revolve axis would
+            // take, drawn through the centre so the pick is visible before the click.
+            SceneElement::CircleNormal(ci) => {
+                if let Some((a, b)) = crate::extrude::circle_normal_segment(doc, ci) {
+                    self.push_segment_hover(a, b, color, cam, viewport, view_proj, &project);
                 }
             }
             // A hovered sketch text (#307): trace its glyph outlines in the hover color, so
