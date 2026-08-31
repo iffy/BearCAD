@@ -87,7 +87,7 @@ bearcad.exit_sketch()
 local loop = {0, 1, 2, 3, 4, 5}
 bearcad.extrude{ polygon = loop, distance = 40, name = "Bracket" }
 -- Hide the three datum planes a new document opens with.
-for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+bearcad.set_visible({ kind = "plane" }, false)
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")
 bearcad.ui.tool("dimension")

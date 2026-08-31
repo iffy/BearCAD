@@ -12,7 +12,7 @@ bearcad.ui.tool_hints(false)
 dofile("docs-site/screenshots/scenes/cube_cluster.lua")
 
 bearcad.clear_selection()
-for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+bearcad.set_visible({ kind = "plane" }, false)
 bearcad.ui.ground("off")
 -- Dimension has no pick hover, so the OS cursor can't highlight a face into the shot.
 bearcad.ui.tool("dimension")

@@ -61,9 +61,9 @@ assert(bearcad.count("body") == 3,
   " (status: " .. bearcad.status() .. ")")
 -- Start A was (-5, -5); it lands on the slab's (40, 40), so the copy's min xy is 40.
 local placed = bearcad.body_stats(bearcad.count("body") - 1).bbox
-assert(math.abs(placed.min[1] - 40) < 0.05 and math.abs(placed.min[2] - 40) < 0.05,
+assert(math.abs(placed.min.x - 40) < 0.05 and math.abs(placed.min.y - 40) < 0.05,
   "the block's start corner should land on the slab's (40, 40), got min "
-    .. placed.min[1] .. ", " .. placed.min[2])
+    .. placed.min.x .. ", " .. placed.min.y)
 
 print("ok: destination pick clicks through the moving body")
 bearcad.quit()

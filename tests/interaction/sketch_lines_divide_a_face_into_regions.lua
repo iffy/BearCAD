@@ -53,8 +53,8 @@ local stats = bearcad.body_stats(bearcad.count("body") - 1)
 assert(math.abs(stats.volume - 29760) < 60,
   "extruding the middle band should add only that band (24000 + 5760); the whole cap would be "
     .. "38400 — got " .. string.format("%.0f", stats.volume))
-assert(math.abs(stats.bbox.max[3] - 16) < 0.01,
-  "and it should stand 6mm proud of the 10mm box, got " .. stats.bbox.max[3])
+assert(math.abs(stats.bbox.max.z - 16) < 0.01,
+  "and it should stand 6mm proud of the 10mm box, got " .. stats.bbox.max.z)
 
 print("ok: lines ruled across a face divide it into separately extrudable regions")
 bearcad.quit()

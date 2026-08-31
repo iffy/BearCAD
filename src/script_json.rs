@@ -2531,7 +2531,7 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
 /// A world-space vector as a positional JSON triple `[x, y, z]` (matching the mlua getters'
 /// `vec3_lua`, which returns a 1-based Lua array).
 fn vec3_json(v: glam::Vec3) -> Value {
-    json!([v.x, v.y, v.z])
+    json!({ "x": v.x, "y": v.y, "z": v.z })
 }
 
 /// Short script name for the face a sketch is hosted on (mirrors `lua_script::face_kind_name`).

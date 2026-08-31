@@ -110,7 +110,7 @@ for _, spec in ipairs(kinds) do
     position = spec.position, position2 = spec.position2, position3 = spec.position3,
   }
 
-  for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+  bearcad.set_visible({ kind = "plane" }, false)
   bearcad.ui.ground("off")
   bearcad.ui.view("corner", "front_left_top")
   bearcad.ui.wait(2)
@@ -146,7 +146,7 @@ for i, spec in ipairs(kinds) do
 end
 bearcad.exit_sketch()
 
-for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+bearcad.set_visible({ kind = "plane" }, false)
 bearcad.ui.ground("off")
 bearcad.ui.view("corner", "front_left_top")
 bearcad.ui.wait(2)

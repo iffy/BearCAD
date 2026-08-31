@@ -64,8 +64,8 @@ assert(n >= 3, "the pattern should make copies, got " .. n)
 local angles = {}
 for i = 0, n - 1 do
   local s = bearcad.body_stats(i)
-  local cx = (s.bbox.min[1] + s.bbox.max[1]) / 2
-  local cy = (s.bbox.min[2] + s.bbox.max[2]) / 2
+  local cx = (s.bbox.min.x + s.bbox.max.x) / 2
+  local cy = (s.bbox.min.y + s.bbox.max.y) / 2
   local r = math.sqrt(cx * cx + cy * cy)
   assert(math.abs(r - 40) < 1.0,
     string.format("copy %d should ride the r = 40 circle, got %.2f", i, r))

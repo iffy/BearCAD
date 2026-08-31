@@ -87,5 +87,5 @@ bearcad.ui.first_person()
 local before = bearcad.ui.camera{}
 bearcad.ui.first_person_move{ forward = 500 }
 local after = bearcad.ui.camera{}
-assert(after.target[1] ~= before.target[1] or after.target[2] ~= before.target[2])
+assert(after.target.x ~= before.target.x or after.target.y ~= before.target.y)
 ```

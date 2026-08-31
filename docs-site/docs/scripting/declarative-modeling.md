@@ -360,7 +360,7 @@ assert(e.u_min == 5 and e.u_max == 105)
 
 local s = bearcad.body_stats(0)                -- volume / triangles / bbox of a body's mesh
 assert(math.abs(s.volume - 40 * 30 * 10) < 120)
-assert(s.bbox.max[3] - s.bbox.min[3] == 10)
+assert(s.bbox.max.z - s.bbox.min.z == 10)
 
 -- A body's faces and edges, spelled the way a joint's mate takes them.
 local f = bearcad.body_faces(0)[1]             -- { body, face = {x,y,z}, normal = {x,y,z} }
@@ -458,10 +458,11 @@ bearcad.set_material{ body = 1 }        -- back to the default material
 ## Visibility, construction, and shadow bodies
 
 ```lua
-bearcad.set_visible(box, "hide")       -- "show" | "hide" | "toggle"
-bearcad.set_visible({ kind = "plane" }, false)  -- a kind with no index: all of them
+bearcad.set_visible(box, false)        -- handle, list, or { kind = "plane" }; boolean only
+bearcad.set_visible({ kind = "plane" }, false)
 bearcad.visible(box)                   -- read it back
 bearcad.set_construction(box, true)
+bearcad.ui.toggle_visibility()         -- current selection
 -- Shadow body: hidden in the viewport (except hover/select) and omitted from export.
 bearcad.set_body_shadow{ body = 0, shadow = true }
 bearcad.set_body_shadow{ body = 0, shadow = false }  -- back to a live body

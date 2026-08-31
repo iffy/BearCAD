@@ -37,8 +37,8 @@ for i = 0, 5 do
   if s then live = s end
 end
 assert(live, "fillet should produce a live body")
-assert(live.bbox.min[1] < -19.0,
-  "the far (−X) vertical must stay sharp, min.x=" .. tostring(live.bbox.min[1]))
+assert(live.bbox.min.x < -19.0,
+  "the far (−X) vertical must stay sharp, min.x=" .. tostring(live.bbox.min.x))
 
 print("ok: fillet tool does not pick an edge through a body")
 bearcad.quit()

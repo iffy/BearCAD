@@ -25,7 +25,7 @@ bearcad.sphere{ at = {110, 0, 0}, radius = 17, name = "Sphere" }
 bearcad.clear_selection()
 -- A clean background (#667): the datum planes and the ground grid away, so the three
 -- solids are the whole picture.
-for i = 0, 2 do bearcad.set_visible({ kind = "construction_plane", index = i }, "hide") end
+bearcad.set_visible({ kind = "plane" }, false)
 bearcad.ui.ground("off")
 bearcad.ui.shading("realistic")
 bearcad.ui.wait(2)

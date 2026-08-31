@@ -5,7 +5,7 @@ bearcad.new()
 bearcad.cuboid{ width = 40, depth = 30, height = 20 }
 -- A cross-section view with one cutting plane through the middle.
 local cs = bearcad.cross_section{ name = "Cut" }
-local mid = bearcad.body_stats(0).bbox.max[3] / 2
+local mid = bearcad.body_stats(0).bbox.max.z / 2
 bearcad.section_plane{ origin = {0, 0, mid}, normal = {0, 0, -1} }
 -- A drawing with a base projection and an aligned child.
 local d = bearcad.drawing{}

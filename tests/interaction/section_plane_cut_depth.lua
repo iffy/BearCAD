@@ -34,8 +34,8 @@ assert(
   math.abs(slab.volume - (72000 - 60 * 60 * 6)) < 1,
   "only the 60x60x6 slab is hidden, got " .. slab.volume
 )
-assert(math.abs(slab.bbox.min[3]) < 1e-3, "material survives below the slab")
-assert(math.abs(slab.bbox.max[3] - 20) < 1e-3, "and above it")
+assert(math.abs(slab.bbox.min.z) < 1e-3, "material survives below the slab")
+assert(math.abs(slab.bbox.max.z - 20) < 1e-3, "and above it")
 
 -- `false` puts the depth back to all the way through.
 bearcad.edit_section_plane{ cut = 0, depth = false }
