@@ -1513,6 +1513,24 @@ impl GlobalAxis {
         }
     }
 
+    /// Script spelling: `"x"` / `"y"` / `"z"`.
+    pub fn script_name(self) -> &'static str {
+        match self {
+            GlobalAxis::X => "x",
+            GlobalAxis::Y => "y",
+            GlobalAxis::Z => "z",
+        }
+    }
+
+    pub fn from_script_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "x" => Some(GlobalAxis::X),
+            "y" => Some(GlobalAxis::Y),
+            "z" => Some(GlobalAxis::Z),
+            _ => None,
+        }
+    }
+
     pub fn color(self) -> egui::Color32 {
         match self {
             GlobalAxis::X => egui::Color32::from_rgb(200, 70, 70),

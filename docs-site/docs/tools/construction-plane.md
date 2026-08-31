@@ -25,6 +25,7 @@ from a face, or at an angle. Click a reference, position the plane, then press t
 - **Click an edge or axis** (a sketch line, a body edge, or one of the origin's X/Y/Z
   axes): the plane pivots around it. Set an **Offset** *and* an **Angle** — the angle handle
   on the ring rotates it, and both show as inputs in the context pane too.
+  Script: `bearcad.plane{ axis = "x"|"y"|"z"|line, angle = …, offset? }`.
 - **Click a vertex** on a line or curve: the plane passes through that point with the
   curve **normal to it** — perfect for sweeping a profile along the curve from there. If
   several lines meet at the vertex, pick which one's direction to use under **Normal** in

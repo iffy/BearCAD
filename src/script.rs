@@ -129,6 +129,15 @@ pub enum TreatableSolidRef {
     Primitive(usize),
 }
 
+/// Axis a scripted `bearcad.plane{ axis = … }` hangs on (#1876).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlaneAxisRef {
+    /// World origin triad: `"x"` / `"y"` / `"z"`.
+    Global(crate::construction::GlobalAxis),
+    /// Sketch line, by live ordinal.
+    Line(usize),
+}
+
 /// A single script instruction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Instruction {
@@ -971,6 +980,14 @@ pub enum Instruction {
     /// #465: a plane anchored on an arbitrary face (origin + normal), offset along the
     /// normal — the scripted equivalent of clicking a body face with the Plane tool.
     CreateFacePlane { offset: f32, origin: Vec3, normal: Vec3 },
+    /// #1876: a plane anchored on an axis (world X/Y/Z or a sketch line), with an
+    /// angle around that axis — the scripted equivalent of clicking an axis with the
+    /// Plane tool.
+    CreateAxisPlane {
+        offset: f32,
+        angle: f32,
+        axis: PlaneAxisRef,
+    },
     FocusDim(RectAxis),
     FocusLineLength,
     FocusCircleDiameter,
@@ -2345,6 +2362,13 @@ impl Instruction {
                     "bearcad.plane{{ offset = {offset}, origin = {{{}, {}, {}}}, normal = {{{}, {}, {}}} }}",
                     origin.x, origin.y, origin.z, normal.x, normal.y, normal.z
                 )
+            }
+            Instruction::CreateAxisPlane { offset, angle, axis } => {
+                let axis_lua = match axis {
+                    PlaneAxisRef::Global(g) => format!("{:?}", g.script_name()),
+                    PlaneAxisRef::Line(i) => format!("{{ line = {i} }}"),
+                };
+                format!("bearcad.plane{{ offset = {offset}, axis = {axis_lua}, angle = {angle} }}")
             }
             Instruction::FocusDim(axis) => {
                 format!("bearcad.ui.focus_dim({:?})", rect_axis_lua_name(*axis))
@@ -8765,6 +8789,68 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 let _ = state.apply(Action::SetPlaneOffset {
                     value: format!("{offset}mm"),
+                });
+                let result = state.apply(Action::CommitConstructionPlane);
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateAxisPlane { offset, angle, axis } => {
+                // Same Begin → typed offset/angle → Commit path as clicking an axis
+                // with the Plane tool (#1876).
+                let (reference, parent) = match axis {
+                    PlaneAxisRef::Global(g) => (
+                        crate::construction::PlaneReference::Axis {
+                            origin: Vec3::ZERO,
+                            direction: g.direction(),
+                            label: g.label().to_string(),
+                        },
+                        crate::model::ConstructionPlaneParent::Root,
+                    ),
+                    PlaneAxisRef::Line(ordinal) => {
+                        let Some(key) = line_key(&state.doc, ordinal) else {
+                            self.last_action_error = Some(format!("Unknown line {ordinal}"));
+                            return StepResult::Continue;
+                        };
+                        let Some(line) = state.doc.lines.get(key) else {
+                            self.last_action_error = Some(format!("Unknown line {ordinal}"));
+                            return StepResult::Continue;
+                        };
+                        let Some((a, b)) =
+                            crate::face::line_world_endpoints(&state.doc, line)
+                        else {
+                            self.last_action_error =
+                                Some(format!("line {ordinal} has no world endpoints"));
+                            return StepResult::Continue;
+                        };
+                        let direction = (b - a).normalize_or_zero();
+                        if direction.length_squared() < 1e-8 {
+                            self.last_action_error =
+                                Some(format!("line {ordinal} is too short to be an axis"));
+                            return StepResult::Continue;
+                        }
+                        (
+                            crate::construction::PlaneReference::Axis {
+                                origin: a,
+                                direction,
+                                label: crate::names::scene_element_label(
+                                    &state.doc,
+                                    &crate::hierarchy::SceneElement::Line(key),
+                                ),
+                            },
+                            crate::construction::parent_from_pick_target(
+                                &state.doc,
+                                crate::construction::PickTargetKind::Line(key),
+                            ),
+                        )
+                    }
+                };
+                let result = state.apply(Action::BeginConstructionPlane { reference, parent });
+                self.record_action_error(result);
+                let _ = state.apply(Action::SetPlaneOffset {
+                    value: format!("{offset}mm"),
+                });
+                let _ = state.apply(Action::SetPlaneAngle {
+                    value: format!("{angle}deg"),
                 });
                 let result = state.apply(Action::CommitConstructionPlane);
                 self.record_action_error(result);

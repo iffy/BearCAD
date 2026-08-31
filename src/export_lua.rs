@@ -143,6 +143,49 @@ fn canonicalize_constraint_kind(kind: &mut ConstraintKind) {
     }
 }
 
+/// Trim float noise so `30deg` round-trips as `30`, not `30.000002`.
+fn script_f32(v: f32) -> f32 {
+    (v * 1e4).round() / 1e4
+}
+
+/// `"x"`/`"y"`/`"z"` when this axis is the world origin triad (#1876).
+fn global_axis_script_name(origin: glam::Vec3, direction: glam::Vec3) -> Option<&'static str> {
+    if origin.length() >= 1e-4 {
+        return None;
+    }
+    let d = direction.normalize_or_zero();
+    use crate::construction::GlobalAxis;
+    for axis in [GlobalAxis::X, GlobalAxis::Y, GlobalAxis::Z] {
+        if (d - axis.direction()).length() < 1e-3 {
+            return Some(axis.script_name());
+        }
+    }
+    None
+}
+
+/// Live line ordinal whose world segment matches this stored axis.
+fn sketch_line_axis_ordinal(
+    doc: &Document,
+    origin: glam::Vec3,
+    direction: glam::Vec3,
+) -> Option<usize> {
+    let dir = direction.normalize_or_zero();
+    if dir.length_squared() < 1e-8 {
+        return None;
+    }
+    doc.lines.iter().enumerate().find_map(|(ord, (_, line))| {
+        let (a, b) = crate::face::line_world_endpoints(doc, line)?;
+        let line_dir = (b - a).normalize_or_zero();
+        if line_dir.length_squared() < 1e-8 {
+            return None;
+        }
+        let collinear = line_dir.dot(dir).abs() > 0.999;
+        let on_start = (a - origin).length() < 1e-3;
+        let on_end = (b - origin).length() < 1e-3;
+        (collinear && (on_start || on_end)).then_some(ord)
+    })
+}
+
 /// True when `doc` has no user content beyond a fresh default (for import-Lua warning, #1160).
 pub fn document_is_blank(doc: &Document) -> bool {
     let mut a = doc.clone();
@@ -441,11 +484,30 @@ impl<'a> EmitCtx<'a> {
                             )),
                         }
                     }
-                    crate::model::PlaneAnchor::Axis { .. } => {
-                        out.push_str(
-                            "-- skipped: construction plane anchored on an axis (no scripting verb)\n",
-                        );
-                        return;
+                    crate::model::PlaneAnchor::Axis {
+                        origin,
+                        direction,
+                        ..
+                    } => {
+                        let angle = script_f32(plane.definition.angle_deg);
+                        // A sketch line through the origin along X/Y/Z is still that
+                        // line, not the world triad — match the line first (#1876).
+                        if let Some(line) =
+                            sketch_line_axis_ordinal(self.doc, *origin, *direction)
+                        {
+                            out.push_str(&format!(
+                                "bearcad.plane{{ offset = {offset}, axis = {{ line = {line} }}, angle = {angle} }}\n"
+                            ));
+                        } else if let Some(name) = global_axis_script_name(*origin, *direction) {
+                            out.push_str(&format!(
+                                "bearcad.plane{{ offset = {offset}, axis = {name:?}, angle = {angle} }}\n"
+                            ));
+                        } else {
+                            out.push_str(
+                                "-- skipped: construction plane anchored on an unmatched axis\n",
+                            );
+                            return;
+                        }
                     }
                 }
                 if let Some(name) = &plane.name {
@@ -2575,6 +2637,17 @@ mod tests {
             "anchored construction plane",
             r#"bearcad.new()
                bearcad.plane{ origin = {0, 0, 0}, normal = {1, 0, 0} }"#,
+        ),
+        (
+            "axis construction plane",
+            r#"bearcad.new()
+               bearcad.plane{ axis = "x", angle = 45 }"#,
+        ),
+        (
+            "line-axis construction plane",
+            r#"bearcad.new()
+               bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 0 }
+               bearcad.plane{ axis = { line = 0 }, angle = 30, offset = 5 }"#,
         ),
         (
             "extrude_face",

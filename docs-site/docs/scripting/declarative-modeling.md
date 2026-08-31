@@ -152,13 +152,15 @@ bearcad.begin_sketch{
 }
 ```
 
-Create construction planes — offset from an existing plane, or anchored on any face
-by its origin and normal:
+Create construction planes — offset from an existing plane, on a face, or pivoted
+around an axis (same as the Plane tool):
 
 ```lua
 bearcad.plane{ offset = 12 }                                       -- 12 mm above Ground ("0.5in" works too)
 bearcad.plane{ offset = 5, from = 1 }                              -- offset from plane 1
 bearcad.plane{ offset = 5, origin = {0, 0, 20}, normal = {0, 0, 1} } -- on a body face
+bearcad.plane{ axis = "x", angle = 45 }                            -- around the world X axis
+bearcad.plane{ axis = { line = 0 }, angle = 30, offset = 5 }        -- around a sketch line
 ```
 
 Project outside 3D geometry into the open sketch as associative reference lines
