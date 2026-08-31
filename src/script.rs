@@ -10802,9 +10802,12 @@ mod tests {
         let len = crate::model::Line::from_local_endpoints(sketch, u0, v0, u1, v1).length();
         assert!((len - 53.3).abs() < 1e-2);
     }
-}/// Every entity kind `bearcad.count` and `bearcad.get` accept (#1662). One list, so the two
-/// inspection calls cannot drift apart the way they had — each also takes the aliases its
-/// match arm names (`plane`, `primitive`, `text`, `tracing_image`).
+}
+
+/// Canonical kinds `bearcad.count` and `bearcad.get` accept (#1662, #1865). One list, so
+/// the two inspection calls cannot drift. Aliases live only on the match arms below
+/// (`plane`, `revolve`, `primitive`, `text`, `unit`, …). `chamfer`/`fillet` are not
+/// aliases — they collide with sketch-vertex treatments.
 pub const INSPECT_KINDS: &[&str] = &[
     "line",
     "circle",
@@ -10825,6 +10828,7 @@ pub const INSPECT_KINDS: &[&str] = &[
     "sketch_offset",
     "sketch_mirror",
     "sketch_repeat",
+    "sketch_slice",
     "sketch_chamfer",
     "shape",
     "body",
@@ -10836,6 +10840,7 @@ pub const INSPECT_KINDS: &[&str] = &[
     "component",
     "image",
     "joint",
+    "unit_instance",
 ];
 
 /// How many of `kind` the document holds — the one table `bearcad.count` and the JSON
@@ -10859,7 +10864,7 @@ pub fn count_kind(doc: &crate::model::Document, kind: &str) -> Option<usize> {
         "repeat" | "repeat_op" => doc.repeat_ops.len(),
         "slice" | "slice_op" => doc.slice_ops.len(),
         "shell" | "shell_op" => doc.shell_ops.len(),
-        "edge_treatment" | "chamfer" | "fillet" => doc.edge_treatment_ops.len(),
+        "edge_treatment" => doc.edge_treatment_ops.len(),
         "sketch_offset" | "offset" => doc.sketch_offset_ops.len(),
         "sketch_mirror" => doc.sketch_mirror_ops.len(),
         "sketch_repeat" => doc.sketch_repeat_ops.len(),
@@ -10872,8 +10877,9 @@ pub fn count_kind(doc: &crate::model::Document, kind: &str) -> Option<usize> {
         "parameter" => doc.parameters.len(),
         "sketch_text" | "text" => doc.sketch_texts.len(),
         "component" => doc.components.len(),
-        "image" => doc.tracing_images.len(),
+        "image" | "tracing_image" => doc.tracing_images.len(),
         "joint" => doc.joints.len(),
+        "unit_instance" | "unit" => doc.unit_instances.len(),
         _ => return None,
     })
 }

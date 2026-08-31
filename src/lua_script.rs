@@ -4641,7 +4641,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         t.set("name", name.as_str())?;
                     }
                 }
-                "edge_treatment" | "chamfer" | "fillet" => {
+                "edge_treatment" => {
                     let Some(op) = doc
                         .edge_treatment_ops
                         .keys()
@@ -4749,6 +4749,20 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     if let Some(name) = &op.name {
                         t.set("name", name.as_str())?;
                     }
+                }
+                "unit_instance" | "unit" => {
+                    let Some(inst) = doc
+                        .unit_instances
+                        .keys()
+                        .nth(index)
+                        .map(|k| &doc.unit_instances[k])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    if let Some(name) = &inst.name {
+                        t.set("name", name.as_str())?;
+                    }
+                    t.set("unit", doc.units.keys().position(|k| k == inst.unit))?;
                 }
                 other => {
                     return Err(mlua::Error::external(format!(
@@ -8404,14 +8418,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // Repeat-operation replay (#220): replay a cut extrusion's effect along an axis, punching N
-    // holes. `cuts` are the cut-extrusion indices; axis/mode/count/spacing/length as repeat_bodies.
+    // holes. `cuts` are extrusion handles/ordinals; axis/mode/count/spacing/length as repeat_bodies.
     api.set(
         "repeat_cut",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let cuts = opts
-                .get::<Option<Vec<usize>>>("cuts")?
-                .unwrap_or_default()
+            check_keys(
+                &opts,
+                "repeat_cut",
+                &[
+                    "cuts", "axis", "around", "flip", "mode", "count", "spacing", "gap",
+                    "length", "to",
+                ],
+            )?;
+            let cuts = opts.ordinal_list("cuts")?;
+            if cuts.is_empty() {
+                return Err(mlua::Error::external(
+                    "repeat_cut requires a non-empty `cuts` list",
+                ));
+            }
+            let cuts = cuts
                 .into_iter()
                 .map(|ordinal| extrusion_key_from_ordinal(lua, ordinal))
                 .collect::<mlua::Result<Vec<_>>>()?;
@@ -8441,16 +8467,28 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Repeat whole sketches along an axis (#226): `sketches` are construction-plane-hosted sketch
-    // indices; each is copied at every offset onto a parallel offset plane. axis/mode/etc. as
+    // Repeat whole sketches along an axis (#226): `sketches` are sketch handles/ordinals;
+    // each is copied at every offset onto a parallel offset plane. axis/mode/etc. as
     // repeat_bodies.
     api.set(
         "repeat_sketches",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let sketches = opts
-                .get::<Option<Vec<usize>>>("sketches")?
-                .unwrap_or_default()
+            check_keys(
+                &opts,
+                "repeat_sketches",
+                &[
+                    "sketches", "axis", "around", "flip", "mode", "count", "spacing", "gap",
+                    "length", "to",
+                ],
+            )?;
+            let sketches = opts.ordinal_list("sketches")?;
+            if sketches.is_empty() {
+                return Err(mlua::Error::external(
+                    "repeat_sketches requires a non-empty `sketches` list",
+                ));
+            }
+            let sketches = sketches
                 .into_iter()
                 .map(|ordinal| sketch_key_from_ordinal(lua, ordinal))
                 .collect::<mlua::Result<Vec<_>>>()?;
@@ -10800,6 +10838,70 @@ pub mod tests {
         run_lua(&format!("bearcad.new()\n{checks}"));
     }
 
+    /// #1865: `count`/`get` must know unit instances and in-sketch slices, and `chamfer`
+    /// must not mean both 3D edge treatments and sketch-vertex chamfers.
+    #[test]
+    fn lua_count_and_get_inspect_units_and_sketch_slices() {
+        assert!(
+            INSPECT_KINDS.contains(&"unit_instance"),
+            "INSPECT_KINDS omits unit_instance: {INSPECT_KINDS:?}"
+        );
+        assert!(
+            INSPECT_KINDS.contains(&"sketch_slice"),
+            "INSPECT_KINDS omits sketch_slice: {INSPECT_KINDS:?}"
+        );
+        assert!(
+            !INSPECT_KINDS.contains(&"chamfer") && !INSPECT_KINDS.contains(&"fillet"),
+            "chamfer/fillet must not be canonical kinds: {INSPECT_KINDS:?}"
+        );
+
+        let pid = std::process::id();
+        let source = std::env::temp_dir().join(format!("bearcad_lua_count_unit_src_{pid}.bearcad"));
+        let host = std::env::temp_dir().join(format!("bearcad_lua_count_unit_host_{pid}.bearcad"));
+        let source_s = source.to_string_lossy().replace('\\', "\\\\");
+        let host_s = host.to_string_lossy().replace('\\', "\\\\");
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&host);
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            assert(bearcad.count("unit_instance") == 0, "empty doc has no instances")
+            assert(bearcad.count("unit") == 0, "`unit` is the alias")
+            assert(bearcad.get{{ kind = "unit_instance", index = 0 }} == nil)
+            assert(bearcad.get{{ kind = "unit", index = 0 }} == nil)
+
+            local ok, err = pcall(function() return bearcad.count("chamfer") end)
+            assert(not ok, "count('chamfer') must not pick a side")
+            assert(tostring(err):find("edge_treatment", 1, true)
+                   and tostring(err):find("sketch_chamfer", 1, true),
+                   "error should name both kinds: " .. tostring(err))
+            ok, err = pcall(function() return bearcad.count("fillet") end)
+            assert(not ok, "count('fillet') must not pick a side")
+
+            bearcad.line{{ x = 0, y = 0, x1 = 10, y1 = 0 }}
+            bearcad.line{{ x = 5, y = -5, x1 = 5, y1 = 5 }}
+            bearcad.slice_sketch{{ sketch = 0, lines = {{0}}, cutters = {{1}} }}
+            assert(bearcad.count("sketch_slice") == 1, "one slice op")
+            local sl = bearcad.get{{ kind = "sketch_slice", index = 0 }}
+            assert(sl.cutters == 1, "cutters, got " .. tostring(sl.cutters))
+
+            bearcad.new()
+            bearcad.parameter("add", "width", "10")
+            bearcad.save("{source_s}")
+            bearcad.new()
+            bearcad.save("{host_s}")
+            bearcad.import_unit{{ path = "{source_s}", link = "static", name = "part" }}
+            assert(bearcad.count("unit_instance") == 1, "import places one instance")
+            assert(bearcad.count("unit") == 1)
+            local u = bearcad.get{{ kind = "unit_instance", index = 0 }}
+            assert(u.name == "part", tostring(u.name))
+            assert(u.unit == 0, "instance 0 places unit 0, got " .. tostring(u.unit))
+            "#
+        ));
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&host);
+    }
+
     /// #1690: every feature a tool builds is countable and readable from a script — the
     /// list used to stop at extrusions, so a revolve or a shell was invisible.
     #[test]
@@ -12635,6 +12737,42 @@ pub mod tests {
         }
     }
 
+    /// #1862: `repeat_sketches` takes `sketches` (handles or ordinals), not `bodies`, and
+    /// fails when that list is empty.
+    #[test]
+    fn lua_repeat_sketches_requires_sketches_and_rejects_bodies() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 1, y = 2, r = 3 }
+            local s = bearcad.element("sketch", 0)
+            bearcad.repeat_sketches{ sketches = {s}, axis = "z",
+                                     mode = "count_gap", count = 2, spacing = 5 }
+            assert(bearcad.count("repeat") == 1, "handle list must land a repeat")
+
+            local ok, err = pcall(function()
+                bearcad.repeat_sketches{ bodies = {0}, axis = "z",
+                                         mode = "count_gap", count = 2, spacing = 5 }
+            end)
+            assert(not ok, "bodies must fail as an unknown key")
+            assert(tostring(err):find("unknown key `bodies`"), tostring(err))
+            assert(tostring(err):find("sketches"), tostring(err))
+
+            ok, err = pcall(function()
+                bearcad.repeat_sketches{ sketches = {}, axis = "z",
+                                         mode = "count_gap", count = 2, spacing = 5 }
+            end)
+            assert(not ok, "empty sketches must fail")
+            assert(tostring(err):find("sketches"), tostring(err))
+
+            ok, err = pcall(function()
+                bearcad.repeat_sketches{ axis = "z", mode = "count_gap", count = 2, spacing = 5 }
+            end)
+            assert(not ok, "missing sketches must fail")
+            "#,
+        );
+    }
+
     /// #231: a sketch hosted on a body face (not a construction plane) can be repeated — the copy
     /// rides a plane synthesized from the face frame, offset along the axis.
     #[test]
@@ -13506,6 +13644,44 @@ pub mod tests {
             .filter(|(_, b)| b.material == Some(blue))
             .count();
         assert_eq!(painted, 1, "only the assigned instance is Blue");
+    }
+
+    /// #1862: `repeat_cut` takes `cuts` (handles or ordinals), not `bodies`, and fails
+    /// when that list is empty.
+    #[test]
+    fn lua_repeat_cut_requires_cuts_and_rejects_bodies() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 20, y = 0, r = 2 }
+            bearcad.extrude{ circle = 0, distance = 10 }
+            local cut = bearcad.element("extrusion", 0)
+            bearcad.repeat_cut{ cuts = {cut}, axis = "z", around = true,
+                                mode = "count_fit_ends", count = 4, length = 360 }
+            assert(bearcad.count("body") == 4, "handle list must punch copies")
+
+            local ok, err = pcall(function()
+                bearcad.repeat_cut{ bodies = {0}, axis = "z", around = true,
+                                    mode = "count_fit_ends", count = 4, length = 360 }
+            end)
+            assert(not ok, "bodies must fail as an unknown key")
+            assert(tostring(err):find("unknown key `bodies`"), tostring(err))
+            assert(tostring(err):find("cuts"), tostring(err))
+
+            ok, err = pcall(function()
+                bearcad.repeat_cut{ cuts = {}, axis = "z", around = true,
+                                    mode = "count_fit_ends", count = 4, length = 360 }
+            end)
+            assert(not ok, "empty cuts must fail")
+            assert(tostring(err):find("cuts"), tostring(err))
+
+            ok, err = pcall(function()
+                bearcad.repeat_cut{ axis = "z", around = true,
+                                    mode = "count_fit_ends", count = 4, length = 360 }
+            end)
+            assert(not ok, "missing cuts must fail")
+            "#,
+        );
     }
 
     /// #1475: the reported polar-repeat-of-an-extrude document has one body per
