@@ -146,6 +146,7 @@ impl ElementKind {
             | SceneElement::BodyEdge { .. }
             | SceneElement::ProjectedEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
+            SceneElement::Parameter(_) => ElementKind::Constraint,
             // A drawing's three item types keep their own kinds (#363/#967), so a picker can
             // say "projections only" — which is exactly what the Aligned-view tool's base
             // view wants — and each row keeps the icon the Elements pane gives it.

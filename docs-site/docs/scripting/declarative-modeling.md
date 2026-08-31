@@ -23,8 +23,9 @@ bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
 
 bearcad.export_step("block.step")
 
--- A single named body can be exported on its own:
--- bearcad.export_step("block.step", "Block")
+-- A single body can be exported on its own (handle, id, name, or ordinal):
+-- local box = bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
+-- bearcad.export_step("block.step", box)
 
 bearcad.quit()
 ```
@@ -383,7 +384,7 @@ pane; **View → Create Cross Section** makes one. Each cutting plane is its own
 the view.
 
 ```lua
-local v = bearcad.cross_section{ name = "Front half" }   -- returns its index; opens the view
+local v = bearcad.cross_section{ name = "Front half" }   -- returns a handle; opens the view
 assert(bearcad.ui.workbench() == "view")
 bearcad.ui.workbench("model")                            -- back to the model
 ```

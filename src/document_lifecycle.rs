@@ -51,6 +51,7 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::Circle(index) => circle_alive(doc, index),
         SceneElement::Point(point) => point_owner_alive(doc, &point),
         SceneElement::Constraint(index) => constraint_alive(doc, index),
+        SceneElement::Parameter(index) => doc.parameters.contains(index),
         SceneElement::Extrusion(index) => extrusion_alive(doc, index),
         SceneElement::Body(index) => body_alive(doc, index),
         SceneElement::FaceEdge(line) => constraint_line_alive(doc, &line),
@@ -272,6 +273,11 @@ pub fn delete_element(doc: &mut Document, element: SceneElement) -> bool {
         }
         SceneElement::Constraint(index) => {
             if delete_constraint(doc, index) {
+                changed = true;
+            }
+        }
+        SceneElement::Parameter(index) => {
+            if delete_parameter(doc, index) {
                 changed = true;
             }
         }

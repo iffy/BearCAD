@@ -144,6 +144,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::Line(_) => "line",
         SceneElement::Circle(_) => "circle",
         SceneElement::Constraint(_) => "constraint",
+        SceneElement::Parameter(_) => "parameter",
         SceneElement::Point(_) => "point",
         SceneElement::Extrusion(_) => "extrusion",
         SceneElement::Body(_) => "body",
