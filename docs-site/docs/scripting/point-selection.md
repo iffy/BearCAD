@@ -96,23 +96,19 @@ face is pickable; imported STL/STEP bodies have no analytic boundary to referenc
 Constrain a point onto an axis (pins that coordinate to 0) or onto the origin:
 
 ```lua
-bearcad.line{ x = 5, y = 5, x1 = 12, y1 = 8 }
-bearcad.select{ kind = "line", index = 0, endpoint = "start" }
-bearcad.select({ kind = "axis", axis = "x" }, true)   -- add the X axis
-bearcad.add_geometric_constraint("coincident")         -- start point now sits on the X axis
-
-bearcad.select{ kind = "line", index = 0, endpoint = "end" }
-bearcad.select({ kind = "origin" }, true)              -- add the origin
-bearcad.add_geometric_constraint("coincident")         -- end point now sits on the origin
+local a = bearcad.line{ x = 5, y = 5, x1 = 12, y1 = 8 }
+bearcad.constrain("coincident", a:start(), { kind = "axis", axis = "x" })
+bearcad.constrain("coincident", a:endpoint("end"), { kind = "origin" })
 ```
 
 A dimension from the origin to a circle's centre (how far a hole sits from a circular
 face's centre) is the same `{ kind = "origin" }` table:
 
 ```lua
-bearcad.add_constraint({ kind = "point_point",
-                         anchor = { kind = "origin" },
-                         mover  = { kind = "circle", index = 0 } }, "12mm")
+bearcad.dimension{ kind = "point_point",
+                   anchor = { kind = "origin" },
+                   mover  = { kind = "circle", index = 0 },
+                   value = "12mm" }
 ```
 
 Interactively, dragging a point near an axis or the origin snaps it on and adds the same
@@ -120,12 +116,9 @@ constraint.
 
 ## Making two lines collinear
 
-Select two lines and apply `Coincident`:
-
 ```lua
-bearcad.select{ kind = "line", index = 0 }
-bearcad.select({ kind = "line", index = 1 }, true)
-bearcad.add_geometric_constraint("coincident")         -- the two lines are now collinear
+bearcad.constrain("coincident",
+  { kind = "line", index = 0 }, { kind = "line", index = 1 })
 ```
 
 ## Additive selection
@@ -141,12 +134,9 @@ bearcad.select({ kind = "line", index = 1 }, true)
 
 ```lua
 bearcad.new()
-bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0, name = "a" }
-bearcad.line{ x = 20, y = 0, x1 = 30, y1 = 0, name = "b" }
-
-bearcad.select{ kind = "line", index = 0, endpoint = "end" }
-bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
-bearcad.add_geometric_constraint("coincident")
+local a = bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0, name = "a" }
+local b = bearcad.line{ x = 20, y = 0, x1 = 30, y1 = 0, name = "b" }
+bearcad.constrain("coincident", a:endpoint("end"), b:start())
 ```
 
 Combine with

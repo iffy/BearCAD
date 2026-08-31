@@ -21,10 +21,9 @@ bearcad.line{ x = 12, y = 30, x1 = 0,  y1 = 30 }
 bearcad.line{ x = 0,  y = 30, x1 = 0,  y1 = 0 }
 for i = 0, 5 do
   local j = (i + 1) % 6
-  bearcad.select{ kind = "line", index = i, endpoint = "end" }
-  bearcad.select({ kind = "line", index = j, endpoint = "start" }, true)
-  bearcad.add_geometric_constraint("coincident")
-  bearcad.clear_selection()
+  bearcad.constrain("coincident",
+    { kind = "line", index = i, endpoint = "end" },
+    { kind = "line", index = j, endpoint = "start" })
 end
 bearcad.exit_sketch()
 bearcad.extrude{ polygon = { 0, 1, 2, 3, 4, 5 }, distance = 20, name = "Bracket" }

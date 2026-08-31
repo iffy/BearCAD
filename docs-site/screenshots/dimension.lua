@@ -18,13 +18,12 @@ bearcad.ui.pane("parameters", "hide")
 
 bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }   -- 0 base
 bearcad.line{ x = 0, y = 0, x1 = 30, y1 = 22 }  -- 1 tilted leg
-bearcad.select{ kind = "line", index = 0, endpoint = "start" }
-bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
-bearcad.add_geometric_constraint("coincident")
-bearcad.clear_selection()
-bearcad.add_constraint({ kind = "line", index = 0 }, "40mm")
-bearcad.add_constraint({ kind = "line", index = 1 }, "37mm")
-bearcad.add_angle_constraint{ a = 0, b = 1, value = "36deg", sign = 1 }
+bearcad.constrain("coincident",
+  { kind = "line", index = 0, endpoint = "start" },
+  { kind = "line", index = 1, endpoint = "start" })
+bearcad.dimension{ kind = "line", index = 0, value = "40mm" }
+bearcad.dimension{ kind = "line", index = 1, value = "37mm" }
+bearcad.dimension{ kind = "angle", a = 0, b = 1, value = "36deg", sign = 1 }
 
 bearcad.clear_selection()
 bearcad.ui.tool("dimension")

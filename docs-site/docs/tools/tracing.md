@@ -54,9 +54,9 @@ whole image translates to follow (scale never changes). Pin sketch geometry to a
 edge to hold it on the picture. From scripts:
 
 ```lua
-bearcad.select{ kind = "image", index = 0, anchor = "center" }      -- or "top_left", …
-bearcad.select({ kind = "origin" }, true)
-bearcad.add_geometric_constraint("coincident")
+bearcad.constrain("coincident",
+  { kind = "image", index = 0, anchor = "center" },   -- or "top_left", …
+  { kind = "origin" })
 
 bearcad.select{ kind = "image", index = 0, point = 0 }              -- calibration 0 or 1
 bearcad.select{ kind = "image", index = 0, edge = "left" }          -- or "right"/"top"/"bottom"

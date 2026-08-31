@@ -20,22 +20,15 @@ bearcad.line{ x = 0,  y = 0,  x1 = 40, y1 = 3 }   -- 0 bottom
 bearcad.line{ x = 40, y = 3,  x1 = 38, y1 = 25 }  -- 1 right cap
 bearcad.line{ x = 38, y = 25, x1 = 2,  y1 = 22 }  -- 2 top
 for i = 0, 1 do
-  bearcad.select{ kind = "line", index = i, endpoint = "end" }
-  bearcad.select({ kind = "line", index = i + 1, endpoint = "start" }, true)
-  bearcad.add_geometric_constraint("coincident")
+  bearcad.constrain("coincident",
+    { kind = "line", index = i, endpoint = "end" },
+    { kind = "line", index = i + 1, endpoint = "start" })
 end
-bearcad.clear_selection()
-bearcad.select{ kind = "line", index = 0 }
-bearcad.add_geometric_constraint("horizontal")
-bearcad.clear_selection()
-bearcad.select{ kind = "line", index = 0 }
-bearcad.select({ kind = "line", index = 2 }, true)
-bearcad.add_geometric_constraint("parallel")
-bearcad.clear_selection()
-bearcad.select{ kind = "line", index = 1 }
-bearcad.select({ kind = "line", index = 0 }, true)
-bearcad.add_geometric_constraint("perpendicular")
-bearcad.clear_selection()
+bearcad.constrain("horizontal", { kind = "line", index = 0 })
+bearcad.constrain("parallel",
+  { kind = "line", index = 0 }, { kind = "line", index = 2 })
+bearcad.constrain("perpendicular",
+  { kind = "line", index = 1 }, { kind = "line", index = 0 })
 
 -- Leave the two parallel lines selected so the pane shows which constraints apply.
 bearcad.ui.tool("constraint")

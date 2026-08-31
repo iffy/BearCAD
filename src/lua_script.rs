@@ -2803,11 +2803,11 @@ fn parse_distance_target(lua: &Lua, table: Table) -> mlua::Result<DistanceTarget
     match kind.to_ascii_lowercase().as_str() {
         "line" => Ok(DistanceTarget::LineLength(line_key_from_ordinal(
             lua,
-            table.get("index")?,
+            table.ordinal_req("index")?,
         )?)),
         "circle" => Ok(DistanceTarget::CircleDiameter(circle_key_from_ordinal(
             lua,
-            table.get("index")?,
+            table.ordinal_req("index")?,
         )?)),
         // Positioning dimensions (#809), the scripted twins of picking two things under the
         // Dimension tool. The side/direction each one is measured on is captured from the
@@ -5610,84 +5610,82 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Geometric constraints: `bearcad.constrain("parallel", a, b)` with handles / point
+    // tables. Modeling scripts must not mutate selection (#1868).
     api.set(
-        "add_constraint",
-        lua.create_function(|lua, (target, expression): (Table, String)| {
-            let target = parse_distance_target(lua, target)?;
-            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe {
-                tick.exec(Instruction::AddDistanceConstraint { target, expression },
-                )
-            }
-        })?,
-    )?;
-
-    // Angle dimension between two lines: `bearcad.add_angle_constraint{ a = 0, b = 5,
-    // value = "120" }` (bare numbers are degrees; `rad` and parameters work; `sign`
-    // picks which of the two wedges, like moving the cursor does interactively).
-    // When `sign` is omitted, use the natural leg-pair sign so the expression applies
-    // to the acute/obtuse wedge the lines currently form (#489).
-    api.set(
-        "add_angle_constraint",
-        lua.create_function(|lua, opts: Table| {
-            let line_a: usize = opts.get("a")?;
-            let line_b: usize = opts.get("b")?;
-            let expression: String = opts
-                .get::<Option<String>>("value")?
-                .or(opts.get::<Option<f64>>("angle")?.map(|a| a.to_string()))
-                .ok_or_else(|| mlua::Error::external("add_angle_constraint requires `value`"))?;
-            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe {
-                let rotation_sign: i8 = if let Some(s) = opts.get::<Option<i8>>("sign")? {
-                    s
-                } else {
-                    crate::constraints::angle_constraint_natural_sign(
-                        &tick.state().doc,
-                        crate::model::ConstraintLine::Line(line_key_from_ordinal(lua, line_a)?),
-                        crate::model::ConstraintLine::Line(line_key_from_ordinal(lua, line_b)?),
-                    )
-                    .unwrap_or(1)
-                };
-                tick.exec(Instruction::AddAngleConstraint {
-                    line_a,
-                    line_b,
-                    rotation_sign,
-                    expression,
-                })
-            }
-        })?,
-    )?;
-
-    api.set(
-        "add_geometric_constraint",
+        "constrain",
         lua.create_function(|lua, (name, refs): (String, MultiValue)| {
             let kind = parse_geometric_constraint(&name).ok_or_else(|| {
                 mlua::Error::external(format!("unknown geometric constraint '{name}'"))
             })?;
-            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             if refs.is_empty() {
-                return unsafe { tick.exec(Instruction::AddGeometricConstraint(kind)) };
+                return Err(mlua::Error::external(
+                    "constrain requires operands (handles or point tables); \
+                     use bearcad.ui.add_geometric_constraint to apply to the current selection",
+                ));
             }
-            // Explicit-refs form (`"parallel", line_a, line_b`): resolve the referenced
-            // entities, constrain their selection, and restore the script's selection.
             let elements: Vec<SceneElement> = refs
                 .into_iter()
                 .map(|v| resolve_element(lua, v))
                 .collect::<mlua::Result<_>>()?;
-            unsafe {
-                let state = tick.state();
-                let previous = state.scene_selection.ordered();
-                state.scene_selection.clear();
-                for element in &elements {
-                    state.scene_selection.insert(element.clone());
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::Constrain { kind, elements }) }
+        })?,
+    )?;
+
+    // Distance and angle dimensions: `bearcad.dimension{ kind, …, value }`. Angle `value`
+    // is a number (degrees) or an expression; `sign` picks which of the two wedges.
+    api.set(
+        "dimension",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(
+                &opts,
+                "dimension",
+                &[
+                    "kind", "type", "value", "index", "a", "b", "sign", "point", "line",
+                    "anchor", "mover",
+                ],
+            )?;
+            let kind: String = opts.get("kind").or_else(|_| opts.get("type"))?;
+            let expression = lua_amount_expr(&opts, "value")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            if kind.eq_ignore_ascii_case("angle") {
+                let line_a = opts.ordinal_req("a")?;
+                let line_b = opts.ordinal_req("b")?;
+                unsafe {
+                    let rotation_sign: i8 = if let Some(s) = opts.get::<Option<i8>>("sign")? {
+                        s
+                    } else {
+                        crate::constraints::angle_constraint_natural_sign(
+                            &tick.state().doc,
+                            crate::model::ConstraintLine::Line(line_key_from_ordinal(lua, line_a)?),
+                            crate::model::ConstraintLine::Line(line_key_from_ordinal(lua, line_b)?),
+                        )
+                        .unwrap_or(1)
+                    };
+                    tick.exec(Instruction::AddAngleConstraint {
+                        line_a,
+                        line_b,
+                        rotation_sign,
+                        expression,
+                    })
                 }
-                let result = tick.exec(Instruction::AddGeometricConstraint(kind));
-                state.scene_selection.clear();
-                for element in previous {
-                    state.scene_selection.insert(element);
-                }
-                result
+            } else {
+                let target = parse_distance_target(lua, opts)?;
+                unsafe { tick.exec(Instruction::AddDistanceConstraint { target, expression }) }
             }
+        })?,
+    )?;
+
+    // Selection-based apply for UI tests: `bearcad.ui.add_geometric_constraint("parallel")`.
+    api.set(
+        "add_geometric_constraint",
+        lua.create_function(|lua, name: String| {
+            let kind = parse_geometric_constraint(&name).ok_or_else(|| {
+                mlua::Error::external(format!("unknown geometric constraint '{name}'"))
+            })?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::AddGeometricConstraint(kind)) }
         })?,
     )?;
 
@@ -10813,6 +10811,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         bearcad.ui = {}
         local ui_funcs = {
             "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "context_row_rect", "menu_items", "menu_item_rect", "drawing_view_rect", "drawing_loupe_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
+            "add_geometric_constraint",
             "widget_id_warnings", "headless", "_deferred", "palette", "settings",
             "changelog",
             "mcmaster",
@@ -11610,9 +11609,9 @@ pub mod tests {
             bearcad.import_image({path:?})
             -- 40×80 px centred on the origin: origin = (−20, −40), centre = (0, 0).
             bearcad.line{{ x = 30, y = 40, x1 = 60, y1 = 40 }}
-            bearcad.select{{ kind = "image", index = 0, anchor = "center" }}
-            bearcad.select({{ kind = "line", index = 0, endpoint = "start" }}, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.constrain("coincident",
+                {{ kind = "image", index = 0, anchor = "center" }},
+                {{ kind = "line", index = 0, endpoint = "start" }})
             local img = bearcad.get{{ kind = "image", index = 0 }}
             assert(math.abs(img.origin_x - 10) < 1e-2
                 and math.abs(img.origin_y) < 1e-2,
@@ -11637,9 +11636,9 @@ pub mod tests {
             bearcad.import_image({path:?})
             bearcad.begin_sketch{{ kind = "construction_plane", index = 0 }}
             -- Bottom-left coincident with the origin: origin should land on (0, 0).
-            bearcad.select{{ kind = "image", index = 0, anchor = "bottom_left" }}
-            bearcad.select({{ kind = "origin" }}, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.constrain("coincident",
+                {{ kind = "image", index = 0, anchor = "bottom_left" }},
+                {{ kind = "origin" }})
             local img = bearcad.get{{ kind = "image", index = 0 }}
             assert(math.abs(img.origin_x) < 1e-2 and math.abs(img.origin_y) < 1e-2,
               string.format("bottom-left on origin, got (%.3f, %.3f)",
@@ -11659,9 +11658,9 @@ pub mod tests {
             bearcad.import_image({path:?})
             bearcad.begin_sketch{{ kind = "construction_plane", index = 0 }}
             -- Left-edge midpoint coincident with the origin.
-            bearcad.select{{ kind = "image", index = 0, anchor = "middle_left" }}
-            bearcad.select({{ kind = "origin" }}, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.constrain("coincident",
+                {{ kind = "image", index = 0, anchor = "middle_left" }},
+                {{ kind = "origin" }})
             local img = bearcad.get{{ kind = "image", index = 0 }}
             assert(math.abs(img.origin_x) < 1e-2 and math.abs(img.origin_y + 40) < 1e-2,
               string.format("middle-left on origin → origin (0, −40), got (%.3f, %.3f)",
@@ -11682,9 +11681,9 @@ pub mod tests {
             -- A free point coincident with the image's left edge sits on that edge
             -- (the edge is a fixed reference; the point is the mover).
             bearcad.line{{ x = 15, y = 10, x1 = 25, y1 = 10 }}
-            bearcad.select{{ kind = "line", index = 0, endpoint = "start" }}
-            bearcad.select({{ kind = "image", index = 0, edge = "left" }}, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.constrain("coincident",
+                {{ kind = "line", index = 0, endpoint = "start" }},
+                {{ kind = "image", index = 0, edge = "left" }})
             local l = bearcad.get{{ kind = "line", index = 0 }}
             assert(math.abs(l.x0 + 20) < 1e-2, "start x on left edge, got " .. l.x0)
             local img = bearcad.get{{ kind = "image", index = 0 }}
@@ -11711,9 +11710,9 @@ pub mod tests {
             bearcad.import_image({path:?})
             bearcad.begin_sketch{{ kind = "construction_plane", index = 0 }}
             -- Calibration points still constrain as before (#425).
-            bearcad.select{{ kind = "image", index = 0, point = 0 }}
-            bearcad.select({{ kind = "origin" }}, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.constrain("coincident",
+                {{ kind = "image", index = 0, point = 0 }},
+                {{ kind = "origin" }})
             local img = bearcad.get{{ kind = "image", index = 0 }}
             -- Default point 0 is top-middle: origin + (20, 80) = (0, 40). Pinning
             -- it to the origin translates by (0, −40) → origin (−20, −80).
@@ -11740,9 +11739,9 @@ pub mod tests {
             bearcad.new()
             bearcad.import_image({path:?})
             bearcad.begin_sketch{{ kind = "construction_plane", index = 0 }}
-            bearcad.select{{ kind = "image", index = 0, anchor = "bottom_left" }}
-            bearcad.select({{ kind = "origin" }}, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.constrain("coincident",
+                {{ kind = "image", index = 0, anchor = "bottom_left" }},
+                {{ kind = "origin" }})
             local img = bearcad.get{{ kind = "image", index = 0 }}
             assert(math.abs(img.origin_x) < 1e-2 and math.abs(img.origin_y) < 1e-2,
               string.format("bottom-left on origin before calibrate, got (%.3f, %.3f)",
@@ -13608,6 +13607,7 @@ pub mod tests {
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
                                     "key", "type", "pane", "pane_rect", "pane_scroll",
                                     "menu_items", "menu_item_rect",
+                                    "add_geometric_constraint",
                                     "scroll_pane", "ai_sections", "ai_mcp", "menu_structure",
                                     "palette", "wait", "help",
                                     "toolbar_shortcuts", "toolbar_tools", "changelog",
@@ -13630,7 +13630,7 @@ pub mod tests {
             end
             -- declarative modeling stays at the top level
             for _, name in ipairs({ "rect", "line", "circle", "extrude", "new", "select",
-                                    "add_constraint", "add_parameter", "export_stl", "export_3mf",
+                                    "constrain", "dimension", "add_parameter", "export_stl", "export_3mf",
                                     "export_step", "export_preview",
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
                                     "fillet_vertex", "chamfer_edge", "fillet_edge", "project",
@@ -13794,9 +13794,9 @@ pub mod tests {
             assert(bearcad.parameter_value("w") == 30)
 
             bearcad.rect{ width = 20, height = 10 }
-            local par = bearcad.add_geometric_constraint("parallel",
+            local par = bearcad.constrain("parallel",
                 { kind = "line", index = 0 }, { kind = "line", index = 2 })
-            assert(par:kind() == "constraint", "add_geometric_constraint returns a handle")
+            assert(par:kind() == "constraint", "constrain returns a handle")
 
             local box = bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8 }
             local fillet = bearcad.fillet_edge{
@@ -13887,9 +13887,9 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.line{ x = 5, y = 5, x1 = 12, y1 = 8 }
-            bearcad.select{ kind = "line", index = 0, endpoint = "start" }
-            bearcad.select({ kind = "axis", axis = "x" }, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.constrain("coincident",
+                { kind = "line", index = 0, endpoint = "start" },
+                { kind = "axis", axis = "x" })
         "#,
         );
         assert!(
@@ -14361,8 +14361,8 @@ pub mod tests {
             bearcad.new()
             bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
             bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 30 }
-            bearcad.add_constraint({ kind = "line", index = 0 }, "leg = 40mm")
-            bearcad.add_angle_constraint{ a = 0, b = 1, value = "corner = 90deg" }
+            bearcad.dimension{ kind = "line", index = 0, value = "leg = 40mm" }
+            bearcad.dimension{ kind = "angle", a = 0, b = 1, value = "corner = 90deg" }
         "#,
         );
         let param = |name: &str| {
@@ -14394,7 +14394,7 @@ pub mod tests {
             bearcad.new()
             bearcad.add_parameter("leg", "10mm")
             bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
-            bearcad.add_constraint({ kind = "line", index = 0 }, "leg = 40mm")
+            bearcad.dimension{ kind = "line", index = 0, value = "leg = 40mm" }
         "#,
         );
         let leg = state
@@ -14411,7 +14411,7 @@ pub mod tests {
         );
     }
 
-    /// #1353: a declarative circle locks its diameter. `add_constraint` must update
+    /// #1353: a declarative circle locks its diameter. `dimension` must update
     /// that existing dimension instead of erroring "Constraint already exists".
     #[test]
     fn lua_add_constraint_updates_declarative_circle_diameter() {
@@ -14419,7 +14419,7 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.circle{ x = 5, y = 5, r = 4 }
-            bearcad.add_constraint({ kind = "circle", index = 0 }, "d = 15mm")
+            bearcad.dimension{ kind = "circle", index = 0, value = "d = 15mm" }
             local c = bearcad.get{ kind = "circle", index = 0 }
             assert(math.abs(c.diameter - 15) < 1e-3, "diameter stayed " .. tostring(c.diameter))
         "#,
@@ -14434,7 +14434,7 @@ pub mod tests {
         assert_eq!(d.expression, "15mm");
     }
 
-    /// #1353: a declarative rect locks each edge. `add_constraint` on a side
+    /// #1353: a declarative rect locks each edge. `dimension` on a side
     /// updates the existing LineLength instead of erroring.
     #[test]
     fn lua_add_constraint_updates_declarative_rect_edge() {
@@ -14442,7 +14442,7 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.rect{ width = 40, height = 20 }
-            bearcad.add_constraint({ kind = "line", index = 0 }, "50")
+            bearcad.dimension{ kind = "line", index = 0, value = "50" }
             local l = bearcad.get{ kind = "line", index = 0 }
             assert(math.abs(l.length - 50) < 1e-3, "width stayed " .. tostring(l.length))
         "#,
@@ -14519,12 +14519,14 @@ pub mod tests {
             bearcad.new()
             bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
             bearcad.circle{ x = 12, y = 9, r = 3 }
-            bearcad.add_constraint({ kind = "point_line",
-                                     point = { kind = "circle", index = 0 },
-                                     line  = { kind = "line", index = 0 } }, "15mm")
-            bearcad.add_constraint({ kind = "point_line",
-                                     point = { kind = "circle", index = 0 },
-                                     line  = { kind = "axis", axis = "y" } }, "8mm")
+            bearcad.dimension{ kind = "point_line",
+                              point = { kind = "circle", index = 0 },
+                              line  = { kind = "line", index = 0 },
+                              value = "15mm" }
+            bearcad.dimension{ kind = "point_line",
+                              point = { kind = "circle", index = 0 },
+                              line  = { kind = "axis", axis = "y" },
+                              value = "8mm" }
         "#,
         );
         let circle = &state.doc.circles[rkey(0)];
@@ -14536,9 +14538,10 @@ pub mod tests {
             bearcad.new()
             bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
             bearcad.circle{ x = 12, y = 9, r = 3 }
-            bearcad.add_constraint({ kind = "point_point",
-                                     anchor = { kind = "line", index = 0, endpoint = "start" },
-                                     mover  = { kind = "circle", index = 0 } }, "25mm")
+            bearcad.dimension{ kind = "point_point",
+                              anchor = { kind = "line", index = 0, endpoint = "start" },
+                              mover  = { kind = "circle", index = 0 },
+                              value = "25mm" }
         "#,
         );
         let circle = &state.doc.circles[rkey(0)];
@@ -14550,11 +14553,12 @@ pub mod tests {
             bearcad.new()
             bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
             bearcad.line{ x = 0, y = 20, x1 = 40, y1 = 20 }
-            bearcad.add_geometric_constraint("parallel",
+            bearcad.constrain("parallel",
                 { kind = "line", index = 0 }, { kind = "line", index = 1 })
-            bearcad.add_constraint({ kind = "line_line",
-                                     a = { kind = "line", index = 0 },
-                                     b = { kind = "line", index = 1 } }, "12mm")
+            bearcad.dimension{ kind = "line_line",
+                              a = { kind = "line", index = 0 },
+                              b = { kind = "line", index = 1 },
+                              value = "12mm" }
         "#,
         );
         let line = &state.doc.lines[lkey(1)];
@@ -14565,9 +14569,10 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.circle{ x = 8, y = 0, r = 3 }
-            bearcad.add_constraint({ kind = "point_point",
-                                     anchor = { kind = "origin" },
-                                     mover  = { kind = "circle", index = 0 } }, "12mm")
+            bearcad.dimension{ kind = "point_point",
+                              anchor = { kind = "origin" },
+                              mover  = { kind = "circle", index = 0 },
+                              value = "12mm" }
         "#,
         );
         let circle = &state.doc.circles[rkey(0)];
@@ -14583,7 +14588,7 @@ pub mod tests {
         let mut runner = ScriptRunner::from_lua_source(
             r#"
             bearcad.new()
-            local ok, err = pcall(bearcad.add_constraint, { kind = "widget", index = 0 }, "5mm")
+            local ok, err = pcall(bearcad.dimension, { kind = "widget", index = 0, value = "5mm" })
             assert(not ok, "an unknown target should error")
             assert(tostring(err):find("point_line"), "the error should name the valid kinds: " .. tostring(err))
         "#,
@@ -14603,8 +14608,8 @@ pub mod tests {
     #[test]
     fn lua_equal_constraint_is_scriptable() {
         // #47: the Equal constraint is reachable from scripting via
-        // add_geometric_constraint("equal"); it records an Equal constraint between the
-        // two selected edges. (The geometric effect on unlocked lines is covered by the
+        // constrain("equal", a, b); it records an Equal constraint between the
+        // two named edges. (The geometric effect on unlocked lines is covered by the
         // solver/geometric_constraints unit tests; lines drawn with the tool also carry
         // auto length locks, so this test only asserts the constraint is created.)
         let state = run_lua(
@@ -14612,9 +14617,7 @@ pub mod tests {
             bearcad.new()
             bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0, name = "a" }
             bearcad.line{ x = 0, y = 5, x1 = 3, y1 = 5, name = "b" }
-            bearcad.select("a")
-            bearcad.select("b", true)
-            bearcad.add_geometric_constraint("equal")
+            bearcad.constrain("equal", "a", "b")
         "#,
         );
         assert!(
@@ -14640,7 +14643,7 @@ pub mod tests {
             bearcad.line{ x = 20, y = 0, x1 = 30, y1 = 0, name = "b" }
             bearcad.select{ kind = "line", index = 0, endpoint = "end" }
             bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.ui.add_geometric_constraint("coincident")
         "#,
         );
         let end_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -14675,7 +14678,7 @@ pub mod tests {
             bearcad.line{ x = 20, y = 0, x1 = 30, y1 = 0 }
             bearcad.select{ kind = "line", index = 0, endpoint = "end" }
             bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.ui.add_geometric_constraint("coincident")
         "#,
         );
         let end_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -14726,9 +14729,7 @@ pub mod tests {
             bearcad.new()
             local a = bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
             local b = bearcad.line{ x = 20, y = 0, x1 = 30, y1 = 0 }
-            bearcad.select(a:endpoint("end"))
-            bearcad.select(b:start(), true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.constrain("coincident", a:endpoint("end"), b:start())
         "#,
         );
         let end_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
@@ -14761,7 +14762,7 @@ pub mod tests {
             r#"
             bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
             bearcad.select{ kind = "line", index = 0 }
-            local ok, err = pcall(bearcad.add_geometric_constraint, "coincident")
+            local ok, err = pcall(bearcad.ui.add_geometric_constraint, "coincident")
             assert(not ok, "coincident needs two entities; one line must be refused")
             err = tostring(err)
             assert(err:find("still needs"), "unexpected error: " .. err)
@@ -14777,7 +14778,7 @@ pub mod tests {
         let state = run_lua(
             r#"
             bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
-            local ok, err = pcall(bearcad.add_geometric_constraint, "coincident")
+            local ok, err = pcall(bearcad.ui.add_geometric_constraint, "coincident")
             assert(not ok, "coincident with an empty selection must be refused")
             assert(
                 tostring(err):find("no sketch entities"),
@@ -14788,7 +14789,7 @@ pub mod tests {
         assert_eq!(state.doc.constraints.len(), 0);
     }
 
-    /// The explicit-refs form `add_geometric_constraint(kind, a, b)` creates the
+    /// The explicit-refs form `constrain(kind, a, b)` creates the
     /// constraint and leaves the script's own selection untouched.
     #[test]
     fn lua_add_geometric_constraint_refs_form_constrains_and_restores_selection() {
@@ -14798,7 +14799,7 @@ pub mod tests {
             bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
             bearcad.line{ x = 0, y = 20, x1 = 40, y1 = 20 }
             bearcad.select{ kind = "line", index = 0 }
-            bearcad.add_geometric_constraint("parallel",
+            bearcad.constrain("parallel",
                 { kind = "line", index = 0 }, { kind = "line", index = 1 })
         "#,
         );
@@ -14811,6 +14812,141 @@ pub mod tests {
             state.scene_selection.ordered(),
             vec![SceneElement::Line(lkey(0))],
             "the script's selection must survive the refs-form call"
+        );
+    }
+
+    /// #1868: modeling uses `constrain(kind, a, b, …)` with handles / point tables.
+    /// The call does not mutate the script's selection.
+    #[test]
+    fn lua_constrain_explicit_operands_does_not_mutate_selection() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            local a = bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
+            local b = bearcad.line{ x = 0, y = 20, x1 = 40, y1 = 20 }
+            bearcad.select(a)
+            local par = bearcad.constrain("parallel", a, b)
+            assert(par:kind() == "constraint", "constrain returns a handle")
+            local sel = bearcad.selection()
+            assert(#sel == 1 and sel[1].kind == "line" and sel[1].index == 0,
+              "constrain must not change the script's selection")
+        "#,
+        );
+        assert_eq!(
+            state.doc.constraints.len(),
+            1,
+            "constrain must create the constraint"
+        );
+        assert_eq!(
+            state.scene_selection.ordered(),
+            vec![SceneElement::Line(lkey(0))],
+            "the script's selection must survive constrain()"
+        );
+    }
+
+    /// #1868: coincident takes endpoint handles; no select dance.
+    #[test]
+    fn lua_constrain_coincident_from_endpoint_handles() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            local a = bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            local b = bearcad.line{ x = 20, y = 0, x1 = 30, y1 = 0 }
+            bearcad.constrain("coincident", a:endpoint("end"), b:start())
+        "#,
+        );
+        let end_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+            line: lkey(0),
+            end: LineEnd::End,
+        });
+        let start_point = crate::model::ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+            line: lkey(1),
+            end: LineEnd::Start,
+        });
+        assert!(
+            state.doc.constraints.values().any(|c| {
+                matches!(
+                        &c.kind,
+                        crate::model::ConstraintKind::Coincident { a, b }
+                            if (*a == end_point && *b == start_point)
+                                || (*a == start_point && *b == end_point)
+                    )
+            }),
+            "expected Coincident from constrain(), got: {:?}",
+            state.doc.constraints
+        );
+        assert!(
+            state.scene_selection.is_empty(),
+            "constrain must not select the operands"
+        );
+    }
+
+    /// #1868: `dimension{ kind, …, value }` is the one call for length and angle.
+    /// Angle `value` is a number or an expression.
+    #[test]
+    fn lua_dimension_table_sets_length_and_angle() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
+            bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 30 }
+            bearcad.dimension{ kind = "line", index = 0, value = "leg = 40mm" }
+            bearcad.dimension{ kind = "angle", a = 0, b = 1, value = 90 }
+        "#,
+        );
+        let expressions: Vec<String> = state
+            .doc
+            .constraints
+            .values()
+            .map(|c| c.expression.clone())
+            .collect();
+        assert!(
+            expressions.iter().any(|e| e == "leg"),
+            "length dimension should reference the inline parameter, got {expressions:?}"
+        );
+        assert!(
+            expressions.iter().any(|e| e == "90"),
+            "angle value may be a number, got {expressions:?}"
+        );
+        assert!(state.doc.parameters.values().any(|p| p.name == "leg"));
+        assert!(
+            state
+                .doc
+                .constraints
+                .values()
+                .any(|c| matches!(c.kind, crate::model::ConstraintKind::Angle { .. })),
+            "expected an angle dimension, got: {:?}",
+            state.doc.constraints
+        );
+    }
+
+    /// #1868: the split modeling APIs are gone; selection-based apply lives under ui.
+    #[test]
+    fn lua_old_constraint_apis_are_gone_and_ui_uses_selection() {
+        let state = run_lua(
+            r#"
+            assert(bearcad.add_constraint == nil, "add_constraint should be gone")
+            assert(bearcad.add_angle_constraint == nil, "add_angle_constraint should be gone")
+            assert(bearcad.add_geometric_constraint == nil,
+              "add_geometric_constraint should move off the modeling namespace")
+            assert(type(bearcad.constrain) == "function")
+            assert(type(bearcad.dimension) == "function")
+            assert(type(bearcad.ui.add_geometric_constraint) == "function")
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0, name = "a" }
+            bearcad.line{ x = 0, y = 5, x1 = 3, y1 = 5, name = "b" }
+            bearcad.select("a")
+            bearcad.select("b", true)
+            bearcad.ui.add_geometric_constraint("equal")
+        "#,
+        );
+        assert!(
+            state
+                .doc
+                .constraints
+                .values()
+                .any(|c| matches!(c.kind, crate::model::ConstraintKind::Equal { .. })),
+            "ui.add_geometric_constraint should apply to the current selection"
         );
     }
 
@@ -15144,12 +15280,12 @@ pub mod tests {
             bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
             bearcad.line{ x = 10, y = 0, x1 = 20, y1 = 5 }
             bearcad.line{ x = 10, y = 0, x1 = 10, y1 = 10 }
-            bearcad.select{ kind = "line", index = 0, endpoint = "end" }
-            bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
-            bearcad.add_geometric_constraint("coincident")
-            bearcad.select{ kind = "line", index = 0, endpoint = "end" }
-            bearcad.select({ kind = "line", index = 2, endpoint = "start" }, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.constrain("coincident",
+                { kind = "line", index = 0, endpoint = "end" },
+                { kind = "line", index = 1, endpoint = "start" })
+            bearcad.constrain("coincident",
+                { kind = "line", index = 0, endpoint = "end" },
+                { kind = "line", index = 2, endpoint = "start" })
             local ok, err = pcall(bearcad.fillet_vertex, {
                 point = { kind = "line", index = 0, endpoint = "end" },
                 radius = 3,
@@ -16408,9 +16544,9 @@ pub mod tests {
             bearcad.line{ x = 10, y = 0, x1 = 5, y1 = 8 }
             bearcad.line{ x = 5, y = 8, x1 = 0, y1 = 0 }
             for _, pair in ipairs({ {0, 1}, {1, 2}, {2, 0} }) do
-                bearcad.select{ kind = "line", index = pair[1], endpoint = "end" }
-                bearcad.select({ kind = "line", index = pair[2], endpoint = "start" }, true)
-                bearcad.add_geometric_constraint("coincident")
+                bearcad.constrain("coincident",
+                    { kind = "line", index = pair[1], endpoint = "end" },
+                    { kind = "line", index = pair[2], endpoint = "start" })
             end
             bearcad.extrude{ polygon = {0, 1, 2}, distance = 6 }
         "#,
@@ -20563,10 +20699,9 @@ pub mod tests {
         let state = run_lua(
             r#"
             bearcad.rect{ width = 10, height = 10 }
-            bearcad.select{ kind = "line", index = 0, endpoint = "start" }
-            bearcad.select({ kind = "origin" }, true)
-            bearcad.add_geometric_constraint("coincident")
-            bearcad.clear_selection()
+            bearcad.constrain("coincident",
+                { kind = "line", index = 0, endpoint = "start" },
+                { kind = "origin" })
             local ok, err = pcall(function()
                 bearcad.drag_vertex{
                     point = { kind = "line", index = 0, endpoint = "end" },
@@ -21690,9 +21825,9 @@ pub mod tests {
             bearcad.new()
             bearcad.line{ x = 30, y = 40, x1 = 60, y1 = 40 }
             bearcad.text{ text = "Hi", x = 0, y = 0, size = 10 }
-            bearcad.select{ kind = "sketch_text", index = 0, anchor = "center" }
-            bearcad.select({ kind = "line", index = 0, endpoint = "start" }, true)
-            bearcad.add_geometric_constraint("coincident")
+            bearcad.constrain("coincident",
+                { kind = "sketch_text", index = 0, anchor = "center" },
+                { kind = "line", index = 0, endpoint = "start" })
         "#,
         );
         let t = &state.doc.sketch_texts[tkey(0)];

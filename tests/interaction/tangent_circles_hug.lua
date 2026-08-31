@@ -38,9 +38,8 @@ assert(math.abs(gap - (a.r + b.r)) < 0.05,
 -- Now the second circle against the line above them.
 bearcad.clear_selection()
 bearcad.ui.wait(3)
-bearcad.select{ kind = "circle", index = 1 }
-bearcad.select({ kind = "line", index = 0 }, true)
-bearcad.add_geometric_constraint("tangent")
+bearcad.constrain("tangent",
+  { kind = "circle", index = 1 }, { kind = "line", index = 0 })
 bearcad.ui.wait(6)
 
 b = bearcad.get{ kind = "circle", index = 1 }

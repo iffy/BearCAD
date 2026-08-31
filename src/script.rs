@@ -914,6 +914,12 @@ pub enum Instruction {
         target: DistanceTarget,
         expression: String,
     },
+    /// Geometric constraint on explicit operands (modeling `bearcad.constrain`).
+    Constrain {
+        kind: crate::geometric_constraints::GeometricConstraintType,
+        elements: Vec<SceneElement>,
+    },
+    /// Geometric constraint on the current selection (`bearcad.ui.add_geometric_constraint`).
     AddGeometricConstraint(crate::geometric_constraints::GeometricConstraintType),
     ApplyConstraintShortcut(char),
     DragVertex {
@@ -2210,17 +2216,26 @@ impl Instruction {
                 rotation_sign,
                 expression,
             } => format!(
-                "bearcad.add_angle_constraint{{ a = {line_a}, b = {line_b}, sign = {rotation_sign}, value = {expression:?} }}"
+                "bearcad.dimension{{ kind = \"angle\", a = {line_a}, b = {line_b}, sign = {rotation_sign}, value = {expression:?} }}"
             ),
             Instruction::AddDistanceConstraint { target, expression } => {
-                format!(
-                    "bearcad.add_constraint({}, {expression:?})",
-                    distance_target_lua_ref(target)
-                )
+                dimension_lua(target, expression, doc)
+            }
+            Instruction::Constrain { kind, elements } => {
+                let mut s = format!(
+                    "bearcad.constrain({:?}",
+                    geometric_constraint_lua_name(*kind)
+                );
+                for element in elements {
+                    s.push_str(", ");
+                    s.push_str(&element_lua_ref(element, doc));
+                }
+                s.push(')');
+                s
             }
             Instruction::AddGeometricConstraint(kind) => {
                 format!(
-                    "bearcad.add_geometric_constraint({:?})",
+                    "bearcad.ui.add_geometric_constraint({:?})",
                     geometric_constraint_lua_name(*kind)
                 )
             }
@@ -4103,9 +4118,8 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
 /// (e.g. a line endpoint snapping onto an existing vertex/line while drawing, #37/#41) —
 /// `crate::actions::AppState::add_snap_constraint` mutates `doc.constraints` directly, without
 /// going through `Action::AddGeometricConstraint`, so the command log otherwise has nothing to
-/// replay it with. Mirrors the "select both, then apply" flow the constraint pane itself uses:
-/// `bearcad.select(...)` for each side (second call `additive`), then
-/// `bearcad.add_geometric_constraint(...)`. Best-effort — a `ConstraintEntity::Origin` side (the
+/// replay it with. Emits `bearcad.constrain(kind, a, b)` with explicit operands so modeling
+/// replay does not mutate selection (#1868). Best-effort — a `ConstraintEntity::Origin` side (the
 /// sketch origin, #21) isn't a selectable `SceneElement`, so that case (and any kind without a
 /// direct `GeometricConstraintType`) returns `None` rather than emitting an unreplayable stub.
 pub fn instructions_for_snap_constraint(kind: &crate::model::ConstraintKind) -> Option<Vec<Instruction>> {
@@ -4142,11 +4156,10 @@ pub fn instructions_for_snap_constraint(kind: &crate::model::ConstraintKind) -> 
         ),
         _ => return None,
     };
-    Some(vec![
-        Instruction::SelectSceneElement { element: a, additive: false },
-        Instruction::SelectSceneElement { element: b, additive: true },
-        Instruction::AddGeometricConstraint(geometric_kind),
-    ])
+    Some(vec![Instruction::Constrain {
+        kind: geometric_kind,
+        elements: vec![a, b],
+    }])
 }
 
 /// Build a replayable `Instruction::Extrude` for the extrusion the interactive Extrude tool
@@ -5473,19 +5486,41 @@ fn extrusion_edge_lua_ref(edge: crate::model::ExtrusionEdgeRef) -> String {
     }
 }
 
-fn distance_target_lua_ref(target: &DistanceTarget) -> String {
+fn dimension_lua(
+    target: &DistanceTarget,
+    expression: &str,
+    doc: Option<&crate::model::Document>,
+) -> String {
     match target {
         DistanceTarget::LineLength(index) => {
-            format!("{{ kind = \"line\", index = {} }}", index.index())
+            let ord = doc
+                .and_then(|d| d.lines.keys().position(|k| k == *index))
+                .unwrap_or(index.index() as usize);
+            format!("bearcad.dimension{{ kind = \"line\", index = {ord}, value = {expression:?} }}")
         }
         DistanceTarget::CircleDiameter(index) => {
-            format!("{{ kind = \"circle\", index = {} }}", index.index())
+            let ord = doc
+                .and_then(|d| d.circles.keys().position(|k| k == *index))
+                .unwrap_or(index.index() as usize);
+            format!(
+                "bearcad.dimension{{ kind = \"circle\", index = {ord}, value = {expression:?} }}"
+            )
         }
-        DistanceTarget::LineLineDistance { .. }
-        | DistanceTarget::PointPointDistance { .. }
-        | DistanceTarget::PointLineDistance { .. } => {
-            "{ kind = \"selection\" }".to_string()
-        }
+        DistanceTarget::PointPointDistance { anchor, mover, .. } => format!(
+            "bearcad.dimension{{ kind = \"point_point\", anchor = {}, mover = {}, value = {expression:?} }}",
+            constraint_point_lua_ref(anchor, doc),
+            constraint_point_lua_ref(mover, doc),
+        ),
+        DistanceTarget::PointLineDistance { point, line, .. } => format!(
+            "bearcad.dimension{{ kind = \"point_line\", point = {}, line = {}, value = {expression:?} }}",
+            constraint_point_lua_ref(point, doc),
+            constraint_line_lua_ref(line, doc),
+        ),
+        DistanceTarget::LineLineDistance { line_a, line_b, .. } => format!(
+            "bearcad.dimension{{ kind = \"line_line\", a = {}, b = {}, value = {expression:?} }}",
+            constraint_line_lua_ref(line_a, doc),
+            constraint_line_lua_ref(line_b, doc),
+        ),
     }
 }
 
@@ -8610,6 +8645,41 @@ impl ScriptRunner {
                 }
                 StepResult::Continue
             }
+            Instruction::Constrain { kind, elements } => {
+                let Some(session) = state.sketch_session else {
+                    self.last_action_error = Some("Open a sketch to add constraints".to_string());
+                    return StepResult::Continue;
+                };
+                for element in &elements {
+                    if let Err(e) = crate::document_health::require_element_editable(
+                        &state.document_health,
+                        element.clone(),
+                    ) {
+                        self.record_action_error(crate::actions::ActionResult::Err(e));
+                        return StepResult::Continue;
+                    }
+                }
+                let mut selection = crate::selection::SceneSelection::default();
+                for element in elements {
+                    selection.insert(element);
+                }
+                match crate::geometric_constraints::add_geometric_constraint_from_selection(
+                    &mut state.doc,
+                    session.sketch,
+                    kind,
+                    &selection,
+                ) {
+                    Ok(index) => {
+                        state.refresh_document_health();
+                        state.status =
+                            format!("Added {} constraint {}", kind.label(), index.index());
+                    }
+                    Err(e) => {
+                        self.record_action_error(crate::actions::ActionResult::Err(e));
+                    }
+                }
+                StepResult::Continue
+            }
             Instruction::AddGeometricConstraint(kind) => {
                 let result = state.apply(Action::AddGeometricConstraint(kind));
                 self.record_action_error(result);
@@ -9877,7 +9947,7 @@ mod tests {
         panic!("REPL never handed the prompt back");
     }
 
-    /// #404: `add_constraint` sets a status of its own (it used to leave the previous
+    /// #404: `dimension` sets a status of its own (it used to leave the previous
     /// message lingering), and a creation call's `name=` doesn't clobber the creation
     /// status with "Renamed to …".
     #[test]
@@ -9896,7 +9966,7 @@ mod tests {
             .unwrap();
         drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
         lines_tx
-            .send("bearcad.add_constraint({ kind = \"line\", index = 4 }, \"25mm\")\n".to_string())
+            .send("bearcad.dimension{ kind = \"line\", index = 4, value = \"25mm\" }\n".to_string())
             .unwrap();
         drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
         assert_eq!(state.status, "Added dimension (25mm)");

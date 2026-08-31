@@ -73,9 +73,8 @@ assert(math.abs(bearcad.get{ kind = "line", index = 0 }.length - 30) < 0.001,
   "changing the parameter should re-size the rectangle")
 
 -- Constraints.
-bearcad.select{ kind = "line", index = 0 }
-bearcad.select({ kind = "line", index = 2 }, true)
-bearcad.add_geometric_constraint("parallel")
+bearcad.constrain("parallel",
+  { kind = "line", index = 0 }, { kind = "line", index = 2 })
 assert(bearcad.count("constraint") > 0, "the constraint should land")
 
 print("ok: the agent skill's examples still run")

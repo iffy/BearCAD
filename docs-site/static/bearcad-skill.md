@@ -145,12 +145,11 @@ bearcad.add_parameter("w", "24")
 bearcad.rect{ width = "w", height = "w / 3" }
 bearcad.set_parameter("w", "30")             -- everything sized by w re-sizes
 
-bearcad.select{ kind = "line", index = 0 }
-bearcad.select({ kind = "line", index = 1 }, true)   -- true = add to the selection
-bearcad.add_geometric_constraint("parallel")         -- horizontal, vertical, equal,
-                                                     -- perpendicular, coincident, tangent…
-bearcad.add_constraint({ kind = "line", index = 0 }, "25mm")
-bearcad.add_constraint({ kind = "line", index = 1 }, "leg = 40mm")  -- names a parameter
+bearcad.constrain("parallel",                         -- horizontal, vertical, equal,
+  { kind = "line", index = 0 },                       -- perpendicular, coincident, tangent…
+  { kind = "line", index = 1 })
+bearcad.dimension{ kind = "line", index = 0, value = "25mm" }
+bearcad.dimension{ kind = "line", index = 1, value = "leg = 40mm" }  -- names a parameter
 ```
 
 ## Reading state back — verify your own work

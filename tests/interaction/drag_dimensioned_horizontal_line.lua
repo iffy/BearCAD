@@ -2,9 +2,7 @@
 -- still drag via the select tool — vertex or whole-line — with length preserved.
 bearcad.new()
 bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0, dimension = "50" }
-bearcad.select{ kind = "line", index = 0 }
-bearcad.add_geometric_constraint("horizontal")
-bearcad.clear_selection()
+bearcad.constrain("horizontal", { kind = "line", index = 0 })
 bearcad.ui.tool("select")
 bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")
@@ -30,9 +28,7 @@ print("ok: dimensioned horizontal vertex drag")
 -- Whole-line drag from the midpoint.
 bearcad.new()
 bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0, dimension = "50" }
-bearcad.select{ kind = "line", index = 0 }
-bearcad.add_geometric_constraint("horizontal")
-bearcad.clear_selection()
+bearcad.constrain("horizontal", { kind = "line", index = 0 })
 bearcad.ui.tool("select")
 bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")

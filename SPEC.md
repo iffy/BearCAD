@@ -2072,8 +2072,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   point-point coincidence so the text follows the target, matching the old pin semantics.
   Texts re-bake *before* the solve (`recompute_document_geometry`), so anchors are computed
   from current contours, and `EditSketchText` re-solves so a resized text keeps its anchor in
-  place. Scriptable: `bearcad.select{ kind = "sketch_text", index = i, anchor = "center" }`
-  then `bearcad.add_geometric_constraint("coincident")`. Legacy documents with a
+  place. Scriptable: `bearcad.constrain("coincident", { kind = "sketch_text", index = i, anchor = "center" }, …)`. Legacy documents with a
   `SketchText::pin` migrate on load (`storage::migrate_text_pins`) to an equivalent
   `Coincident` constraint; the pin field is never written back.
 - **Width drag handles (#409):** a **selected** wrapped text draws its box (full wrap width ×
@@ -2977,8 +2976,8 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   Autodesk Fusion's inline-parameter behavior.
 - The assignment target follows the normal scoping rules (§5.1); creation is a DAG node
   like any other parameter creation. Scripted dimensions take it too (#797):
-  `bearcad.add_constraint(target, "leg = 40mm")` and `bearcad.add_angle_constraint{ …,
-  value = "corner = 90deg" }` define the parameter and dimension with it.
+  `bearcad.dimension{ kind = "line", index = i, value = "leg = 40mm" }` and
+  `bearcad.dimension{ kind = "angle", …, value = "corner = 90deg" }` define the parameter and dimension with it.
 - If `name` already exists, the input must either **reuse** it (binding the field to the
   existing parameter) or, if a value is also supplied, treat `name=value` as redefining
   that parameter — the UI must make which one is happening unambiguous (e.g. reuse on
@@ -3597,8 +3596,8 @@ ordinal too.
   is then constrained to a *specific* point on that same line (one of its endpoints, or its
   midpoint), the earlier generic point-on-line coincidence is removed in favor of the more
   specific constraint.
-- **Scripting:** `tool constraint`; `select point line 0 start`; `add_geometric_constraint
-  parallel` (uses current selection). Circle tool shortcut is **`O`** (`C` is constraint).
+- **Scripting:** `bearcad.constrain("parallel", a, b)` with explicit operands; selection-based
+  apply is `bearcad.ui.add_geometric_constraint` (UI tests). Circle tool shortcut is **`O`** (`C` is constraint).
 
 ### 6.1 2D sketch constraints (full set)
 Coincident, point-on-entity, parallel, perpendicular (horizontal/vertical are expressed as
@@ -3953,7 +3952,7 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   (this also powers the CLI, §9, and the command palette, §11).
 - **Namespace split.** The primary API is *declarative modeling*, in the spirit of OpenSCAD:
   geometry/document operations live at the top level (`bearcad.new`, `bearcad.rect`,
-  `bearcad.extrude`, `bearcad.add_constraint`, `bearcad.add_parameter`, `bearcad.select`, …).
+  `bearcad.extrude`, `bearcad.constrain`, `bearcad.dimension`, `bearcad.add_parameter`, `bearcad.select`, …).
   All **GUI/UI manipulation** — simulated mouse/keyboard, camera, tools, panes, the command
   palette, and viewport drags — lives under the `bearcad.ui.*` sub-namespace
   (`bearcad.ui.move`, `bearcad.ui.click` (with an optional `{ shift = true }` for a
@@ -4070,13 +4069,13 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   edge?`. (This makes sketching on a solid's face scriptable, e.g. for testing.)
 - **Point-level selection (#68):** `bearcad.select{ kind = "line", index, endpoint = "start"|"end" }`
   selects an individual vertex (a `ConstraintPoint`) rather than the whole element, so e.g.
-  `bearcad.select{...}` + `bearcad.select({...}, true)` + `bearcad.add_geometric_constraint("coincident")`
+  `bearcad.constrain("coincident", a:endpoint("end"), b:start())`
   can join two line endpoints (closing a polygon loop — including a rectangle's four corners)
   purely from a script — a line's two points are `start`/`end`, i.e. `(x0,y0)`/`(x1,y1)`.
   A table with no `endpoint` still resolves to the whole element as before; pass an explicit
   `point = true` to target a point that has no such field (e.g. a circle's center).
   A line handle names the same points as `line:start()` / `line:endpoint("end")`.
-- **Positioning dimensions (#809):** `bearcad.add_constraint` takes the two-thing targets the
+- **Positioning dimensions (#809):** `bearcad.dimension{ kind, …, value }` takes the two-thing targets the
   Dimension tool picks interactively, not just `line` (length) and `circle` (diameter):
   `{ kind = "point_line", point = <point>, line = <line> }` (perpendicular distance from a
   point to an edge — how holes are positioned), `{ kind = "point_point", anchor, mover }`,
