@@ -141,9 +141,9 @@ Parameters make a model parametric; anywhere a size is accepted, an expression s
 too, and the model rebuilds when the parameter changes.
 
 ```lua
-bearcad.parameter("add", "w", "24")
+bearcad.add_parameter("w", "24")
 bearcad.rect{ width = "w", height = "w / 3" }
-bearcad.parameter("value", 0, "30")          -- everything sized by w re-sizes
+bearcad.set_parameter("w", "30")             -- everything sized by w re-sizes
 
 bearcad.select{ kind = "line", index = 0 }
 bearcad.select({ kind = "line", index = 1 }, true)   -- true = add to the selection

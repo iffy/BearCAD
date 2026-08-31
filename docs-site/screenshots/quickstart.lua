@@ -27,12 +27,12 @@ bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
 -- Step 1: parameters. Shown in the Parameters pane (full-window capture).
-bearcad.parameter("add", "leg", "50mm")
-bearcad.parameter("add", "width", "40mm")
-bearcad.parameter("add", "thick", "5mm")
-bearcad.parameter("add", "hole", "5mm")
-bearcad.parameter("add", "bend", "4mm")
-bearcad.parameter("add", "bend_angle", "120deg")
+bearcad.add_parameter("leg", "50mm")
+bearcad.add_parameter("width", "40mm")
+bearcad.add_parameter("thick", "5mm")
+bearcad.add_parameter("hole", "5mm")
+bearcad.add_parameter("bend", "4mm")
+bearcad.add_parameter("bend_angle", "120deg")
 bearcad.ui.pane("parameters", "show")
 bearcad.ui.wait(1)
 bearcad.ui.screenshot(dir .. "/quickstart-params.png", true)
@@ -150,11 +150,10 @@ bearcad.clear_selection()
 bearcad.ui.view("corner", "front_right_bottom")
 shot("quickstart-engrave.png")
 
--- Step 10: the parametric payoff — open the bend flatter by editing the
--- bend_angle parameter (index 5 in the Parameters pane).
-bearcad.parameter("value", 5, "150deg")
+-- Step 10: the parametric payoff — open the bend flatter by editing bend_angle.
+bearcad.set_parameter("bend_angle", "150deg")
 shot("quickstart-angle.png")
-bearcad.parameter("value", 5, "120deg")
+bearcad.set_parameter("bend_angle", "120deg")
 
 -- Hero shot (the PNG the screenshot harness verifies).
 bearcad.ui.view("corner", "front_left_top")

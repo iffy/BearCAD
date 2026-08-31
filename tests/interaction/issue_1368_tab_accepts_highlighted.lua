@@ -2,8 +2,8 @@
 -- not just the top match. `deep`=12mm, `deeper`=25mm; `dee` → ArrowDown picks `deeper` →
 -- Tab accepts it → Enter commits a 25mm extrusion.
 bearcad.new()
-bearcad.parameter("add", "deep", "12mm")
-bearcad.parameter("add", "deeper", "25mm")
+bearcad.add_parameter("deep", "12mm")
+bearcad.add_parameter("deeper", "25mm")
 bearcad.rect{ width = 80, height = 40 }
 bearcad.exit_sketch()
 bearcad.ui.pane("elements", "hide")

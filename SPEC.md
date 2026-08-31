@@ -2935,25 +2935,25 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   front-door knobs — what someone importing the file is expected to change (secondary =
   internals; advisory only, nothing blocked). UI toggles the **inverse** via the
   **Private** checkbox in the per-row gear-options panel (not an eyeball): checked =
-  secondary, unchecked = primary. Scripted as `bearcad.parameter("private", i, bool)`
+  secondary, unchecked = primary. Scripted as `bearcad.edit_parameter{ name, private = bool }`
   (`true` ⇒ secondary). Defaults: existing documents load **secondary**
   (`serde(default)` on `primary`); a **new** parameter is primary (Private unchecked) iff
   its expression is a plain self-contained value (`new_parameter_primary_default`),
   computed once at creation and never on later edits.
 - **Bounds (#1176):** `Parameter.minimum` / `maximum` / `step` are optional expressions
   (`Option<String>`, empty clears). Unit kind (length vs angle) follows the default
-  value's units. Scripted as `bearcad.parameter("min"|"max"|"step", i, expression?)`
-  (`Action::SetParameterBound`). The gear cog on each Parameters-pane row toggles that
+  value's units. Scripted as `bearcad.edit_parameter{ name, min|max|step = expression? }`
+  (`false` or `""` clears; `Action::SetParameterBound`). The gear cog on each Parameters-pane row toggles that
   row's options panel (multiple open at once). Tab from a focused Min field commits and
   focuses Max so typing sets the max; Tab from Max focuses Step (#1576). Scripted as
-  `bearcad.parameter("options", i[, open])`, `bearcad.parameter("edit", i, "min"|"max"|"step")`,
-  `bearcad.parameter("editing")`. **Imported unit instances** cannot edit
+  `bearcad.parameter_options(name[, open])`, `bearcad.parameter_edit(name, "min"|"max"|"step")`,
+  `bearcad.parameter_editing()`. **Imported unit instances** cannot edit
   these options; overrides (`SetUnitParameterOverride` / `unit_override`) are
   clamp-and-snapped to min/max/step (`clamp_and_snap_override_expression`). With both min
   and max resolved, a **slider** sits on the row below the parameter, spanning the name
   and value columns, and snaps to step — the same layout for this document's own
   parameters and for imported unit instances (#1559;
-  `bearcad.parameter("slider", i[, value])`).
+  `bearcad.parameter_slider(name[, value])`).
 - When a parameter's name or value field is focused in the Parameters pane, the Elements
   pane highlights every element that uses that parameter (the dimensions referencing it and
   the geometry they drive), dimming the rest.
@@ -2987,8 +2987,8 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 - **A deleted parameter's name is free (#995).** Deleting a parameter removes it —
   `Document::parameters` is an `arena::Arena` keyed by `ParameterKey` (#1055), so nothing
   has to stay behind to keep the others addressable, and its name stops being claimed the
-  moment it goes. A script names a parameter by its **ordinal** among the live ones,
-  resolved to a key at the script boundary.
+  moment it goes. A script names a parameter by **name or handle**
+  (`add_parameter` / `set_parameter` / `delete_parameter`), resolved to a key at the script boundary.
 
 #### 5.1.2 Derived parameters (#432)
 - A parameter may be **driven by a measurement** (`Parameter::source`,
@@ -3953,7 +3953,7 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   (this also powers the CLI, §9, and the command palette, §11).
 - **Namespace split.** The primary API is *declarative modeling*, in the spirit of OpenSCAD:
   geometry/document operations live at the top level (`bearcad.new`, `bearcad.rect`,
-  `bearcad.extrude`, `bearcad.add_constraint`, `bearcad.parameter`, `bearcad.select`, …).
+  `bearcad.extrude`, `bearcad.add_constraint`, `bearcad.add_parameter`, `bearcad.select`, …).
   All **GUI/UI manipulation** — simulated mouse/keyboard, camera, tools, panes, the command
   palette, and viewport drags — lives under the `bearcad.ui.*` sub-namespace
   (`bearcad.ui.move`, `bearcad.ui.click` (with an optional `{ shift = true }` for a
@@ -4032,7 +4032,7 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   and `image`); `bearcad.body_stats(i)` (mesh
   volume/triangles/bbox); `bearcad.status()`; `bearcad.version()` (Help → About
   identity: release tag, or crate version + SHA); `bearcad.selection()`;
-  `bearcad.parameter("get"|"get_expression", name)`; and **`bearcad.pickers()`** (#968), the
+  `bearcad.parameter_value` / `bearcad.parameter_expression`; and **`bearcad.pickers()`** (#968), the
   active tool's element pickers — per picker its `name`, whether it's `focused`, its `limit`
   (absent when unlimited), the element-kind names it `accepts`, and the `items` it holds. This
   is the only way to tell an **accepted** pick from a **rejected** one: a body-set tool consumes

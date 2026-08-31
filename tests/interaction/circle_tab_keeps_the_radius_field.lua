@@ -1,7 +1,7 @@
 -- #1718: a circle has exactly one value field, so Tab has nowhere to go. It must stay on
 -- the diameter input rather than handing focus to the toolbar, where typing is lost.
 bearcad.new()
-bearcad.parameter("add", "bore", "18mm")
+bearcad.add_parameter("bore", "18mm")
 -- A sketch to draw in: the Circle tool needs one open before it takes a ground click.
 bearcad.line{ x = -60, y = -60, x1 = -50, y1 = -60 }
 bearcad.open_sketch(0)

@@ -66,9 +66,9 @@ bearcad.move_bodies{ bodies = {shelled}, x = 40 }
 
 -- Parameters drive geometry, and changing one re-sizes it.
 bearcad.new()
-bearcad.parameter("add", "w", "24")
+bearcad.add_parameter("w", "24")
 bearcad.rect{ width = "w", height = "w / 3" }
-bearcad.parameter("value", 0, "30")
+bearcad.set_parameter("w", "30")
 assert(math.abs(bearcad.get{ kind = "line", index = 0 }.length - 30) < 0.001,
   "changing the parameter should re-size the rectangle")
 

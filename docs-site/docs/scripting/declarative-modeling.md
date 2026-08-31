@@ -98,12 +98,12 @@ parameters, arithmetic and units (`"w / 3"`, `"5in"`, `"45deg"`). A string stays
 the model rebuilds when the parameter changes:
 
 ```lua
-bearcad.parameter("add", "w", "24")
+bearcad.add_parameter("w", "24")
 bearcad.rect{ width = "w", height = "w / 3" }
 bearcad.circle{ x = 40, y = 0, diameter = "w" }        -- `r`/`radius` take expressions too
 bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = "w / 2" }
 bearcad.edit_extrusion{ extrusion = 0, distance = "w" }
-bearcad.parameter("value", 0, "30")                    -- everything above re-sizes
+bearcad.set_parameter("w", "30")                       -- everything above re-sizes
 ```
 
 An expression that doesn't evaluate fails the call with an error naming it. Options tables
@@ -303,10 +303,10 @@ bearcad.add_constraint({ kind = "line", index = 0 }, "25mm")
 bearcad.add_constraint({ kind = "line", index = 1 }, "leg = 40mm")
 -- Repeating `add_constraint` on an already-dimensioned line or circle updates the value.
 
-bearcad.parameter("add", "A", "5mm")
-bearcad.parameter("value", 0, "A + 5in")
-bearcad.parameter("name", 0, "Len")     -- rename parameter 0
-bearcad.parameter("delete", 0)
+bearcad.add_parameter("A", "5mm")
+bearcad.set_parameter("A", "A + 5in")
+bearcad.edit_parameter{ name = "A", rename = "Len" }
+bearcad.delete_parameter("Len")
 ```
 
 ## Editing dimensions while drawing
@@ -369,9 +369,9 @@ print(bearcad.status())                        -- the status-bar text
 print(bearcad.session_log())                   -- what this run has done, timestamped
 print(bearcad.version())                       -- Help → About identity
 
-bearcad.parameter("add", "A", "5mm")
-assert(bearcad.parameter("get", "A") == 5)     -- evaluated value (mm / degrees)
-assert(bearcad.parameter("get_expression", "A") == "5mm")
+bearcad.add_parameter("A", "5mm")
+assert(bearcad.parameter_value("A") == 5)     -- evaluated value (mm / degrees)
+assert(bearcad.parameter_expression("A") == "5mm")
 ```
 
 `get` returns `nil` for an out-of-range or deleted index. See also

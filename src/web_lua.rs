@@ -144,11 +144,23 @@ fn run_command(
         serde_json::from_str(args_json).map_err(|e| format!("bad arguments: {e}"))?
     };
 
-    // `parameter(action, ...)` has an action-dependent positional shape, so it's handled
-    // before the generic positional adaptor. `add`/`from_line_length` are actions; `get`/
-    // `get_expression` are reads.
-    if name == "parameter" {
-        return run_parameter(&args, runner, state, synthetic, viewport, ctx);
+    // Name-first parameter verbs (#1867): mix of actions, reads, and pane state, so they
+    // sit here rather than going through the generic instruction adaptor.
+    if matches!(
+        name,
+        "add_parameter"
+            | "set_parameter"
+            | "parameter_value"
+            | "parameter_expression"
+            | "delete_parameter"
+            | "edit_parameter"
+            | "parameter_from_line_length"
+            | "parameter_options"
+            | "parameter_edit"
+            | "parameter_editing"
+            | "parameter_slider"
+    ) {
+        return run_parameter_verb(name, &args, runner, state, synthetic, viewport, ctx);
     }
 
     // Reads and actions that need `AppState` beyond the document (or take a positional
@@ -351,9 +363,9 @@ fn exec(
     }
 }
 
-/// `bearcad.parameter(action, ...)`: `add`/`from_line_length` are actions; `get`/
-/// `get_expression` read the document. Mirrors the desktop `parameter` closure.
-fn run_parameter(
+/// Name-first parameter verbs (#1867). Mirrors the desktop closures.
+fn run_parameter_verb(
+    name: &str,
     args: &Value,
     runner: &mut ScriptRunner,
     state: &mut AppState,
@@ -361,96 +373,48 @@ fn run_parameter(
     viewport: Option<egui::Rect>,
     ctx: &egui::Context,
 ) -> Result<Value, String> {
-    let a = args.get("__args").and_then(Value::as_array).cloned().unwrap_or_default();
-    let action = a.first().and_then(Value::as_str).ok_or("parameter requires an action")?;
-    match action {
-        "add" => {
+    let a = args.get("__args").and_then(Value::as_array);
+    match name {
+        "add_parameter" => {
             let name = a
-                .get(1)
+                .and_then(|a| a.first())
                 .and_then(Value::as_str)
-                .ok_or("parameter add requires a name")?
+                .or_else(|| args.get("name").and_then(Value::as_str))
+                .ok_or("add_parameter requires a name")?
                 .to_string();
             let expression = a
-                .get(2)
+                .and_then(|a| a.get(1))
+                .or_else(|| args.get("expression"))
                 .and_then(value_to_string)
-                .ok_or("parameter add requires an expression")?;
+                .ok_or("add_parameter requires an expression")?;
             exec(
                 runner,
-                Instruction::AddParameter { name, expression },
-                state,
-                synthetic,
-                viewport,
-                ctx,
-            )?;
-            Ok(Value::Null)
-        }
-        "from_line_length" => {
-            let line_index = a
-                .get(1)
-                .and_then(Value::as_u64)
-                .ok_or("parameter from_line_length requires a line index")? as usize;
-            let name = a.get(2).and_then(Value::as_str).map(str::to_string);
-            exec(
-                runner,
-                Instruction::CreateParameterFromLineLength { line_index, name },
-                state,
-                synthetic,
-                viewport,
-                ctx,
-            )?;
-            Ok(Value::Null)
-        }
-        "get" | "get_expression" => {
-            let name = a
-                .get(1)
-                .and_then(Value::as_str)
-                .ok_or("parameter get requires a parameter name")?;
-            let Some(param) = state.doc.parameters.values().find(|p| p.name == name) else {
-                return Ok(Value::Null);
-            };
-            if action == "get_expression" {
-                return Ok(json!(param.expression));
-            }
-            Ok(
-                match crate::value::eval_parameter_in_doc(&param.expression, &state.doc) {
-                    Some(crate::value::EvaluatedParameter::LengthMm(v))
-                    | Some(crate::value::EvaluatedParameter::AngleRad(v)) => json!(v),
-                    None => Value::Null,
-                },
-            )
-        }
-        // #1180: Private is the inverse of primary (true = secondary/hidden).
-        "private" => {
-            let index = a
-                .get(1)
-                .and_then(Value::as_u64)
-                .ok_or("parameter private requires index")? as usize;
-            let private = a
-                .get(2)
-                .and_then(Value::as_bool)
-                .ok_or("parameter private requires true/false")?;
-            exec(
-                runner,
-                Instruction::SetParameterPrimary {
-                    index,
-                    primary: !private,
+                Instruction::AddParameter {
+                    name: name.clone(),
+                    expression,
                 },
                 state,
                 synthetic,
                 viewport,
                 ctx,
             )?;
-            Ok(Value::Null)
+            let index = state
+                .doc
+                .parameters
+                .values()
+                .position(|p| p.name == name)
+                .unwrap_or(state.doc.parameters.len().saturating_sub(1));
+            Ok(json!({ "kind": "parameter", "index": index }))
         }
-        "value" | "expression" => {
-            let index = a
-                .get(1)
-                .and_then(Value::as_u64)
-                .ok_or("parameter value requires index")? as usize;
+        "set_parameter" => {
+            let target = a.and_then(|a| a.first()).or_else(|| args.get("name"));
+            let index = json_parameter_index(target, &state.doc, "set_parameter")?
+                .ok_or_else(|| "set_parameter: no such parameter".to_string())?;
             let expression = a
-                .get(2)
+                .and_then(|a| a.get(1))
+                .or_else(|| args.get("expression"))
                 .and_then(value_to_string)
-                .ok_or("parameter value requires expression")?;
+                .ok_or("set_parameter requires an expression")?;
             exec(
                 runner,
                 Instruction::SetParameterExpression { index, expression },
@@ -461,37 +425,32 @@ fn run_parameter(
             )?;
             Ok(Value::Null)
         }
-        "min" | "minimum" | "max" | "maximum" | "step" => {
-            let which = match action {
-                "min" | "minimum" => crate::parameters::ParameterBound::Minimum,
-                "max" | "maximum" => crate::parameters::ParameterBound::Maximum,
-                "step" => crate::parameters::ParameterBound::Step,
-                _ => unreachable!(),
+        "parameter_value" | "parameter_expression" => {
+            let target = a.and_then(|a| a.first()).or_else(|| args.get("name"));
+            let Some(index) = json_parameter_index(target, &state.doc, name)? else {
+                return Ok(Value::Null);
             };
-            let index = a
-                .get(1)
-                .and_then(Value::as_u64)
-                .ok_or_else(|| format!("parameter {} requires index", which.label()))?
-                as usize;
-            let expression = match a.get(2) {
-                None | Some(Value::Null) => None,
-                Some(v) => {
-                    let s = value_to_string(v)
-                        .ok_or_else(|| format!("parameter {} expression must be a string", which.label()))?;
-                    if s.trim().is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                }
+            let Some(param) = state.doc.parameters.values().nth(index) else {
+                return Ok(Value::Null);
             };
+            if name == "parameter_expression" {
+                return Ok(json!(param.expression));
+            }
+            Ok(
+                match crate::value::eval_parameter_in_doc(&param.expression, &state.doc) {
+                    Some(crate::value::EvaluatedParameter::LengthMm(v)) => json!(v),
+                    Some(crate::value::EvaluatedParameter::AngleRad(v)) => json!(v.to_degrees()),
+                    None => Value::Null,
+                },
+            )
+        }
+        "delete_parameter" => {
+            let target = a.and_then(|a| a.first()).or_else(|| args.get("name"));
+            let index = json_parameter_index(target, &state.doc, "delete_parameter")?
+                .ok_or_else(|| "delete_parameter: no such parameter".to_string())?;
             exec(
                 runner,
-                Instruction::SetParameterBound {
-                    index,
-                    which,
-                    expression,
-                },
+                Instruction::DeleteParameter { index },
                 state,
                 synthetic,
                 viewport,
@@ -499,16 +458,98 @@ fn run_parameter(
             )?;
             Ok(Value::Null)
         }
-        "options" => {
-            let index = a
-                .get(1)
+        "edit_parameter" => {
+            let o = args.as_object().ok_or("edit_parameter requires a table")?;
+            let target = o.get("name").ok_or("edit_parameter requires a `name`")?;
+            let index = json_parameter_index(Some(target), &state.doc, "edit_parameter")?
+                .ok_or_else(|| "edit_parameter: no such parameter".to_string())?;
+            if let Some(rename) = o.get("rename").and_then(Value::as_str) {
+                exec(
+                    runner,
+                    Instruction::SetParameterName {
+                        index,
+                        name: rename.to_string(),
+                    },
+                    state,
+                    synthetic,
+                    viewport,
+                    ctx,
+                )?;
+            }
+            if let Some(private) = o.get("private").and_then(Value::as_bool) {
+                exec(
+                    runner,
+                    Instruction::SetParameterPrimary {
+                        index,
+                        primary: !private,
+                    },
+                    state,
+                    synthetic,
+                    viewport,
+                    ctx,
+                )?;
+            }
+            for (key, which) in [
+                ("min", crate::parameters::ParameterBound::Minimum),
+                ("max", crate::parameters::ParameterBound::Maximum),
+                ("step", crate::parameters::ParameterBound::Step),
+            ] {
+                if let Some(v) = o.get(key) {
+                    let expression = json_bound_expression(v, key)?;
+                    exec(
+                        runner,
+                        Instruction::SetParameterBound {
+                            index,
+                            which,
+                            expression,
+                        },
+                        state,
+                        synthetic,
+                        viewport,
+                        ctx,
+                    )?;
+                }
+            }
+            Ok(Value::Null)
+        }
+        "parameter_from_line_length" => {
+            let line_index = a
+                .and_then(|a| a.first())
                 .and_then(Value::as_u64)
-                .ok_or("parameter options requires index")? as usize;
+                .or_else(|| args.get("line").and_then(Value::as_u64))
+                .ok_or("parameter_from_line_length requires a line")? as usize;
+            let pname = a
+                .and_then(|a| a.get(1))
+                .and_then(Value::as_str)
+                .or_else(|| args.get("name").and_then(Value::as_str))
+                .map(str::to_string);
+            exec(
+                runner,
+                Instruction::CreateParameterFromLineLength {
+                    line_index,
+                    name: pname.clone(),
+                },
+                state,
+                synthetic,
+                viewport,
+                ctx,
+            )?;
+            let index = pname
+                .and_then(|n| state.doc.parameters.values().position(|p| p.name == n))
+                .unwrap_or(state.doc.parameters.len().saturating_sub(1));
+            Ok(json!({ "kind": "parameter", "index": index }))
+        }
+        "parameter_options" => {
+            let target = a.and_then(|a| a.first()).or_else(|| args.get("name"));
+            let index = json_parameter_index(target, &state.doc, "parameter_options")?
+                .ok_or_else(|| "parameter_options: no such parameter".to_string())?;
             let Some(key) = state.doc.parameters.keys().nth(index) else {
                 return Err(format!("Parameter {index} not found"));
             };
-            match a.get(2) {
-                None | Some(Value::Null) => Ok(json!(state.parameters_pane.options_open.contains(&key))),
+            match a.and_then(|a| a.get(1)).or_else(|| args.get("open")) {
+                None | Some(Value::Null) => {
+                    Ok(json!(state.parameters_pane.options_open.contains(&key)))
+                }
                 Some(Value::Bool(open)) => {
                     if *open {
                         state.parameters_pane.options_open.insert(key);
@@ -525,21 +566,20 @@ fn run_parameter(
                     }
                     Ok(Value::Null)
                 }
-                _ => Err("parameter options open flag must be true/false".into()),
+                _ => Err("parameter_options open flag must be true/false".into()),
             }
         }
-        "edit" => {
-            let index = a
-                .get(1)
-                .and_then(Value::as_u64)
-                .ok_or("parameter edit requires index")? as usize;
+        "parameter_edit" => {
+            let target = a.and_then(|a| a.first()).or_else(|| args.get("name"));
+            let index = json_parameter_index(target, &state.doc, "parameter_edit")?
+                .ok_or_else(|| "parameter_edit: no such parameter".to_string())?;
             let field = a
-                .get(2)
+                .and_then(|a| a.get(1))
                 .and_then(Value::as_str)
-                .ok_or("parameter edit requires \"min\", \"max\", or \"step\"")?;
-            let which = crate::parameters::ParameterBound::from_name(field).ok_or(
-                "parameter edit field must be \"min\", \"max\", or \"step\"",
-            )?;
+                .or_else(|| args.get("field").and_then(Value::as_str))
+                .ok_or("parameter_edit requires \"min\", \"max\", or \"step\"")?;
+            let which = crate::parameters::ParameterBound::from_name(field)
+                .ok_or("parameter_edit field must be \"min\", \"max\", or \"step\"")?;
             let Some(key) = state.doc.parameters.keys().nth(index) else {
                 return Err(format!("Parameter {index} not found"));
             };
@@ -551,7 +591,7 @@ fn run_parameter(
                 .begin_options_edit(key, which, &current);
             Ok(Value::Null)
         }
-        "editing" => {
+        "parameter_editing" => {
             let Some((key, which)) = state.parameters_pane.options_editing else {
                 return Ok(Value::Null);
             };
@@ -560,26 +600,22 @@ fn run_parameter(
             };
             Ok(json!({
                 "index": index,
+                "name": state.doc.parameters[key].name,
                 "field": which.script_name(),
             }))
         }
-        "slider" => {
-            let index = a
-                .get(1)
-                .and_then(Value::as_u64)
-                .ok_or("parameter slider requires index")? as usize;
-            let spec = state
-                .doc
-                .parameters
-                .keys()
-                .nth(index)
-                .and_then(|key| {
-                    crate::parameters::parameter_slider_spec(&state.doc, &state.doc.parameters[key])
-                });
+        "parameter_slider" => {
+            let target = a.and_then(|a| a.first()).or_else(|| args.get("name"));
+            let Some(index) = json_parameter_index(target, &state.doc, "parameter_slider")? else {
+                return Ok(Value::Null);
+            };
+            let spec = state.doc.parameters.keys().nth(index).and_then(|key| {
+                crate::parameters::parameter_slider_spec(&state.doc, &state.doc.parameters[key])
+            });
             let Some(spec) = spec else {
                 return Ok(Value::Null);
             };
-            match a.get(2) {
+            match a.and_then(|a| a.get(1)).or_else(|| args.get("value")) {
                 None | Some(Value::Null) => {
                     let mut t = serde_json::Map::new();
                     t.insert("min".into(), json!(spec.min));
@@ -593,7 +629,7 @@ fn run_parameter(
                 Some(v) => {
                     let slider_v = v
                         .as_f64()
-                        .ok_or("parameter slider value must be a number (mm / rad)")?
+                        .ok_or("parameter_slider value must be a number (mm / degrees)")?
                         as f32;
                     let key = state.doc.parameters.keys().nth(index).unwrap();
                     let expression = crate::parameters::parameter_slider_expression(
@@ -614,7 +650,59 @@ fn run_parameter(
                 }
             }
         }
-        other => Err(format!("unknown parameter action '{other}'")),
+        other => Err(format!("unknown parameter call '{other}'")),
+    }
+}
+
+fn json_parameter_index(
+    value: Option<&Value>,
+    doc: &Document,
+    what: &str,
+) -> Result<Option<usize>, String> {
+    let Some(value) = value else {
+        return Err(format!("{what} requires a parameter name or handle"));
+    };
+    match value {
+        Value::Number(_) => Err(format!(
+            "{what} takes a parameter name or handle, not an ordinal"
+        )),
+        Value::String(name) => {
+            if let Some(element) = crate::hierarchy::element_from_id(doc, name) {
+                return match element {
+                    SceneElement::Parameter(_) => Ok(crate::hierarchy::element_live_index(
+                        doc, &element,
+                    )),
+                    other => Err(format!(
+                        "{what} expected a parameter, got {}",
+                        script_json::scene_element_full_kind_name(&other)
+                    )),
+                };
+            }
+            Ok(doc.parameters.values().position(|p| p.name == name))
+        }
+        Value::Object(_) => {
+            let element = resolve_element(value, doc)?;
+            match element {
+                SceneElement::Parameter(_) => Ok(crate::hierarchy::element_live_index(doc, &element)),
+                other => Err(format!(
+                    "{what} expected a parameter, got {}",
+                    script_json::scene_element_full_kind_name(&other)
+                )),
+            }
+        }
+        _ => Err(format!("{what} takes a parameter name or handle")),
+    }
+}
+
+fn json_bound_expression(v: &Value, which: &str) -> Result<Option<String>, String> {
+    match v {
+        Value::Null | Value::Bool(false) => Ok(None),
+        Value::String(s) if s.trim().is_empty() => Ok(None),
+        Value::String(s) => Ok(Some(s.clone())),
+        Value::Number(n) => Ok(Some(n.to_string())),
+        _ => Err(format!(
+            "edit_parameter `{which}` must be an expression string, or false to clear"
+        )),
     }
 }
 

@@ -16,7 +16,7 @@ document/import/export/screenshot operations the API exposes.
 
 - The **primary API is declarative modeling**, OpenSCAD-style, at the top level:
   `bearcad.new`, `bearcad.rect`, `bearcad.extrude`, `bearcad.add_constraint`,
-  `bearcad.parameter`, `bearcad.select`, ….
+  `bearcad.add_parameter`, `bearcad.select`, ….
 - **All GUI manipulation** — simulated mouse/keyboard, camera, tools, panes, the
   palette — lives under **`bearcad.ui.*`**: `bearcad.ui.click`, `bearcad.ui.key`,
   `bearcad.ui.orbit`, `bearcad.ui.tool`, `bearcad.ui.screenshot`, ….

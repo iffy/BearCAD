@@ -304,7 +304,7 @@ Always run the tests.
             "bearcad.new",
             "bearcad.rect",
             "bearcad.extrude",
-            "bearcad.parameter",
+            "bearcad.add_parameter",
             "bearcad.export_step",
             "bearcad.ui.screenshot",
             "millimetres",  // units, the classic silent mistake

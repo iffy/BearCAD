@@ -1,7 +1,7 @@
 -- #880: clicking a face with the Extrude tool leaves the distance field holding the
 -- keyboard — an expression typed straight away sets the depth, with no click on the field.
 bearcad.new()
-bearcad.parameter("add", "deep", "12mm")
+bearcad.add_parameter("deep", "12mm")
 bearcad.rect{ width = 80, height = 40 }
 bearcad.exit_sketch()
 -- Hide the side panes (CI's WM-less Xvfb can't maximize; see tests/interaction).

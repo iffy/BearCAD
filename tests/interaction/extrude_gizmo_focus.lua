@@ -1,7 +1,7 @@
 -- #1161: clicking the Extrude tool's pull handle focuses the distance field so typing
 -- immediately overwrites and sets the depth (no click on the field required).
 bearcad.new()
-bearcad.parameter("add", "deep", "12mm")
+bearcad.add_parameter("deep", "12mm")
 bearcad.rect{ width = 80, height = 40 }
 bearcad.exit_sketch()
 -- Hide the side panes (CI's WM-less Xvfb can't maximize; see tests/interaction).

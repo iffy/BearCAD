@@ -115,22 +115,19 @@ exactly one **sketch** selected it becomes **Sketch units** — a per-sketch ove
 ## Scripting
 
 ```lua
-bearcad.parameter("add", "A", "5mm")
-bearcad.parameter("value", 0, "A + 5in")     -- edit parameter 0's expression
-bearcad.parameter("name", 0, "Len")
-bearcad.parameter("private", 0, true)        -- hide from import (internal)
-bearcad.parameter("min", 0, "1mm")           -- optional bounds; min+max ⇒ slider
-bearcad.parameter("max", 0, "100mm")
-bearcad.parameter("step", 0, "0.5mm")
-bearcad.parameter("options", 0, true)        -- open the row's gear-options
-bearcad.parameter("edit", 0, "min")          -- focus a bound field (Tab → max → step)
-bearcad.parameter("editing")                 -- {index=, field="min"|"max"|"step"} or nil
-bearcad.parameter("slider", 0)               -- {min=, max=, value=, step?} or nil
-bearcad.parameter("slider", 0, 15)           -- set via the slider (mm / rad, snapped)
-bearcad.parameter("min", 0)                  -- clear a bound
-bearcad.parameter("delete", 0)
-assert(bearcad.parameter("get", "A") == 5)   -- evaluated (mm / degrees)
-bearcad.parameter("get_expression", "A")     -- "5mm", as typed
+local p = bearcad.add_parameter("A", "5mm")
+bearcad.set_parameter("A", "A + 5in")        -- name or handle
+bearcad.edit_parameter{ name = p, rename = "Len", private = true,
+  min = "1mm", max = "100mm", step = "0.5mm" }  -- min+max ⇒ slider
+bearcad.parameter_options("Len", true)       -- open the row's gear-options
+bearcad.parameter_edit("Len", "min")         -- focus a bound field (Tab → max → step)
+bearcad.parameter_editing()                  -- {name=, field="min"|"max"|"step"} or nil
+bearcad.parameter_slider("Len")              -- {min=, max=, value=, step?} or nil
+bearcad.parameter_slider("Len", 15)          -- set via the slider (mm / degrees, snapped)
+bearcad.edit_parameter{ name = "Len", min = false }  -- clear a bound
+bearcad.delete_parameter("Len")
+assert(bearcad.parameter_value("A") == 5)    -- evaluated (mm / degrees)
+bearcad.parameter_expression("A")            -- "5mm", as typed
 
 bearcad.set_units{ length = "in", angle = "deg" }          -- document defaults
 bearcad.set_units{ sketch = 0, length = "mm" }             -- per-sketch override

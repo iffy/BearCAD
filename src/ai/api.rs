@@ -116,8 +116,8 @@ Shape-tool cuboids use the same edge calls with `kind = "vertical"` etc. on the 
 ## Parameters and constraints
 
 ```
-bearcad.parameter("add", "w", "24")
-bearcad.parameter("value", i, "30")
+bearcad.add_parameter("w", "24")
+bearcad.set_parameter("w", "30")
 bearcad.select{ kind, index, endpoint? }               -- second arg true = add
                                                        -- line vertex: endpoint = "start"|"end"
                                                        -- or line:start() / line:endpoint("end")

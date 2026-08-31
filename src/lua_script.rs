@@ -871,6 +871,108 @@ fn lua_index_arg(lua: &Lua, value: Option<&Value>, what: &str) -> mlua::Result<u
     Ordinal::from_lua(value.clone(), lua).map(|o| o.0)
 }
 
+/// A parameter named by its name string, handle, id, or `{ kind = "parameter", index }`.
+/// Bare ordinals are the old footgun and are refused (#1867).
+fn lua_parameter_index(lua: &Lua, value: Option<&Value>, what: &str) -> mlua::Result<usize> {
+    match lua_parameter_index_opt(lua, value, what)? {
+        Some(index) => Ok(index),
+        None => {
+            let label = match value {
+                Some(Value::String(s)) => format!("'{s}'", s = s.to_str()?),
+                _ => "that parameter".to_string(),
+            };
+            Err(mlua::Error::external(format!("{what}: no parameter named {label}")))
+        }
+    }
+}
+
+fn lua_parameter_index_opt(
+    lua: &Lua,
+    value: Option<&Value>,
+    what: &str,
+) -> mlua::Result<Option<usize>> {
+    let Some(value) = value else {
+        return Err(mlua::Error::external(format!(
+            "{what} requires a parameter name or handle"
+        )));
+    };
+    match value {
+        Value::Integer(_) | Value::Number(_) => Err(mlua::Error::external(format!(
+            "{what} takes a parameter name or handle, not an ordinal"
+        ))),
+        Value::String(s) => {
+            let name = s.to_str()?.to_string();
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let doc = unsafe { &tick.state().doc };
+            if let Some(element) = crate::hierarchy::element_from_id(doc, &name) {
+                return match element {
+                    SceneElement::Parameter(_) => ordinal_of_element(lua, &element).map(|o| Some(o.0)),
+                    other => Err(mlua::Error::external(format!(
+                        "{what} expected a parameter, got {}",
+                        element_kind_name(other)
+                    ))),
+                };
+            }
+            let index = doc.parameters.values().position(|p| p.name == name);
+            Ok(index)
+        }
+        other => {
+            let element = resolve_element(lua, other.clone())?;
+            match element {
+                SceneElement::Parameter(_) => ordinal_of_element(lua, &element).map(|o| Some(o.0)),
+                other => Err(mlua::Error::external(format!(
+                    "{what} expected a parameter, got {}",
+                    element_kind_name(other)
+                ))),
+            }
+        }
+    }
+}
+
+fn lua_expression_string(value: Option<&Value>, what: &str) -> mlua::Result<String> {
+    match value {
+        Some(Value::String(s)) => Ok(s.to_str()?.to_string()),
+        Some(Value::Integer(i)) => Ok(i.to_string()),
+        Some(Value::Number(n)) => Ok(n.to_string()),
+        _ => Err(mlua::Error::external(format!("{what} requires an expression"))),
+    }
+}
+
+fn lua_parameter_value(lua: &Lua, expression: &str) -> mlua::Result<Value> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let doc = unsafe { &tick.state().doc };
+    match crate::value::eval_parameter_in_doc(expression, doc) {
+        Some(crate::value::EvaluatedParameter::LengthMm(v)) => Ok(Value::Number(v as f64)),
+        Some(crate::value::EvaluatedParameter::AngleRad(v)) => {
+            Ok(Value::Number(v.to_degrees() as f64))
+        }
+        None => Ok(Value::Nil),
+    }
+}
+
+fn lua_bound_expression(value: Value, which: &str) -> mlua::Result<Option<String>> {
+    match value {
+        Value::Nil | Value::Boolean(false) => Ok(None),
+        Value::String(s) => {
+            let s = s.to_str()?.to_string();
+            if s.trim().is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(s))
+            }
+        }
+        Value::Integer(i) => Ok(Some(i.to_string())),
+        Value::Number(n) => Ok(Some(n.to_string())),
+        _ => Err(mlua::Error::external(format!(
+            "edit_parameter `{which}` must be an expression string, or false to clear"
+        ))),
+    }
+}
+
 fn resolve_element(lua: &Lua, value: Value) -> mlua::Result<SceneElement> {
     match value {
         Value::UserData(ud) => {
@@ -6358,172 +6460,96 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1867: name-first parameter functions. The old `parameter("add"|"value"|…)`
+    // dispatcher is gone; a script names a parameter (or holds the handle `add_parameter`
+    // returns) instead of an ordinal that shifts after a delete.
     api.set(
-        "parameter",
-        lua.create_function(|lua, args: MultiValue| {
-            let args = args.into_vec();
-            let action = match args.first() {
-                Some(Value::String(s)) => s.to_str()?.to_ascii_lowercase(),
-                _ => return Err(mlua::Error::external("parameter requires action")),
+        "add_parameter",
+        lua.create_function(|lua, (name, expression): (String, Value)| {
+            let expression = lua_expression_string(Some(&expression), "add_parameter")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let created = unsafe { tick.exec(Instruction::AddParameter { name, expression }) }?;
+            created.into_lua(lua)
+        })?,
+    )?;
+    api.set(
+        "set_parameter",
+        lua.create_function(|lua, (target, expression): (Value, Value)| {
+            let index = lua_parameter_index(lua, Some(&target), "set_parameter")?;
+            let expression = lua_expression_string(Some(&expression), "set_parameter")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetParameterExpression { index, expression }) }
+        })?,
+    )?;
+    api.set(
+        "parameter_value",
+        lua.create_function(|lua, target: Value| {
+            let Some(index) = lua_parameter_index_opt(lua, Some(&target), "parameter_value")? else {
+                return Ok(Value::Nil);
             };
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            match action.as_str() {
-                "add" => {
-                    let name = match args.get(1) {
-                        Some(Value::String(s)) => s.to_str()?.to_string(),
-                        _ => return Err(mlua::Error::external("parameter add requires name")),
-                    };
-                    let expression = match args.get(2) {
-                        Some(Value::String(s)) => s.to_str()?.to_string(),
-                        _ => {
-                            return Err(mlua::Error::external(
-                                "parameter add requires expression",
-                            ))
-                        }
-                    };
-                    let created =
-                        unsafe { tick.exec(Instruction::AddParameter { name, expression }) }?;
-                    created.into_lua(lua)
+            let doc = unsafe { &tick.state().doc };
+            let Some(param) = doc.parameters.values().nth(index) else {
+                return Ok(Value::Nil);
+            };
+            lua_parameter_value(lua, &param.expression)
+        })?,
+    )?;
+    api.set(
+        "parameter_expression",
+        lua.create_function(|lua, target: Value| {
+            let Some(index) = lua_parameter_index_opt(lua, Some(&target), "parameter_expression")?
+            else {
+                return Ok(Value::Nil);
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let doc = unsafe { &tick.state().doc };
+            let Some(param) = doc.parameters.values().nth(index) else {
+                return Ok(Value::Nil);
+            };
+            Ok(Value::String(lua.create_string(&param.expression)?))
+        })?,
+    )?;
+    api.set(
+        "delete_parameter",
+        lua.create_function(|lua, target: Value| {
+            let index = lua_parameter_index(lua, Some(&target), "delete_parameter")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::DeleteParameter { index }) }
+        })?,
+    )?;
+    api.set(
+        "edit_parameter",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(
+                &opts,
+                "edit_parameter",
+                &["name", "private", "min", "max", "step", "rename"],
+            )?;
+            let target: Value = opts.get("name").map_err(|_| {
+                mlua::Error::external("edit_parameter requires a `name` (string or handle)")
+            })?;
+            let index = lua_parameter_index(lua, Some(&target), "edit_parameter")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            if let Some(name) = opts.get::<Option<String>>("rename")? {
+                unsafe { tick.exec(Instruction::SetParameterName { index, name })? };
+            }
+            if opts.contains_key("private")? {
+                let private: bool = opts.get("private")?;
+                unsafe {
+                    tick.exec(Instruction::SetParameterPrimary {
+                        index,
+                        primary: !private,
+                    })?;
                 }
-                // Pure reads (#107): `parameter("get", name)` evaluates the named parameter
-                // to its numeric value in the API's units — mm for lengths, degrees for
-                // angles (#1657) — or nil; `parameter("get_expression", name)` returns the
-                // raw expression string.
-                "get" | "get_expression" => {
-                    let name = match args.get(1) {
-                        Some(Value::String(s)) => s.to_str()?.to_string(),
-                        _ => {
-                            return Err(mlua::Error::external(
-                                "parameter get requires a parameter name",
-                            ))
-                        }
-                    };
-                    let doc = unsafe { &tick.state().doc };
-                    let Some(param) = doc.parameters.values().find(|p| p.name == name) else {
-                        return Ok(Value::Nil);
-                    };
-                    if action == "get_expression" {
-                        return Ok(Value::String(lua.create_string(&param.expression)?));
-                    }
-                    match crate::value::eval_parameter_in_doc(&param.expression, doc) {
-                        Some(crate::value::EvaluatedParameter::LengthMm(v)) => {
-                            Ok(Value::Number(v as f64))
-                        }
-                        Some(crate::value::EvaluatedParameter::AngleRad(v)) => {
-                            Ok(Value::Number(v.to_degrees() as f64))
-                        }
-                        None => Ok(Value::Nil),
-                    }
-                }
-                "from_line_length" => {
-                    let line_index = match args.get(1) {
-                        Some(Value::Integer(i)) => *i as usize,
-                        Some(Value::Number(n)) => n.round() as usize,
-                        _ => {
-                            return Err(mlua::Error::external(
-                                "parameter from_line_length requires line index",
-                            ))
-                        }
-                    };
-                    let name = match args.get(2) {
-                        Some(Value::String(s)) => Some(s.to_str()?.to_string()),
-                        None => None,
-                        _ => {
-                            return Err(mlua::Error::external(
-                                "parameter from_line_length name must be a string",
-                            ))
-                        }
-                    };
-                    unsafe {
-                        tick.exec(Instruction::CreateParameterFromLineLength {
-                            line_index,
-                            name,
-                        })?;
-                    }
-                    Ok(Value::Nil)
-                }
-                "value" | "expression" => {
-                    let index = lua_index_arg(lua, args.get(1), "parameter value")?;
-                    let expression = match args.get(2) {
-                        Some(Value::String(s)) => s.to_str()?.to_string(),
-                        _ => {
-                            return Err(mlua::Error::external(
-                                "parameter value requires expression",
-                            ))
-                        }
-                    };
-                    unsafe {
-                        tick.exec(Instruction::SetParameterExpression { index, expression })?;
-                    }
-                    Ok(Value::Nil)
-                }
-                "name" => {
-                    let index = lua_index_arg(lua, args.get(1), "parameter name")?;
-                    let name = match args.get(2) {
-                        Some(Value::String(s)) => s.to_str()?.to_string(),
-                        _ => return Err(mlua::Error::external("parameter name requires name")),
-                    };
-                    unsafe {
-                        tick.exec(Instruction::SetParameterName { index, name })?;
-                    }
-                    Ok(Value::Nil)
-                }
-                "delete" => {
-                    let index = lua_index_arg(lua, args.get(1), "parameter delete")?;
-                    unsafe {
-                        tick.exec(Instruction::DeleteParameter { index })?;
-                    }
-                    Ok(Value::Nil)
-                }
-                // #1180: Private is the inverse of primary (true = secondary/hidden).
-                "private" => {
-                    let index = lua_index_arg(lua, args.get(1), "parameter private")?;
-                    let private = match args.get(2) {
-                        Some(Value::Boolean(b)) => *b,
-                        _ => {
-                            return Err(mlua::Error::external(
-                                "parameter private requires true/false",
-                            ))
-                        }
-                    };
-                    unsafe {
-                        tick.exec(Instruction::SetParameterPrimary {
-                            index,
-                            primary: !private,
-                        })?;
-                    }
-                    Ok(Value::Nil)
-                }
-                // #1176: min / max / step bounds — expression string sets, omit/empty clears.
-                "min" | "minimum" | "max" | "maximum" | "step" => {
-                    let which = match action.as_str() {
-                        "min" | "minimum" => crate::parameters::ParameterBound::Minimum,
-                        "max" | "maximum" => crate::parameters::ParameterBound::Maximum,
-                        "step" => crate::parameters::ParameterBound::Step,
-                        _ => unreachable!(),
-                    };
-                    let index = lua_index_arg(
-                        lua,
-                        args.get(1),
-                        &format!("parameter {}", which.label()),
-                    )?;
-                    let expression = match args.get(2) {
-                        Some(Value::String(s)) => {
-                            let s = s.to_str()?.to_string();
-                            if s.trim().is_empty() {
-                                None
-                            } else {
-                                Some(s)
-                            }
-                        }
-                        Some(Value::Nil) | None => None,
-                        _ => {
-                            return Err(mlua::Error::external(format!(
-                                "parameter {} expression must be a string",
-                                which.label()
-                            )))
-                        }
-                    };
+            }
+            for (key, which) in [
+                ("min", crate::parameters::ParameterBound::Minimum),
+                ("max", crate::parameters::ParameterBound::Maximum),
+                ("step", crate::parameters::ParameterBound::Step),
+            ] {
+                if opts.contains_key(key)? {
+                    let expression = lua_bound_expression(opts.get(key)?, key)?;
                     unsafe {
                         tick.exec(Instruction::SetParameterBound {
                             index,
@@ -6531,172 +6557,144 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                             expression,
                         })?;
                     }
+                }
+            }
+            Ok(Value::Nil)
+        })?,
+    )?;
+    api.set(
+        "parameter_from_line_length",
+        lua.create_function(|lua, (line, name): (Value, Option<String>)| {
+            let line_index = lua_index_arg(lua, Some(&line), "parameter_from_line_length")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let created = unsafe {
+                tick.exec(Instruction::CreateParameterFromLineLength { line_index, name })?
+            };
+            created.into_lua(lua)
+        })?,
+    )?;
+    api.set(
+        "parameter_options",
+        lua.create_function(|lua, (target, open): (Value, Option<bool>)| {
+            let index = lua_parameter_index(lua, Some(&target), "parameter_options")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let Some(key) = state.doc.parameters.keys().nth(index) else {
+                return Err(mlua::Error::external(format!("Parameter {index} not found")));
+            };
+            match open {
+                None => Ok(Value::Boolean(
+                    state.parameters_pane.options_open.contains(&key),
+                )),
+                Some(true) => {
+                    state.parameters_pane.options_open.insert(key);
                     Ok(Value::Nil)
                 }
-                // #1576: open/close the gear-options panel, or query whether it's open.
-                "options" => {
-                    let index = match args.get(1) {
-                        Some(Value::Integer(i)) => *i as usize,
-                        Some(Value::Number(n)) => n.round() as usize,
-                        _ => {
-                            return Err(mlua::Error::external(
-                                "parameter options requires index",
-                            ))
-                        }
-                    };
-                    let state = unsafe { tick.state() };
-                    let Some(key) = state.doc.parameters.keys().nth(index) else {
-                        return Err(mlua::Error::external(format!(
-                            "Parameter {index} not found"
-                        )));
-                    };
-                    match args.get(2) {
-                        None | Some(Value::Nil) => Ok(Value::Boolean(
-                            state.parameters_pane.options_open.contains(&key),
-                        )),
-                        Some(Value::Boolean(open)) => {
-                            if *open {
-                                state.parameters_pane.options_open.insert(key);
-                            } else {
-                                state.parameters_pane.options_open.remove(&key);
-                                if state
-                                    .parameters_pane
-                                    .options_editing
-                                    .is_some_and(|(k, _)| k == key)
-                                {
-                                    state.parameters_pane.options_editing = None;
-                                    state.parameters_pane.options_draft.clear();
-                                }
-                            }
-                            Ok(Value::Nil)
-                        }
-                        _ => Err(mlua::Error::external(
-                            "parameter options open flag must be true/false",
-                        )),
-                    }
-                }
-                // #1576: start editing a bound field so Tab/type drive the live widgets.
-                "edit" => {
-                    let index = match args.get(1) {
-                        Some(Value::Integer(i)) => *i as usize,
-                        Some(Value::Number(n)) => n.round() as usize,
-                        _ => {
-                            return Err(mlua::Error::external("parameter edit requires index"))
-                        }
-                    };
-                    let field = match args.get(2) {
-                        Some(Value::String(s)) => s.to_str()?.to_string(),
-                        _ => {
-                            return Err(mlua::Error::external(
-                                "parameter edit requires \"min\", \"max\", or \"step\"",
-                            ))
-                        }
-                    };
-                    let which = crate::parameters::ParameterBound::from_name(&field)
-                        .ok_or_else(|| {
-                            mlua::Error::external(
-                                "parameter edit field must be \"min\", \"max\", or \"step\"",
-                            )
-                        })?;
-                    let state = unsafe { tick.state() };
-                    let Some(key) = state.doc.parameters.keys().nth(index) else {
-                        return Err(mlua::Error::external(format!(
-                            "Parameter {index} not found"
-                        )));
-                    };
-                    let current = crate::parameters::bound_expression(
-                        &state.doc.parameters[key],
-                        which,
-                    )
-                    .unwrap_or("")
-                    .to_string();
-                    state
+                Some(false) => {
+                    state.parameters_pane.options_open.remove(&key);
+                    if state
                         .parameters_pane
-                        .begin_options_edit(key, which, &current);
+                        .options_editing
+                        .is_some_and(|(k, _)| k == key)
+                    {
+                        state.parameters_pane.options_editing = None;
+                        state.parameters_pane.options_draft.clear();
+                    }
                     Ok(Value::Nil)
                 }
-                "editing" => {
-                    let state = unsafe { tick.state() };
-                    let Some((key, which)) = state.parameters_pane.options_editing else {
-                        return Ok(Value::Nil);
-                    };
-                    let Some(index) = state.doc.parameters.keys().position(|k| k == key) else {
-                        return Ok(Value::Nil);
-                    };
+            }
+        })?,
+    )?;
+    api.set(
+        "parameter_edit",
+        lua.create_function(|lua, (target, field): (Value, String)| {
+            let index = lua_parameter_index(lua, Some(&target), "parameter_edit")?;
+            let which = crate::parameters::ParameterBound::from_name(&field).ok_or_else(|| {
+                mlua::Error::external("parameter_edit field must be \"min\", \"max\", or \"step\"")
+            })?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let Some(key) = state.doc.parameters.keys().nth(index) else {
+                return Err(mlua::Error::external(format!("Parameter {index} not found")));
+            };
+            let current = crate::parameters::bound_expression(&state.doc.parameters[key], which)
+                .unwrap_or("")
+                .to_string();
+            state
+                .parameters_pane
+                .begin_options_edit(key, which, &current);
+            Ok(Value::Nil)
+        })?,
+    )?;
+    api.set(
+        "parameter_editing",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let Some((key, which)) = state.parameters_pane.options_editing else {
+                return Ok(Value::Nil);
+            };
+            let Some(index) = state.doc.parameters.keys().position(|k| k == key) else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("index", index)?;
+            t.set("name", state.doc.parameters[key].name.as_str())?;
+            t.set("field", which.script_name())?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+    api.set(
+        "parameter_slider",
+        lua.create_function(|lua, (target, value): (Value, Option<Value>)| {
+            let Some(index) = lua_parameter_index_opt(lua, Some(&target), "parameter_slider")? else {
+                return Ok(Value::Nil);
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let spec = {
+                let doc = unsafe { &tick.state().doc };
+                doc.parameters.keys().nth(index).and_then(|key| {
+                    crate::parameters::parameter_slider_spec(doc, &doc.parameters[key])
+                })
+            };
+            let Some(spec) = spec else {
+                return Ok(Value::Nil);
+            };
+            match value {
+                None | Some(Value::Nil) => {
                     let t = lua.create_table()?;
-                    t.set("index", index)?;
-                    t.set("field", which.script_name())?;
+                    t.set("min", spec.min as f64)?;
+                    t.set("max", spec.max as f64)?;
+                    t.set("value", spec.current as f64)?;
+                    if let Some(step) = spec.limits.step {
+                        t.set("step", step as f64)?;
+                    }
                     Ok(Value::Table(t))
                 }
-                // #1559: local min+max slider — get `{min, max, value, step?}` or set a
-                // canonical-unit number (clamp-and-snapped like a drag).
-                "slider" => {
-                    let index = match args.get(1) {
-                        Some(Value::Integer(i)) => *i as usize,
-                        Some(Value::Number(n)) => n.round() as usize,
-                        _ => {
-                            return Err(mlua::Error::external(
-                                "parameter slider requires index",
-                            ))
-                        }
+                Some(Value::Integer(_) | Value::Number(_)) => {
+                    let v = match value {
+                        Some(Value::Integer(i)) => i as f32,
+                        Some(Value::Number(n)) => n as f32,
+                        _ => unreachable!(),
                     };
-                    let spec = {
+                    let expression = {
                         let doc = unsafe { &tick.state().doc };
-                        doc.parameters
-                            .keys()
-                            .nth(index)
-                            .and_then(|key| {
-                                crate::parameters::parameter_slider_spec(doc, &doc.parameters[key])
-                            })
-                    };
-                    let Some(spec) = spec else {
-                        return Ok(Value::Nil);
-                    };
-                    match args.get(2) {
-                        None | Some(Value::Nil) => {
-                            let t = lua.create_table()?;
-                            t.set("min", spec.min as f64)?;
-                            t.set("max", spec.max as f64)?;
-                            t.set("value", spec.current as f64)?;
-                            if let Some(step) = spec.limits.step {
-                                t.set("step", step as f64)?;
-                            }
-                            Ok(Value::Table(t))
-                        }
-                        Some(Value::Integer(_) | Value::Number(_)) => {
-                            let v = match args.get(2) {
-                                Some(Value::Integer(i)) => *i as f32,
-                                Some(Value::Number(n)) => *n as f32,
-                                _ => unreachable!(),
-                            };
-                            let expression = {
-                                let doc = unsafe { &tick.state().doc };
-                                let key = doc.parameters.keys().nth(index).unwrap();
-                                crate::parameters::parameter_slider_expression(
-                                    doc,
-                                    &doc.parameters[key],
-                                    v,
-                                )
-                            }
-                            .ok_or_else(|| {
-                                mlua::Error::external("parameter has no slider")
-                            })?;
-                            unsafe {
-                                tick.exec(Instruction::SetParameterExpression {
-                                    index,
-                                    expression,
-                                })?;
-                            }
-                            Ok(Value::Nil)
-                        }
-                        _ => Err(mlua::Error::external(
-                            "parameter slider value must be a number (mm / rad)",
-                        )),
+                        let key = doc.parameters.keys().nth(index).unwrap();
+                        crate::parameters::parameter_slider_expression(
+                            doc,
+                            &doc.parameters[key],
+                            v,
+                        )
                     }
+                    .ok_or_else(|| mlua::Error::external("parameter has no slider"))?;
+                    unsafe {
+                        tick.exec(Instruction::SetParameterExpression { index, expression })?;
+                    }
+                    Ok(Value::Nil)
                 }
-                other => Err(mlua::Error::external(format!(
-                    "unknown parameter action '{other}'"
-                ))),
+                _ => Err(mlua::Error::external(
+                    "parameter_slider value must be a number (mm / degrees)",
+                )),
             }
         })?,
     )?;
@@ -10954,7 +10952,7 @@ pub mod tests {
             assert(sl.cutters == 1, "cutters, got " .. tostring(sl.cutters))
 
             bearcad.new()
-            bearcad.parameter("add", "width", "10")
+            bearcad.add_parameter("width", "10")
             bearcad.save("{source_s}")
             bearcad.new()
             bearcad.save("{host_s}")
@@ -11193,7 +11191,7 @@ pub mod tests {
         let state = run_lua(
             r#"
             bearcad.new()
-            bearcad.parameter("add", "leg", "30")
+            bearcad.add_parameter("leg", "30")
 
             -- Expression strings work for placement and length, like rect/circle/cuboid.
             bearcad.line{ x = "1in", y = 0, length = "1in", angle = 0 }
@@ -11268,7 +11266,7 @@ pub mod tests {
               "bottom middle, got " .. img.to[1] .. "," .. img.to[2])
             assert(math.abs(img.length - 80) < 1e-3, "span " .. img.length)
 
-            bearcad.parameter("add", "scale", "20")
+            bearcad.add_parameter("scale", "20")
             bearcad.calibrate_image{{ image = 0, length = "2 * scale" }}
             img = bearcad.get{{ kind = "image", index = 0 }}
             assert(math.abs(img.height - 40) < 1e-3, "halved height, got " .. img.height)
@@ -11331,7 +11329,7 @@ pub mod tests {
             img = bearcad.get{{ kind = "image", index = 0 }}
             assert(math.abs(img.opacity - 0.0) < 1e-6, "clamped low " .. tostring(img.opacity))
 
-            bearcad.parameter("add", "fade", "0.25")
+            bearcad.add_parameter("fade", "0.25")
             bearcad.image_opacity{{ image = 0, opacity = "2 * fade" }}
             img = bearcad.get{{ kind = "image", index = 0 }}
             assert(math.abs(img.opacity - 0.5) < 1e-6, "expr opacity " .. tostring(img.opacity))
@@ -12127,8 +12125,8 @@ pub mod tests {
             -- #1729: the walkthrough measures a 40 mm edge and records it.
             assert(bearcad.count("parameter") == 1,
               "one parameter, got " .. bearcad.count("parameter"))
-            assert(bearcad.parameter("get", "width") == 40,
-              "width measures the edge, got " .. tostring(bearcad.parameter("get", "width")))
+            assert(bearcad.parameter_value("width") == 40,
+              "width measures the edge, got " .. tostring(bearcad.parameter_value("width")))
             "#,
         );
     }
@@ -12487,8 +12485,8 @@ pub mod tests {
                 bearcad.ui.tutorial_next()
               end
             end
-            assert(bearcad.parameter("get", "width") == 30, "width changed to 30mm")
-            assert(bearcad.parameter("get", "height") == 50, "height changed to 50mm")
+            assert(bearcad.parameter_value("width") == 30, "width changed to 30mm")
+            assert(bearcad.parameter_value("height") == 50, "height changed to 50mm")
             assert(bearcad.count("extrusion") == 1, "extruded")
             assert(bearcad.count("line") >= 4, "rectangle")
             "#,
@@ -12859,7 +12857,7 @@ pub mod tests {
         let mut state = run_lua(
             r#"
             bearcad.new()
-            bearcad.parameter("add", "gap", "3")
+            bearcad.add_parameter("gap", "3")
             bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
             bearcad.offset_sketch{ sketch = 0, lines = {0}, distance = "gap" }
             "#,
@@ -13467,7 +13465,7 @@ pub mod tests {
         let state = run_lua(&format!(
             r#"
             bearcad.new()
-            bearcad.parameter("add", "width", "10")
+            bearcad.add_parameter("width", "10")
             bearcad.save("{source_s}")
             bearcad.new()
             bearcad.save("{host_s}")
@@ -13478,7 +13476,7 @@ pub mod tests {
             assert(bearcad.sqlite_scalar("SELECT CAST(substr(document, 1, 15) AS TEXT) FROM units")
                 == "SQLite format 3", "nested blob must be a .bearcad")
             bearcad.open("{source_s}")
-            bearcad.parameter("value", 0, "99")
+            bearcad.set_parameter("width", "99")
             bearcad.save()
             bearcad.open("{host_s}")
             bearcad.sync_unit(0)
@@ -13530,7 +13528,7 @@ pub mod tests {
             end
             -- declarative modeling stays at the top level
             for _, name in ipairs({ "rect", "line", "circle", "extrude", "new", "select",
-                                    "add_constraint", "parameter", "export_stl", "export_3mf",
+                                    "add_constraint", "add_parameter", "export_stl", "export_3mf",
                                     "export_step", "export_preview",
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
                                     "fillet_vertex", "chamfer_edge", "fillet_edge", "project",
@@ -13679,19 +13677,19 @@ pub mod tests {
         );
     }
 
-    /// #1864: fillet/chamfer, geometric constraints, and `parameter("add")` hand back
+    /// #1864: fillet/chamfer, geometric constraints, and `add_parameter` hand back
     /// what they made, so the new op can be named and selected without hunting `count-1`.
     #[test]
     fn lua_fillet_constraint_and_parameter_return_handles() {
         run_lua_expect_ok(
             r#"
             bearcad.new()
-            local p = bearcad.parameter("add", "w", "24")
-            assert(p:kind() == "parameter", "parameter add returns a handle, got " .. tostring(p))
+            local p = bearcad.add_parameter("w", "24")
+            assert(p:kind() == "parameter", "add_parameter returns a handle, got " .. tostring(p))
             assert(p:name() == "w")
             assert(p:index() == 0)
-            bearcad.parameter("value", p, "30")
-            assert(bearcad.parameter("get", "w") == 30)
+            bearcad.set_parameter(p, "30")
+            assert(bearcad.parameter_value("w") == 30)
 
             bearcad.rect{ width = 20, height = 10 }
             local par = bearcad.add_geometric_constraint("parallel",
@@ -14292,7 +14290,7 @@ pub mod tests {
         let state = run_lua(
             r#"
             bearcad.new()
-            bearcad.parameter("add", "leg", "10mm")
+            bearcad.add_parameter("leg", "10mm")
             bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
             bearcad.add_constraint({ kind = "line", index = 0 }, "leg = 40mm")
         "#,
@@ -17454,13 +17452,13 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.set_units{ length = "in" }
-            bearcad.parameter("add", "A", "1.5")
-            local v = bearcad.parameter("get", "A")
+            bearcad.add_parameter("A", "1.5")
+            local v = bearcad.parameter_value("A")
             local want = 1.5 * 25.4
             assert(math.abs(v - want) < 1e-4, "bare 1.5 in inches doc should be " .. want .. " mm, got " .. tostring(v))
             -- Explicit mm still works as expected.
-            bearcad.parameter("add", "B", "10mm")
-            local b = bearcad.parameter("get", "B")
+            bearcad.add_parameter("B", "10mm")
+            local b = bearcad.parameter_value("B")
             assert(math.abs(b - 10) < 1e-4, "10mm should be 10 mm, got " .. tostring(b))
         "#);
     }
@@ -17857,7 +17855,7 @@ pub mod tests {
     fn lua_sizes_accept_parameter_expressions() {
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "w", "24")
+            bearcad.add_parameter("w", "24")
             bearcad.rect{ width = "w", height = "w / 3" }
             bearcad.circle{ x = 40, y = 0, radius = "w / 4" }
             bearcad.circle{ x = 60, y = 0, diameter = "w" }
@@ -17886,10 +17884,10 @@ pub mod tests {
         // …so editing the parameter rebuilds the scripted model like a hand-built one.
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "w", "24")
+            bearcad.add_parameter("w", "24")
             bearcad.rect{ width = "w", height = "w / 3" }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = "w / 2" }
-            bearcad.parameter("value", 0, "30")
+            bearcad.set_parameter("w", "30")
             "#,
         );
         let l = &state.doc.lines[lkey(0)];
@@ -18549,7 +18547,7 @@ pub mod tests {
     fn lua_shapes_are_parametric_and_editable() {
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "side", "10")
+            bearcad.add_parameter("side", "10")
             bearcad.cuboid{ width = "side", depth = "side", height = "side", name = "Cube" }
             bearcad.edit_shape{ index = 0, height = "side * 3" }
             "#,
@@ -19526,7 +19524,7 @@ pub mod tests {
     fn lua_plane_offset_accepts_expression() {
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "gap", "12")
+            bearcad.add_parameter("gap", "12")
             bearcad.plane{ offset = "gap * 2" }
             "#,
         );
@@ -19543,8 +19541,8 @@ pub mod tests {
     fn lua_text_rotation_and_wrap_accept_expressions() {
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "turn", "30deg")
-            bearcad.parameter("add", "col", "20")
+            bearcad.add_parameter("turn", "30deg")
+            bearcad.add_parameter("col", "20")
             bearcad.text{ text = "hi", x = 0, y = 0, size = 5, rotation = "turn", wrap = "col * 2" }
             "#,
         );
@@ -19566,7 +19564,7 @@ pub mod tests {
     fn lua_extrude_face_and_edit_by_accept_expressions() {
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "up", "4")
+            bearcad.add_parameter("up", "4")
             bearcad.rect{ width = 20, height = 20 }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
             bearcad.edit_extrusion{ extrusion = 0, by = "up" }
@@ -19585,7 +19583,7 @@ pub mod tests {
     fn lua_shape_at_accepts_expressions() {
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "off", "15")
+            bearcad.add_parameter("off", "15")
             bearcad.cuboid{ width = 10, depth = 10, height = 10, at = { "off", 0, "1in" } }
             "#,
         );
@@ -19599,7 +19597,7 @@ pub mod tests {
     fn lua_drawing_page_accepts_expressions() {
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "edge", "8")
+            bearcad.add_parameter("edge", "8")
             local d = bearcad.drawing{}
             bearcad.drawing_page{ drawing = d, width = "11in", height = "8.5in", margin = "edge" }
             "#,
@@ -19629,7 +19627,7 @@ pub mod tests {
     fn lua_edit_extrusion_accepts_expression() {
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "d", "9")
+            bearcad.add_parameter("d", "9")
             bearcad.rect{ width = 20, height = 20 }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
             bearcad.edit_extrusion{ extrusion = 0, distance = "d" }
@@ -19644,19 +19642,19 @@ pub mod tests {
     fn lua_parameter_options_edit_is_scriptable() {
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "width", "10mm")
-            assert(bearcad.parameter("options", 0) == false)
-            bearcad.parameter("options", 0, true)
-            assert(bearcad.parameter("options", 0) == true)
-            bearcad.parameter("edit", 0, "min")
-            local e = bearcad.parameter("editing")
-            assert(e.index == 0)
+            bearcad.add_parameter("width", "10mm")
+            assert(bearcad.parameter_options("width") == false)
+            bearcad.parameter_options("width", true)
+            assert(bearcad.parameter_options("width") == true)
+            bearcad.parameter_edit("width", "min")
+            local e = bearcad.parameter_editing()
+            assert(e.name == "width")
             assert(e.field == "min")
-            bearcad.parameter("edit", 0, "max")
-            assert(bearcad.parameter("editing").field == "max")
-            bearcad.parameter("options", 0, false)
-            assert(bearcad.parameter("options", 0) == false)
-            assert(bearcad.parameter("editing") == nil)
+            bearcad.parameter_edit("width", "max")
+            assert(bearcad.parameter_editing().field == "max")
+            bearcad.parameter_options("width", false)
+            assert(bearcad.parameter_options("width") == false)
+            assert(bearcad.parameter_editing() == nil)
             "#,
         );
         assert!(state.parameters_pane.options_open.is_empty());
@@ -19669,11 +19667,8 @@ pub mod tests {
     fn lua_parameter_bounds_and_private() {
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "width", "10mm")
-            bearcad.parameter("min", 0, "5mm")
-            bearcad.parameter("max", 0, "50mm")
-            bearcad.parameter("step", 0, "2.5mm")
-            bearcad.parameter("private", 0, true)
+            bearcad.add_parameter("width", "10mm")
+            bearcad.edit_parameter{ name = "width", min = "5mm", max = "50mm", step = "2.5mm", private = true }
             "#,
         );
         let p = state.doc.parameters.values().next().unwrap();
@@ -19683,9 +19678,9 @@ pub mod tests {
         assert!(!p.primary, "private true ⇒ secondary");
         let state = run_lua(
             r#"
-            bearcad.parameter("add", "width", "10mm")
-            bearcad.parameter("min", 0, "5mm")
-            bearcad.parameter("min", 0)  -- clear
+            bearcad.add_parameter("width", "10mm")
+            bearcad.edit_parameter{ name = "width", min = "5mm" }
+            bearcad.edit_parameter{ name = "width", min = false }  -- clear
             "#,
         );
         assert!(state.doc.parameters.values().next().unwrap().minimum.is_none());
@@ -19697,41 +19692,87 @@ pub mod tests {
         run_lua_expect_ok(
             r#"
             bearcad.new()
-            bearcad.parameter("add", "width", "10mm")
-            bearcad.parameter("min", 0, "0mm")
-            bearcad.parameter("max", 0, "20mm")
-            bearcad.parameter("step", 0, "5mm")
-            local s = bearcad.parameter("slider", 0)
+            bearcad.add_parameter("width", "10mm")
+            bearcad.edit_parameter{ name = "width", min = "0mm", max = "20mm", step = "5mm" }
+            local s = bearcad.parameter_slider("width")
             assert(s ~= nil, "min+max should offer a slider")
             assert(math.abs(s.min - 0) < 1e-4, "min")
             assert(math.abs(s.max - 20) < 1e-4, "max")
             assert(math.abs(s.value - 10) < 1e-4, "value")
             assert(math.abs(s.step - 5) < 1e-4, "step")
-            bearcad.parameter("slider", 0, 12)
-            assert(math.abs(bearcad.parameter("get", "width") - 10) < 1e-3,
+            bearcad.parameter_slider("width", 12)
+            assert(math.abs(bearcad.parameter_value("width") - 10) < 1e-3,
                    "12 snaps to 10")
-            bearcad.parameter("slider", 0, 99)
-            assert(math.abs(bearcad.parameter("get", "width") - 20) < 1e-3,
+            bearcad.parameter_slider("width", 99)
+            assert(math.abs(bearcad.parameter_value("width") - 20) < 1e-3,
                    "99 clamps to max")
-            assert(bearcad.parameter("slider", 1) == nil, "no such parameter")
-            bearcad.parameter("add", "plain", "3mm")
-            assert(bearcad.parameter("slider", 1) == nil, "no min/max ⇒ no slider")
+            assert(bearcad.parameter_slider("missing") == nil, "no such parameter")
+            bearcad.add_parameter("plain", "3mm")
+            assert(bearcad.parameter_slider("plain") == nil, "no min/max ⇒ no slider")
             "#,
         );
     }
 
-    /// #107: `bearcad.parameter("get"/"get_expression", name)` reads a parameter back.
+    /// #107/#1867: `parameter_value` / `parameter_expression` read a parameter back.
     #[test]
     fn lua_parameter_get_returns_value_and_expression() {
         run_lua_expect_ok(
             r#"
             bearcad.new()
-            bearcad.parameter("add", "A", "5mm")
-            local v = bearcad.parameter("get", "A")
+            bearcad.add_parameter("A", "5mm")
+            local v = bearcad.parameter_value("A")
             assert(math.abs(v - 5) < 1e-4, "A should evaluate to 5mm, got " .. tostring(v))
-            assert(bearcad.parameter("get_expression", "A") == "5mm")
-            assert(bearcad.parameter("get", "missing") == nil)
+            assert(bearcad.parameter_expression("A") == "5mm")
+            assert(bearcad.parameter_value("missing") == nil)
+            assert(bearcad.parameter_expression("missing") == nil)
         "#,
+        );
+    }
+
+    /// #1867: parameters are name-first functions; the verb-string dispatcher is gone.
+    #[test]
+    fn lua_parameter_name_first_api() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            assert(bearcad.parameter == nil, "bearcad.parameter dispatcher must be gone")
+
+            local p = bearcad.add_parameter("w", "24")
+            assert(p:kind() == "parameter")
+            assert(p:name() == "w")
+            assert(math.abs(bearcad.parameter_value("w") - 24) < 1e-4)
+            assert(math.abs(bearcad.parameter_value(p) - 24) < 1e-4)
+            assert(bearcad.parameter_expression(p) == "24")
+
+            bearcad.set_parameter("w", "30")
+            assert(math.abs(bearcad.parameter_value("w") - 30) < 1e-4)
+            bearcad.set_parameter(p, "12")
+            assert(math.abs(bearcad.parameter_value(p) - 12) < 1e-4)
+
+            bearcad.edit_parameter{ name = p, rename = "width", min = "1", max = "50", step = "1" }
+            assert(p:name() == "width")
+            assert(bearcad.parameter_value("width") ~= nil)
+            assert(bearcad.parameter_value("w") == nil)
+
+            local ok = pcall(bearcad.set_parameter, 0, "9")
+            assert(not ok, "a raw ordinal is not a name or handle")
+
+            bearcad.delete_parameter("width")
+            assert(not p:exists())
+            assert(bearcad.parameter_value("width") == nil)
+
+            local q = bearcad.add_parameter("keep", "5")
+            bearcad.add_parameter("drop", "9")
+            bearcad.delete_parameter("drop")
+            bearcad.set_parameter(q, "8")
+            assert(math.abs(bearcad.parameter_value("keep") - 8) < 1e-4)
+
+            bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
+            local L = bearcad.parameter_from_line_length(0, "len")
+            assert(L:kind() == "parameter")
+            assert(L:name() == "len")
+            assert(math.abs(bearcad.parameter_value("len") - 40) < 1e-3)
+            "#,
         );
     }
 
@@ -20181,9 +20222,9 @@ pub mod tests {
             assert(math.abs(half / full - 0.5) < 0.02, "half turn " .. half .. " of " .. full)
 
             -- an angle parameter reads back in degrees too.
-            bearcad.parameter("add", "turn", "45deg")
-            assert(math.abs(bearcad.parameter("get", "turn") - 45) < 1e-3,
-                   "angle parameter " .. bearcad.parameter("get", "turn"))
+            bearcad.add_parameter("turn", "45deg")
+            assert(math.abs(bearcad.parameter_value("turn") - 45) < 1e-3,
+                   "angle parameter " .. bearcad.parameter_value("turn"))
 
             -- move_bodies: rz = 90 is a quarter turn.
             bearcad.new()

@@ -2421,7 +2421,7 @@ impl Instruction {
             }
             Instruction::ShowMcpServerSection => "bearcad.ui.ai_mcp(\"show\")".to_string(),
             Instruction::AddParameter { name, expression } => {
-                format!("bearcad.parameter(\"add\", {name:?}, {expression:?})")
+                format!("bearcad.add_parameter({name:?}, {expression:?})")
             }
             Instruction::DeriveParameterFromSelection { name } => match name {
                 Some(name) => format!("bearcad.derive_parameter{{ from = \"selection\", name = {name:?} }}"),
@@ -2479,28 +2479,39 @@ impl Instruction {
                 }
             }
             Instruction::CreateParameterFromLineLength { line_index, name } => match name {
-                Some(name) => format!(
-                    "bearcad.parameter(\"from_line_length\", {line_index}, {name:?})"
-                ),
-                None => format!("bearcad.parameter(\"from_line_length\", {line_index})"),
+                Some(name) => {
+                    format!("bearcad.parameter_from_line_length({line_index}, {name:?})")
+                }
+                None => format!("bearcad.parameter_from_line_length({line_index})"),
             },
             Instruction::SetParameterName { index, name } => {
-                format!("bearcad.parameter(\"name\", {index}, {name:?})")
+                format!(
+                    "bearcad.edit_parameter{{ name = {}, rename = {name:?} }}",
+                    parameter_lua_name(doc, *index)
+                )
             }
             Instruction::SetParameterExpression { index, expression } => {
-                format!("bearcad.parameter(\"value\", {index}, {expression:?})")
+                format!(
+                    "bearcad.set_parameter({}, {expression:?})",
+                    parameter_lua_name(doc, *index)
+                )
             }
             // #1180: script surface is `private` (inverse of stored primary).
             Instruction::SetParameterPrimary { index, primary } => {
-                format!("bearcad.parameter(\"private\", {index}, {})", !primary)
+                format!(
+                    "bearcad.edit_parameter{{ name = {}, private = {} }}",
+                    parameter_lua_name(doc, *index),
+                    !primary
+                )
             }
             Instruction::SetParameterBound { index, which, expression } => {
-                let action = which.label();
+                let field = which.script_name();
+                let target = parameter_lua_name(doc, *index);
                 match expression {
                     Some(expression) => {
-                        format!("bearcad.parameter({action:?}, {index}, {expression:?})")
+                        format!("bearcad.edit_parameter{{ name = {target}, {field} = {expression:?} }}")
                     }
-                    None => format!("bearcad.parameter({action:?}, {index})"),
+                    None => format!("bearcad.edit_parameter{{ name = {target}, {field} = false }}"),
                 }
             }
             Instruction::SyncUnit { unit } => format!("bearcad.sync_unit({unit})"),
@@ -2531,7 +2542,10 @@ impl Instruction {
                 }
             }
             Instruction::DeleteParameter { index } => {
-                format!("bearcad.parameter(\"delete\", {index})")
+                format!(
+                    "bearcad.delete_parameter({})",
+                    parameter_lua_name(doc, *index)
+                )
             }
             Instruction::DeleteSelection => "bearcad.delete_selection()".to_string(),
             Instruction::SetCommandPalette { open } => {
@@ -3413,6 +3427,14 @@ fn split_move_bodies(
         }
     }
     (body_targets, instances)
+}
+
+/// Name a parameter for Lua replay: the live name when the document is at hand, else a
+/// handle lookup by ordinal (#1867).
+fn parameter_lua_name(doc: Option<&crate::model::Document>, index: usize) -> String {
+    doc.and_then(|d| d.parameters.values().nth(index))
+        .map(|p| format!("{:?}", p.name))
+        .unwrap_or_else(|| format!("bearcad.element(\"parameter\", {index})"))
 }
 
 /// A parameter's ordinal among the live ones — what a script writes (#1055).
