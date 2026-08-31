@@ -97,9 +97,9 @@ bearcad.select{ kind, index, endpoint? }               -- second arg true = add
                                                        -- or line:start() / line:endpoint("end")
                                                        -- drawing page items: kind "projection"|"annotation"|"dimension"
                                                        --   + drawing (+ view / a,b / index); selecting opens the drawing
-bearcad.add_constraint({ kind = "line", index = i }, "25mm")
-bearcad.add_geometric_constraint("parallel"|"perpendicular"|"equal"|"coincident"|"midpoint"|"horizontal"|"vertical")
-bearcad.add_angle_constraint{ a = i, b = i, value }
+bearcad.constrain("parallel"|"perpendicular"|"equal"|"coincident"|"midpoint"|"horizontal"|"vertical"|"tangent", a, b, …)
+bearcad.dimension{ kind = "line"|"circle"|"point_point"|"point_line"|"line_line"|"angle", value, … }
+bearcad.ui.add_geometric_constraint(name)              -- current selection; UI tests only
 ```
 
 Anywhere a size is accepted, an expression string is too.
@@ -198,9 +198,6 @@ optional argument or key. The sections above carry the detail for the calls they
 cover.
 
 ```
-bearcad.add_angle_constraint{ a, b, angle, sign }
-bearcad.add_constraint({ … }, expression)
-bearcad.add_geometric_constraint(name)
 bearcad.add_unit_instance{ unit, name }
 bearcad.apply_construction(construction)
 bearcad.apply_visibility(visible)
@@ -226,6 +223,7 @@ bearcad.combine{ op, a, b, keep_b, name }
 bearcad.commit_dim()
 bearcad.commit_plane()
 bearcad.component{ name, parent }?
+bearcad.constrain(kind, a, b, …)
 bearcad.constraint_shortcut(key)
 bearcad.copy()
 bearcad.count(kind)
@@ -236,6 +234,7 @@ bearcad.delete_drawing_loupe{ drawing, view, index }
 bearcad.delete_section_plane{ view, cut }
 bearcad.delete_selection()
 bearcad.derive_parameter{ kind, a, b, body, body_b, name, instance, face, edge }
+bearcad.dimension{ kind, value, index, a, b, sign, point, line, anchor, mover }
 bearcad.drag_gizmo{ name, by }
 bearcad.drag_line({ … }, anchor_u?, anchor_v?, u?, v?)
 bearcad.drag_vertex({ … }, u?, v?)
@@ -377,6 +376,7 @@ bearcad.toggle_construction()
 bearcad.toggle_visibility()
 bearcad.tool_row()
 bearcad.tool_table()
+bearcad.ui.add_geometric_constraint(name)
 bearcad.ui.ai_mcp(how)
 bearcad.ui.ai_pane_sections()
 bearcad.ui.ai_sections(how)

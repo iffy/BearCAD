@@ -2,10 +2,9 @@
 -- refuses dragging — the block exists, it just must not overreach.
 bearcad.new()
 bearcad.rect{ width = 10, height = 10 }
-bearcad.select{ kind = "line", index = 0, endpoint = "start" }
-bearcad.select({ kind = "origin" }, true)
-bearcad.add_geometric_constraint("coincident")
-bearcad.clear_selection()
+bearcad.constrain("coincident",
+  { kind = "line", index = 0, endpoint = "start" },
+  { kind = "origin" })
 local ok, err = pcall(function()
   bearcad.ui.drag_vertex({ kind = "line", index = 0, endpoint = "end" }, 13, 0)
 end)

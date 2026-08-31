@@ -3,10 +3,9 @@
 bearcad.new()
 bearcad.line{ x = -20, y = 0, x1 = 0, y1 = 0, bezier = { { -15, -5 }, { -5, 5 } } }
 bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 0, bezier = { { 5, -5 }, { 15, 5 } } }
-bearcad.select{ kind = "line", index = 0, endpoint = "end" }
-bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
-bearcad.add_geometric_constraint("coincident")
-bearcad.clear_selection()
+bearcad.constrain("coincident",
+  { kind = "line", index = 0, endpoint = "end" },
+  { kind = "line", index = 1, endpoint = "start" })
 bearcad.ui.tool("select")
 -- Hide the side panes: under CI's WM-less Xvfb the window can't maximize, and with
 -- all three panes open the 3D viewport is too narrow for the ground-coordinate

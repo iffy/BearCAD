@@ -13,9 +13,6 @@
 
 /// Full name → the call's shape, sorted by name.
 pub const SIGNATURES: &[(&str, &str)] = &[
-    ("bearcad.add_angle_constraint"        , "bearcad.add_angle_constraint{ a, b, angle, sign }"),
-    ("bearcad.add_constraint"              , "bearcad.add_constraint({ … }, expression)"),
-    ("bearcad.add_geometric_constraint"    , "bearcad.add_geometric_constraint(name)"),
     ("bearcad.add_unit_instance"           , "bearcad.add_unit_instance{ unit, name }"),
     ("bearcad.apply_construction"          , "bearcad.apply_construction(construction)"),
     ("bearcad.apply_visibility"            , "bearcad.apply_visibility(visible)"),
@@ -42,6 +39,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.commit_dim"                  , "bearcad.commit_dim()"),
     ("bearcad.commit_plane"                , "bearcad.commit_plane()"),
     ("bearcad.component"                   , "bearcad.component{ name, parent }?"),
+    ("bearcad.constrain"                   , "bearcad.constrain(kind, a, b, …)"),
     ("bearcad.constraint_shortcut"         , "bearcad.constraint_shortcut(key)"),
     ("bearcad.copy"                        , "bearcad.copy()"),
     ("bearcad.count"                       , "bearcad.count(kind)"),
@@ -50,6 +48,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.cylinder"                    , "bearcad.cylinder{ radius, height, at?, normal?, u_axis?, name? }"),
     ("bearcad.delete_selection"            , "bearcad.delete_selection()"),
     ("bearcad.derive_parameter"            , "bearcad.derive_parameter{ kind, a, b, body, body_b, name, instance, face, edge }"),
+    ("bearcad.dimension"                   , "bearcad.dimension{ kind, value, index, a, b, sign, point, line, anchor, mover }"),
     ("bearcad.drag_gizmo"                  , "bearcad.drag_gizmo{ name, by }"),
     ("bearcad.drag_line"                   , "bearcad.drag_line({ … }, anchor_u?, anchor_v?, u?, v?)"),
     ("bearcad.drag_vertex"                 , "bearcad.drag_vertex({ … }, u?, v?)"),
@@ -192,6 +191,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.toggle_visibility"           , "bearcad.toggle_visibility()"),
     ("bearcad.tool_row"                    , "bearcad.tool_row()"),
     ("bearcad.tool_table"                  , "bearcad.tool_table()"),
+    ("bearcad.ui.add_geometric_constraint" , "bearcad.ui.add_geometric_constraint(name)"),
     ("bearcad.ui.ai_mcp"                   , "bearcad.ui.ai_mcp(how)"),
     ("bearcad.ui.ai_pane_sections"         , "bearcad.ui.ai_pane_sections()"),
     ("bearcad.ui.ai_sections"              , "bearcad.ui.ai_sections(how)"),

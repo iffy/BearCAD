@@ -123,9 +123,9 @@ bearcad.select{ kind, index, endpoint? }               -- second arg true = add
                                                        -- or line:start() / line:endpoint("end")
                                                        -- drawing page items: kind "projection"|"annotation"|"dimension"
                                                        --   + drawing (+ view / a,b / index); selecting opens the drawing
-bearcad.add_constraint({ kind = "line", index = i }, "25mm")
-bearcad.add_geometric_constraint("parallel"|"perpendicular"|"equal"|"coincident"|"midpoint"|"horizontal"|"vertical")
-bearcad.add_angle_constraint{ a = i, b = i, value }
+bearcad.constrain("parallel"|"perpendicular"|"equal"|"coincident"|"midpoint"|"horizontal"|"vertical"|"tangent", a, b, …)
+bearcad.dimension{ kind = "line"|"circle"|"point_point"|"point_line"|"line_line"|"angle", value, … }
+bearcad.ui.add_geometric_constraint(name)              -- current selection; UI tests only
 ```
 
 Anywhere a size is accepted, an expression string is too.

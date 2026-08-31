@@ -32,7 +32,7 @@ bearcad.ui.wait(8)
 sel = bearcad.selection()
 assert(#sel == 2, "corner + line start should both be selected, got " .. #sel)
 
-bearcad.add_geometric_constraint("coincident")
+bearcad.ui.add_geometric_constraint("coincident")
 bearcad.ui.wait(5)
 
 local img = bearcad.get{ kind = "image", index = 0 }

@@ -20,9 +20,9 @@ use crate::construction::PlaneDim;
 use crate::geometric_constraints::GeometricConstraintType;
 use crate::hierarchy::{HierarchyViewMode, SceneElement};
 use crate::model::{
-    BooleanOp, BooleanOpKind, ConstraintKind, ConstraintPoint, DistanceTarget, Document,
-    DrawingOrientation, ExtrudeFace, ExtrudeTarget, ExtrusionEdgeRef, FaceId, LineEnd, RepeatMode,
-    RevolveAxis, VertexTreatmentKind,
+    BooleanOp, BooleanOpKind, ConstraintKind, ConstraintLine, ConstraintPoint, DistanceTarget,
+    Document, DrawingOrientation, ExtrudeFace, ExtrudeTarget, ExtrusionEdgeRef, FaceId, LineEnd,
+    RepeatMode, RevolveAxis, VertexTreatmentKind,
 };
 use crate::script::Instruction;
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
@@ -257,8 +257,9 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
         "focus_dim" | "edit_dim" => &["axis"],
         "set_dim_label_offset" => &["axis", "offset"],
         "add_geometric_constraint" => &["name"],
+        "constrain" => &["kind", "a", "b"],
         "constraint_shortcut" => &["key"],
-        "add_constraint" => &["target", "expression"],
+        "dimension" => &["kind", "value"],
         "view" => &["view", "id"],
         "palette" => &["action", "query"],
         "select" => &["element", "additive"],
@@ -647,29 +648,40 @@ pub fn instruction_from_json(
                 offset: req_f32(o, "offset", "set_dim_label_offset")?,
             })
         }
-        "add_constraint" => {
-            let target = o
-                .get("target")
-                .ok_or("add_constraint requires a `target`")?;
-            Ok(Instruction::AddDistanceConstraint {
-                target: distance_target_from_json(doc, target)?,
-                expression: req_expr(o, "expression", "add_constraint")?,
-            })
+        "dimension" => {
+            let kind = req_str(o, "kind", "dimension")?;
+            let expression = req_expr(o, "value", "dimension")?;
+            if kind.eq_ignore_ascii_case("angle") {
+                Ok(Instruction::AddAngleConstraint {
+                    line_a: req_usize(o, "a", "dimension")?,
+                    line_b: req_usize(o, "b", "dimension")?,
+                    rotation_sign: opt_i8(o, "sign")?.unwrap_or(1),
+                    expression,
+                })
+            } else {
+                Ok(Instruction::AddDistanceConstraint {
+                    target: distance_target_from_json(doc, o)?,
+                    expression,
+                })
+            }
         }
-        "add_angle_constraint" => {
-            // `value` (an expression) or `angle` (a number) gives the angle; `sign` picks the
-            // wedge (default +1).
-            let expression = match (o.get("value"), o.get("angle")) {
-                (Some(v), _) if !v.is_null() => value_to_expr(v, "value")?,
-                (_, Some(a)) if !a.is_null() => value_to_expr(a, "angle")?,
-                _ => return Err("add_angle_constraint requires `value`".into()),
-            };
-            Ok(Instruction::AddAngleConstraint {
-                line_a: req_usize(o, "a", "add_angle_constraint")?,
-                line_b: req_usize(o, "b", "add_angle_constraint")?,
-                rotation_sign: opt_i8(o, "sign")?.unwrap_or(1),
-                expression,
-            })
+        "constrain" => {
+            let name = req_str(o, "kind", "constrain")?;
+            let kind = geometric_constraint_from_name(&name)
+                .ok_or_else(|| format!("unknown geometric constraint '{name}'"))?;
+            let mut elements = Vec::new();
+            if let Some(a) = o.get("a").filter(|v| !v.is_null()) {
+                elements.push(scene_element_from_json(doc, a)?);
+            }
+            if let Some(b) = o.get("b").filter(|v| !v.is_null()) {
+                elements.push(scene_element_from_json(doc, b)?);
+            }
+            if elements.is_empty() {
+                return Err(
+                    "constrain requires operands (handles or point tables)".into(),
+                );
+            }
+            Ok(Instruction::Constrain { kind, elements })
         }
         "add_geometric_constraint" => {
             let name = req_str(o, "name", "add_geometric_constraint")?;
@@ -1455,24 +1467,128 @@ fn treatable_solid_ref_from_json(
     }
 }
 
-/// A distance-constraint target from a `{ kind, index }` object (mirrors
-/// `parse_distance_target`): a line's length or a circle's diameter.
+/// A distance-constraint target from a `{ kind, … }` object (mirrors
+/// `parse_distance_target`).
 fn distance_target_from_json(
     doc: &crate::model::Document,
-    v: &Value,
+    t: &Map<String, Value>,
 ) -> Result<DistanceTarget, String> {
-    let t = v.as_object().ok_or("constraint target must be an object")?;
     let kind = req_str(t, "kind", "target")?;
-    let index = req_usize(t, "index", "target")?;
     match kind.to_ascii_lowercase().as_str() {
-        "line" => Ok(DistanceTarget::LineLength(line_key_from_ordinal(doc, index)?)),
-        "circle" => Ok(DistanceTarget::CircleDiameter(
-            doc.circles
-                .keys()
-                .nth(index)
-                .ok_or_else(|| format!("no circle {index}"))?,
+        "line" => {
+            let index = req_usize(t, "index", "target")?;
+            Ok(DistanceTarget::LineLength(line_key_from_ordinal(doc, index)?))
+        }
+        "circle" => {
+            let index = req_usize(t, "index", "target")?;
+            Ok(DistanceTarget::CircleDiameter(
+                doc.circles
+                    .keys()
+                    .nth(index)
+                    .ok_or_else(|| format!("no circle {index}"))?,
+            ))
+        }
+        "point_line" | "point_edge" => Ok(DistanceTarget::PointLineDistance {
+            point: constraint_point_from_json(
+                doc,
+                t.get("point").ok_or("point_line requires `point`")?,
+            )?,
+            line: constraint_line_from_json(
+                doc,
+                t.get("line").ok_or("point_line requires `line`")?,
+            )?,
+            side: crate::model::default_constraint_sign(),
+        }),
+        "point_point" | "points" => Ok(DistanceTarget::PointPointDistance {
+            anchor: constraint_point_from_json(
+                doc,
+                t.get("anchor").ok_or("point_point requires `anchor`")?,
+            )?,
+            mover: constraint_point_from_json(
+                doc,
+                t.get("mover").ok_or("point_point requires `mover`")?,
+            )?,
+            dir_u: 0.0,
+            dir_v: 0.0,
+        }),
+        "line_line" | "lines" => Ok(DistanceTarget::LineLineDistance {
+            line_a: constraint_line_from_json(doc, t.get("a").ok_or("line_line requires `a`")?)?,
+            line_b: constraint_line_from_json(doc, t.get("b").ok_or("line_line requires `b`")?)?,
+            side: crate::model::default_constraint_sign(),
+        }),
+        other => Err(format!(
+            "unknown constraint target '{other}' (line, circle, point_line, point_point, \
+             line_line)"
         )),
-        other => Err(format!("unknown constraint target '{other}'")),
+    }
+}
+
+fn constraint_line_from_json(
+    doc: &crate::model::Document,
+    v: &Value,
+) -> Result<ConstraintLine, String> {
+    let t = v.as_object().ok_or("line must be an object")?;
+    let kind = t
+        .get("kind")
+        .or_else(|| t.get("type"))
+        .and_then(Value::as_str)
+        .ok_or("line requires a string `kind`")?;
+    if kind.eq_ignore_ascii_case("axis") {
+        let axis = req_str(t, "axis", "axis")?;
+        return match axis.to_ascii_lowercase().as_str() {
+            "x" => Ok(ConstraintLine::OriginAxis(crate::model::SketchAxis::X)),
+            "y" => Ok(ConstraintLine::OriginAxis(crate::model::SketchAxis::Y)),
+            other => Err(format!("unknown axis '{other}' (x|y)")),
+        };
+    }
+    let index = req_usize(t, "index", "line")?;
+    match kind.to_ascii_lowercase().as_str() {
+        "line" => Ok(ConstraintLine::Line(line_key_from_ordinal(doc, index)?)),
+        other => Err(format!("unknown line kind '{other}'")),
+    }
+}
+
+/// A constrain operand: a whole element or a point table (mirrors `resolve_element`).
+fn scene_element_from_json(
+    doc: &crate::model::Document,
+    v: &Value,
+) -> Result<SceneElement, String> {
+    match v {
+        Value::String(name) => crate::hierarchy::element_from_id(doc, name)
+            .or_else(|| crate::names::find_element_by_name(doc, name))
+            .ok_or_else(|| format!("no element named '{name}'")),
+        Value::Object(t) => {
+            if let Some(name) = t.get("name").and_then(Value::as_str) {
+                return crate::names::find_element_by_name(doc, name)
+                    .ok_or_else(|| format!("no element named '{name}'"));
+            }
+            let kind = t
+                .get("kind")
+                .or_else(|| t.get("type"))
+                .and_then(Value::as_str)
+                .ok_or("element requires a `kind` or `name`")?;
+            if kind.eq_ignore_ascii_case("origin") {
+                return Ok(SceneElement::Origin);
+            }
+            if kind.eq_ignore_ascii_case("axis") {
+                return Ok(SceneElement::FaceEdge(constraint_line_from_json(doc, v)?));
+            }
+            let pointish = t.contains_key("endpoint")
+                || t.contains_key("end")
+                || t.contains_key("corner")
+                || t.contains_key("anchor")
+                || matches!(t.get("point"), Some(Value::Bool(true)) | Some(Value::Number(_)));
+            if pointish {
+                return Ok(SceneElement::Point(constraint_point_from_json(doc, v)?));
+            }
+            if t.contains_key("edge") {
+                return Ok(SceneElement::FaceEdge(constraint_line_from_json(doc, v)?));
+            }
+            let index = req_usize(t, "index", "element")?;
+            scene_element_from_kind(doc, kind, index)
+                .ok_or_else(|| format!("unknown element kind '{kind}'"))
+        }
+        _ => Err("expected an element (name string or {kind, index})".into()),
     }
 }
 
@@ -3399,8 +3515,8 @@ mod tests {
         let doc = doc_with_circles(3);
         assert_eq!(
             instruction_from_json(&doc,
-                "add_constraint",
-                &json!({ "target": { "kind": "line", "index": 0 }, "expression": "40" })
+                "dimension",
+                &json!({ "kind": "line", "index": 0, "value": "40" })
             ),
             Ok(Instruction::AddDistanceConstraint {
                 target: DistanceTarget::LineLength(lkey(0)),
@@ -3409,19 +3525,18 @@ mod tests {
         );
         assert_eq!(
             instruction_from_json(&doc,
-                "add_constraint",
-                &json!({ "target": { "kind": "circle", "index": 2 }, "expression": 12 })
+                "dimension",
+                &json!({ "kind": "circle", "index": 2, "value": 12 })
             ),
             Ok(Instruction::AddDistanceConstraint {
                 target: DistanceTarget::CircleDiameter(rkey(2)),
                 expression: "12".into(),
             })
         );
-        // Angle: `value` string form, and `angle`-number form; default sign +1.
         assert_eq!(
             instruction_from_json(&doc,
-                "add_angle_constraint",
-                &json!({ "a": 0, "b": 5, "value": "120" })
+                "dimension",
+                &json!({ "kind": "angle", "a": 0, "b": 5, "value": "120" })
             ),
             Ok(Instruction::AddAngleConstraint {
                 line_a: 0,
@@ -3432,8 +3547,8 @@ mod tests {
         );
         assert_eq!(
             instruction_from_json(&doc,
-                "add_angle_constraint",
-                &json!({ "a": 0, "b": 5, "angle": 90, "sign": -1 })
+                "dimension",
+                &json!({ "kind": "angle", "a": 0, "b": 5, "value": 90, "sign": -1 })
             ),
             Ok(Instruction::AddAngleConstraint {
                 line_a: 0,
@@ -3447,13 +3562,29 @@ mod tests {
             Ok(Instruction::AddGeometricConstraint(GeometricConstraintType::Parallel))
         );
         assert_eq!(
+            instruction_from_json(
+                &doc,
+                "constrain",
+                &json!({
+                    "kind": "parallel",
+                    "a": { "kind": "line", "index": 0 },
+                    "b": { "kind": "line", "index": 1 },
+                })
+            ),
+            Ok(Instruction::Constrain {
+                kind: GeometricConstraintType::Parallel,
+                elements: vec![SceneElement::Line(lkey(0)), SceneElement::Line(lkey(1))],
+            })
+        );
+        assert_eq!(
             instruction_from_json(&doc,"constraint_shortcut", &json!({ "key": "p" })),
             Ok(Instruction::ApplyConstraintShortcut('p'))
         );
         assert!(
             instruction_from_json(&doc,"add_geometric_constraint", &json!({ "name": "nope" })).is_err()
         );
-        assert!(instruction_from_json(&doc,"add_angle_constraint", &json!({ "a": 0, "b": 5 })).is_err());
+        assert!(instruction_from_json(&doc,"constrain", &json!({ "kind": "nope", "a": { "kind": "line", "index": 0 } })).is_err());
+        assert!(instruction_from_json(&doc,"dimension", &json!({ "kind": "angle", "a": 0, "b": 5 })).is_err());
     }
 
     #[test]

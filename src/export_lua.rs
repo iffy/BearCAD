@@ -1779,32 +1779,25 @@ fn rect_export_xywh(doc: &Document, rect: &RectGroup) -> (f32, f32, f32, f32) {
 }
 
 fn emit_constraint(doc: &Document, c: &crate::model::Constraint, out: &mut String) {
-    // Every geometric arm below authors its constraint by *selecting* the geometry first, and
-    // a plain `select` of something already selected toggles it back off. Two constraints in a
-    // row that share a piece of geometry would then replay against the wrong selection, so
-    // start each one from empty.
-    let before = out.len();
-    out.push_str("bearcad.clear_selection()\n");
-    let cleared = out.len();
     match &c.kind {
         ConstraintKind::Distance { target } => match target {
             DistanceTarget::LineLength(i) => {
                 let ord = doc.lines.keys().position(|k| k == *i).unwrap_or(0);
                 out.push_str(&format!(
-                    "bearcad.add_constraint({{ kind = \"line\", index = {ord} }}, {:?})\n",
+                    "bearcad.dimension{{ kind = \"line\", index = {ord}, value = {:?} }}\n",
                     c.expression
                 ));
             }
             DistanceTarget::CircleDiameter(i) => {
                 let ord = doc.circles.keys().position(|k| k == *i).unwrap_or(0);
                 out.push_str(&format!(
-                    "bearcad.add_constraint({{ kind = \"circle\", index = {ord} }}, {:?})\n",
+                    "bearcad.dimension{{ kind = \"circle\", index = {ord}, value = {:?} }}\n",
                     c.expression
                 ));
             }
             DistanceTarget::PointPointDistance { anchor, mover, .. } => {
                 out.push_str(&format!(
-                    "bearcad.add_constraint({{ kind = \"point_point\", anchor = {}, mover = {} }}, {:?})\n",
+                    "bearcad.dimension{{ kind = \"point_point\", anchor = {}, mover = {}, value = {:?} }}\n",
                     constraint_point_table(doc, anchor),
                     constraint_point_table(doc, mover),
                     c.expression
@@ -1812,7 +1805,7 @@ fn emit_constraint(doc: &Document, c: &crate::model::Constraint, out: &mut Strin
             }
             DistanceTarget::PointLineDistance { point, line, .. } => {
                 out.push_str(&format!(
-                    "bearcad.add_constraint({{ kind = \"point_line\", point = {}, line = {} }}, {:?})\n",
+                    "bearcad.dimension{{ kind = \"point_line\", point = {}, line = {}, value = {:?} }}\n",
                     constraint_point_table(doc, point),
                     constraint_line_table(doc, line),
                     c.expression
@@ -1820,7 +1813,7 @@ fn emit_constraint(doc: &Document, c: &crate::model::Constraint, out: &mut Strin
             }
             DistanceTarget::LineLineDistance { line_a, line_b, .. } => {
                 out.push_str(&format!(
-                    "bearcad.add_constraint({{ kind = \"line_line\", a = {}, b = {} }}, {:?})\n",
+                    "bearcad.dimension{{ kind = \"line_line\", a = {}, b = {}, value = {:?} }}\n",
                     constraint_line_table(doc, line_a),
                     constraint_line_table(doc, line_b),
                     c.expression
@@ -1841,7 +1834,7 @@ fn emit_constraint(doc: &Document, c: &crate::model::Constraint, out: &mut Strin
                 _ => 0,
             };
             out.push_str(&format!(
-                "bearcad.add_angle_constraint{{ a = {a}, b = {b}, sign = {rotation_sign}, value = {:?} }}\n",
+                "bearcad.dimension{{ kind = \"angle\", a = {a}, b = {b}, sign = {rotation_sign}, value = {:?} }}\n",
                 c.expression
             ));
         }
@@ -1859,9 +1852,8 @@ fn emit_constraint(doc: &Document, c: &crate::model::Constraint, out: &mut Strin
                         crate::model::SketchAxis::Y => "vertical",
                     };
                     out.push_str(&format!(
-                        "bearcad.select({{ kind = \"line\", index = {ord} }})\n"
+                        "bearcad.constrain({name:?}, {{ kind = \"line\", index = {ord} }})\n"
                     ));
-                    out.push_str(&format!("bearcad.add_geometric_constraint({name:?})\n"));
                 }
                 _ => {
                     emit_geo_pair(doc, line_a, line_b, "parallel", out);
@@ -1876,59 +1868,35 @@ fn emit_constraint(doc: &Document, c: &crate::model::Constraint, out: &mut Strin
         }
         ConstraintKind::Coincident { a, b } => {
             if let (Some(ea), Some(eb)) = (entity_select(doc, a), entity_select(doc, b)) {
-                out.push_str(&format!("bearcad.select({ea})\n"));
-                out.push_str(&format!("bearcad.select({eb}, true)\n"));
-                out.push_str("bearcad.add_geometric_constraint(\"coincident\")\n");
+                out.push_str(&format!("bearcad.constrain(\"coincident\", {ea}, {eb})\n"));
             }
         }
         ConstraintKind::Midpoint { point, line } => {
             out.push_str(&format!(
-                "bearcad.select({})\n",
-                constraint_point_table(doc, point)
-            ));
-            out.push_str(&format!(
-                "bearcad.select({}, true)\n",
+                "bearcad.constrain(\"midpoint\", {}, {})\n",
+                constraint_point_table(doc, point),
                 constraint_line_table(doc, line)
             ));
-            out.push_str("bearcad.add_geometric_constraint(\"midpoint\")\n");
         }
         ConstraintKind::Tangent { a, b } => {
             out.push_str(&format!(
-                "bearcad.select({})\n",
-                constraint_point_table(doc, a)
-            ));
-            out.push_str(&format!(
-                "bearcad.select({}, true)\n",
+                "bearcad.constrain(\"tangent\", {}, {})\n",
+                constraint_point_table(doc, a),
                 constraint_point_table(doc, b)
             ));
-            out.push_str("bearcad.add_geometric_constraint(\"tangent\")\n");
         }
-        // #1857: select the circle, then the rim it hugs, then apply Tangent.
         ConstraintKind::TangentCircle { circle, other } => {
             let ord = doc.circles.keys().position(|k| k == *circle).unwrap_or(0);
-            out.push_str(&format!(
-                "bearcad.select({{ kind = \"circle\", index = {ord} }})\n"
-            ));
-            match other {
+            let circle = format!("{{ kind = \"circle\", index = {ord} }}");
+            let other = match other {
                 crate::model::TangentTarget::Circle(o) => {
                     let ord = doc.circles.keys().position(|k| k == *o).unwrap_or(0);
-                    out.push_str(&format!(
-                        "bearcad.select({{ kind = \"circle\", index = {ord} }}, true)\n"
-                    ));
+                    format!("{{ kind = \"circle\", index = {ord} }}")
                 }
-                crate::model::TangentTarget::Line(line) => {
-                    out.push_str(&format!(
-                        "bearcad.select({}, true)\n",
-                        constraint_line_table(doc, line)
-                    ));
-                }
-            }
-            out.push_str("bearcad.add_geometric_constraint(\"tangent\")\n");
+                crate::model::TangentTarget::Line(line) => constraint_line_table(doc, line),
+            };
+            out.push_str(&format!("bearcad.constrain(\"tangent\", {circle}, {other})\n"));
         }
-    }
-    // Nothing was emitted (an entity with no script spelling): drop the stray clear.
-    if out.len() == cleared {
-        out.truncate(before);
     }
 }
 
@@ -1939,12 +1907,11 @@ fn emit_geo_pair(
     kind: &str,
     out: &mut String,
 ) {
-    out.push_str(&format!("bearcad.select({})\n", constraint_line_table(doc, a)));
     out.push_str(&format!(
-        "bearcad.select({}, true)\n",
+        "bearcad.constrain({kind:?}, {}, {})\n",
+        constraint_line_table(doc, a),
         constraint_line_table(doc, b)
     ));
-    out.push_str(&format!("bearcad.add_geometric_constraint({kind:?})\n"));
 }
 
 fn entity_select(doc: &Document, e: &ConstraintEntity) -> Option<String> {
@@ -2503,65 +2470,62 @@ mod tests {
             r#"bearcad.new()
                bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 1 }
                bearcad.line{ x = 0, y = 10, x1 = 20, y1 = 12 }
-               bearcad.select{ kind = "line", index = 0 }
-               bearcad.select({ kind = "line", index = 1 }, true)
-               bearcad.add_geometric_constraint("parallel")"#,
+               bearcad.constrain("parallel",
+                   { kind = "line", index = 0 }, { kind = "line", index = 1 })"#,
         ),
         (
             "constraint perpendicular",
             r#"bearcad.new()
                bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 1 }
                bearcad.line{ x = 0, y = 10, x1 = 1, y1 = 30 }
-               bearcad.select{ kind = "line", index = 0 }
-               bearcad.select({ kind = "line", index = 1 }, true)
-               bearcad.add_geometric_constraint("perpendicular")"#,
+               bearcad.constrain("perpendicular",
+                   { kind = "line", index = 0 }, { kind = "line", index = 1 })"#,
         ),
         (
             "constraint line length",
             r#"bearcad.new()
                bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0 }
-               bearcad.add_constraint({ kind = "line", index = 0 }, "leg = 40mm")"#,
+               bearcad.dimension{ kind = "line", index = 0, value = "leg = 40mm" }"#,
         ),
         (
             "constraint point_point",
             r#"bearcad.new()
                bearcad.circle{ x = 0, y = 0, r = 3 }
                bearcad.circle{ x = 20, y = 1, r = 3 }
-               bearcad.add_constraint({ kind = "point_point",
+               bearcad.dimension{ kind = "point_point",
                    anchor = { kind = "circle", index = 0, point = true },
-                   mover = { kind = "circle", index = 1, point = true } }, "25")"#,
+                   mover = { kind = "circle", index = 1, point = true },
+                   value = "25" }"#,
         ),
         (
             "constraint angle",
             r#"bearcad.new()
                bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 0 }
                bearcad.line{ x = 0, y = 0, x1 = 18, y1 = 8 }
-               bearcad.add_angle_constraint{ a = 0, b = 1, value = "30deg" }"#,
+               bearcad.dimension{ kind = "angle", a = 0, b = 1, value = "30deg" }"#,
         ),
         (
             "constraint coincident",
             r#"bearcad.new()
                bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 0 }
                bearcad.line{ x = 21, y = 1, x1 = 30, y1 = 15 }
-               bearcad.select({ kind = "line", index = 0, endpoint = "end" })
-               bearcad.select({ kind = "line", index = 1, endpoint = "start" }, true)
-               bearcad.add_geometric_constraint("coincident")"#,
+               bearcad.constrain("coincident",
+                   { kind = "line", index = 0, endpoint = "end" },
+                   { kind = "line", index = 1, endpoint = "start" })"#,
         ),
         (
             "constraint equal",
             r#"bearcad.new()
                bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 0 }
                bearcad.line{ x = 0, y = 10, x1 = 12, y1 = 10 }
-               bearcad.select{ kind = "line", index = 0 }
-               bearcad.select({ kind = "line", index = 1 }, true)
-               bearcad.add_geometric_constraint("equal")"#,
+               bearcad.constrain("equal",
+                   { kind = "line", index = 0 }, { kind = "line", index = 1 })"#,
         ),
         (
             "constraint horizontal",
             r#"bearcad.new()
                bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 2 }
-               bearcad.select{ kind = "line", index = 0 }
-               bearcad.add_geometric_constraint("horizontal")"#,
+               bearcad.constrain("horizontal", { kind = "line", index = 0 })"#,
         ),
         (
             "constraint circle diameter",
@@ -2658,7 +2622,7 @@ mod tests {
             r#"
             bearcad.new()
             bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0 }
-            bearcad.add_constraint({ kind = "line", index = 0 }, "leg = 40mm")
+            bearcad.dimension{ kind = "line", index = 0, value = "leg = 40mm" }
             "#,
         );
         let line = state.doc.lines.values().next().expect("one line");
@@ -2785,7 +2749,7 @@ mod tests {
         );
     }
 
-    /// #1857: a tangency exports as "select both rims, apply Tangent", and replaying the
+    /// #1857: a tangency exports as `constrain("tangent", …)`, and replaying the
     /// export rebuilds the same two tangencies.
     #[test]
     fn tangent_circles_round_trip() {
@@ -2795,13 +2759,10 @@ mod tests {
             bearcad.circle{ x = 0, y = 0, r = 20 }
             bearcad.circle{ x = 70, y = 0, r = 10 }
             bearcad.line{ x = -60, y = 50, x1 = 60, y1 = 50 }
-            bearcad.select{ kind = "circle", index = 0 }
-            bearcad.select({ kind = "circle", index = 1 }, true)
-            bearcad.add_geometric_constraint("tangent")
-            bearcad.clear_selection()
-            bearcad.select{ kind = "circle", index = 0 }
-            bearcad.select({ kind = "line", index = 0 }, true)
-            bearcad.add_geometric_constraint("tangent")
+            bearcad.constrain("tangent",
+                { kind = "circle", index = 0 }, { kind = "circle", index = 1 })
+            bearcad.constrain("tangent",
+                { kind = "circle", index = 0 }, { kind = "line", index = 0 })
             "#,
         );
         let script = document_to_lua(&state.doc);

@@ -65,9 +65,9 @@ end
 -- Close the outline loop.
 for i = 0, n - 1 do
   local nxt = (i + 1) % n
-  bearcad.select{ kind = "line", index = i, endpoint = "end" }
-  bearcad.select({ kind = "line", index = nxt, endpoint = "start" }, true)
-  bearcad.add_geometric_constraint("coincident")
+  bearcad.constrain("coincident",
+    { kind = "line", index = i, endpoint = "end" },
+    { kind = "line", index = nxt, endpoint = "start" })
 end
 
 -- Extrude the closed-loop face 12 mm into a solid body (extrusion 0, body 0).
@@ -106,9 +106,9 @@ local function draw_d_counter(d, first)
   for k = 0, 2 do
     local i = first + k
     local nxt = first + (k + 1) % 3
-    bearcad.select{ kind = "line", index = i, endpoint = "end" }
-    bearcad.select({ kind = "line", index = nxt, endpoint = "start" }, true)
-    bearcad.add_geometric_constraint("coincident")
+    bearcad.constrain("coincident",
+      { kind = "line", index = i, endpoint = "end" },
+      { kind = "line", index = nxt, endpoint = "start" })
   end
 end
 

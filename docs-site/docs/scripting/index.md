@@ -15,8 +15,8 @@ document/import/export/screenshot operations the API exposes.
 ## Namespace split
 
 - The **primary API is declarative modeling**, OpenSCAD-style, at the top level:
-  `bearcad.new`, `bearcad.rect`, `bearcad.extrude`, `bearcad.add_constraint`,
-  `bearcad.parameter`, `bearcad.select`, ….
+  `bearcad.new`, `bearcad.rect`, `bearcad.extrude`, `bearcad.constrain`,
+  `bearcad.dimension`, `bearcad.parameter`, `bearcad.select`, ….
 - **All GUI manipulation** — simulated mouse/keyboard, camera, tools, panes, the
   palette — lives under **`bearcad.ui.*`**: `bearcad.ui.click`, `bearcad.ui.key`,
   `bearcad.ui.orbit`, `bearcad.ui.tool`, `bearcad.ui.screenshot`, ….

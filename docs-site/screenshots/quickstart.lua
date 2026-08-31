@@ -49,38 +49,37 @@ bearcad.line{ x = -17.5, y = 47,   x1 = -25.5, y1 = 43 }   -- 4 leg end cap
 bearcad.line{ x = -25.5, y = 43,   x1 = 0,     y1 = 0 }    -- 5 outer leg
 for i = 0, 5 do
   local j = (i + 1) % 6
-  bearcad.select{ kind = "line", index = i, endpoint = "end" }
-  bearcad.select({ kind = "line", index = j, endpoint = "start" }, true)
-  bearcad.add_geometric_constraint("coincident")
+  bearcad.constrain("coincident",
+    { kind = "line", index = i, endpoint = "end" },
+    { kind = "line", index = j, endpoint = "start" })
 end
-bearcad.clear_selection()
 bearcad.ui.view("top")
 shot("quickstart-sloppy.png")
 
 -- Step 3: square it up: geometric constraints first, then exact dimensions on
 -- the four lines whose sizes we care about, then the bend angle.
 local function geo(kind, a, b)
-  bearcad.select{ kind = "line", index = a }
-  if b then bearcad.select({ kind = "line", index = b }, true) end
-  bearcad.add_geometric_constraint(kind)
-  bearcad.clear_selection()
+  if b then
+    bearcad.constrain(kind, { kind = "line", index = a }, { kind = "line", index = b })
+  else
+    bearcad.constrain(kind, { kind = "line", index = a })
+  end
 end
 -- Anchor the whole profile: pin the bend corner (line 0's start, at 0,0) to the sketch
 -- origin so it's fully located, not free to drift.
-bearcad.select{ kind = "line", index = 0, endpoint = "start" }
-bearcad.select({ kind = "origin" }, true)
-bearcad.add_geometric_constraint("coincident")
-bearcad.clear_selection()
+bearcad.constrain("coincident",
+  { kind = "line", index = 0, endpoint = "start" },
+  { kind = "origin" })
 geo("horizontal", 0)
 geo("parallel", 0, 2)
 geo("parallel", 3, 5)
 geo("perpendicular", 1, 0)
 geo("perpendicular", 4, 5)
-bearcad.add_constraint({ kind = "line", index = 0 }, "leg")
-bearcad.add_constraint({ kind = "line", index = 5 }, "leg")
-bearcad.add_constraint({ kind = "line", index = 1 }, "thick")
-bearcad.add_constraint({ kind = "line", index = 4 }, "thick")
-bearcad.add_angle_constraint{ a = 0, b = 3, value = "bend_angle", sign = 1 }
+bearcad.dimension{ kind = "line", index = 0, value = "leg" }
+bearcad.dimension{ kind = "line", index = 5, value = "leg" }
+bearcad.dimension{ kind = "line", index = 1, value = "thick" }
+bearcad.dimension{ kind = "line", index = 4, value = "thick" }
+bearcad.dimension{ kind = "angle", a = 0, b = 3, value = "bend_angle", sign = 1 }
 shot("quickstart-squared.png")
 
 -- Step 4: extrude the profile into the solid bracket.

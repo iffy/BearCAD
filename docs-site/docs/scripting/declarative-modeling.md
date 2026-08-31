@@ -294,14 +294,14 @@ on top of each other, so keep a set in a single call. An entry may name its own
 ## Constraints and parameters
 
 ```lua
-bearcad.select{ kind = "line", index = 0 }
-bearcad.select({ kind = "line", index = 1 }, true)
-bearcad.add_geometric_constraint("parallel")
+bearcad.constrain("parallel",
+  { kind = "line", index = 0 }, { kind = "line", index = 1 })
 
-bearcad.add_constraint({ kind = "line", index = 0 }, "25mm")
+bearcad.dimension{ kind = "line", index = 0, value = "25mm" }
 -- `name = value` defines the parameter and dimensions with it, as in any value field:
-bearcad.add_constraint({ kind = "line", index = 1 }, "leg = 40mm")
--- Repeating `add_constraint` on an already-dimensioned line or circle updates the value.
+bearcad.dimension{ kind = "line", index = 1, value = "leg = 40mm" }
+-- Repeating `dimension` on an already-dimensioned line or circle updates the value.
+bearcad.dimension{ kind = "angle", a = 0, b = 1, value = "90" }
 
 bearcad.parameter("add", "A", "5mm")
 bearcad.parameter("value", 0, "A + 5in")

@@ -84,9 +84,9 @@ bearcad.count("sketch_text")
 bearcad.extrude{ text = 0, distance = 1, body = "cut" }
 
 -- Constrain a text's anchor coincident to a sketch point so it follows it.
-bearcad.select{ kind = "sketch_text", index = 0, anchor = "center" }
-bearcad.select({ kind = "line", index = 2, endpoint = "start" }, true)
-bearcad.add_geometric_constraint("coincident")
+bearcad.constrain("coincident",
+  { kind = "sketch_text", index = 0, anchor = "center" },
+  { kind = "line", index = 2, endpoint = "start" })
 ```
 
 Like `rect` and `circle`, `text` begins a ground sketch when none is open. `size` accepts

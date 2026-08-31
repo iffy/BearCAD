@@ -29802,9 +29802,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             .filter(|l| l.starts_with("bearcad."))
             .map(|l| l.to_string())
             .collect();
-        assert!(lua.iter().any(|l| l.starts_with("bearcad.select")), "{lua:?}");
         assert!(
-            lua.iter().any(|l| l.contains("add_geometric_constraint(\"coincident\")")),
+            lua.iter().any(|l| l.contains("bearcad.constrain(\"coincident\"")),
             "{lua:?}"
         );
     }
