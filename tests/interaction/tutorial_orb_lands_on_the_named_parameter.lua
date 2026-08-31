@@ -38,7 +38,7 @@ end
 
 -- Put another parameter under it, so a wrong anchor has somewhere else to land: the buggy
 -- one always rang the row the pane drew last.
-bearcad.parameter("add", "zzz", "5mm")
+bearcad.add_parameter("zzz", "5mm")
 bearcad.ui.wait(6)
 assert(bearcad.count("parameter") == 2,
   "two parameters on the pane, got " .. bearcad.count("parameter"))

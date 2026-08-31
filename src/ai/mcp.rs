@@ -369,7 +369,7 @@ static TOOLS: &[Tool] = &[
         name: "run_lua",
         description: "Run BearCAD Lua against the active document and return what it did. \
                       This is the whole scripting API: bearcad.rect, bearcad.extrude, \
-                      bearcad.parameter, bearcad.get, and so on. Every dimension takes a \
+                      bearcad.add_parameter, bearcad.get, and so on. Every dimension takes a \
                       number (millimetres, degrees) or an expression string \
                       (\"leg / 2\", \"5in\", \"45deg\"). \
                       Changes are undoable.",

@@ -5,7 +5,7 @@
 -- single corner — here the cap's top edge corner is what the user snapped to, and the sketch
 -- must ride that edge up as width grows.)
 bearcad.new()
-bearcad.parameter("add", "W", "40")
+bearcad.add_parameter("W", "40")
 bearcad.rect{ x = 0, y = 0, width = 100, height = "W", name = "Base" }
 bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
 bearcad.exit_sketch()
@@ -49,7 +49,7 @@ local before = top_y()
 assert(math.abs(before - 40) < 0.5, string.format("rect top edge starts on cap at y=40, got %.1f", before))
 
 -- Grow the base's width: the cap's top edge rises to y = 60 and the snapped corner must follow.
-bearcad.parameter("value", 0, "60")
+bearcad.set_parameter("W", "60")
 bearcad.ui.wait(4)
 local after = top_y()
 assert(math.abs(after - 60) < 0.5,

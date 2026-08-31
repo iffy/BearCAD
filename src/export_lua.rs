@@ -32,7 +32,6 @@ pub fn document_to_lua(doc: &Document) -> String {
 
     // Free parameters first (derived ones need geometry that may not exist yet — emit after).
     let mut derived_params = Vec::new();
-    let mut free_ordinal = 0usize;
     for (_key, param) in doc.parameters.iter() {
         match &param.source {
             None => {
@@ -44,21 +43,14 @@ pub fn document_to_lua(doc: &Document) -> String {
                     .as_lua_in(Some(doc)),
                 );
                 out.push('\n');
-                let index = free_ordinal;
-                free_ordinal += 1;
-                // #1176/#1180: options (private, min, max, step) after the add.
-                // Emitted as `parameter("private", …)` — inverse of stored `primary`.
+                // #1176/#1180: options (private, min, max, step) after the add, by name.
                 let default_primary =
                     crate::parameters::new_parameter_primary_default(&param.expression);
                 if param.primary != default_primary {
-                    out.push_str(
-                        &Instruction::SetParameterPrimary {
-                            index,
-                            primary: param.primary,
-                        }
-                        .as_lua_in(Some(doc)),
-                    );
-                    out.push('\n');
+                    out.push_str(&format!(
+                        "bearcad.edit_parameter{{ name = {:?}, private = {} }}\n",
+                        param.name, !param.primary
+                    ));
                 }
                 for (which, bound) in [
                     (crate::parameters::ParameterBound::Minimum, &param.minimum),
@@ -66,15 +58,12 @@ pub fn document_to_lua(doc: &Document) -> String {
                     (crate::parameters::ParameterBound::Step, &param.step),
                 ] {
                     if let Some(expression) = bound {
-                        out.push_str(
-                            &Instruction::SetParameterBound {
-                                index,
-                                which,
-                                expression: Some(expression.clone()),
-                            }
-                            .as_lua_in(Some(doc)),
-                        );
-                        out.push('\n');
+                        out.push_str(&format!(
+                            "bearcad.edit_parameter{{ name = {:?}, {} = {:?} }}\n",
+                            param.name,
+                            which.script_name(),
+                            expression
+                        ));
                     }
                 }
             }
@@ -2420,9 +2409,8 @@ mod tests {
         (
             "parameter bounds",
             r#"bearcad.new()
-               bearcad.parameter("add", "w", "24")
-               bearcad.parameter("min", 0, "5")
-               bearcad.parameter("max", 0, "50")
+               bearcad.add_parameter("w", "24")
+               bearcad.edit_parameter{ name = "w", min = "5", max = "50" }
                bearcad.rect{ width = "w", height = 12 }"#,
         ),
         (
@@ -2880,13 +2868,13 @@ mod tests {
         let state = run_lua(
             r#"
             bearcad.new()
-            bearcad.parameter("add", "w", "24")
+            bearcad.add_parameter("w", "24")
             bearcad.rect{ width = "w", height = 12 }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
             "#,
         );
         let script = document_to_lua(&state.doc);
-        assert!(script.contains("bearcad.parameter"));
+        assert!(script.contains("bearcad.add_parameter"));
         assert!(!script.contains("bearcad.ui."));
         let rebuilt = run_lua(&script);
         let diffs = document_diff(&state.doc, &rebuilt.doc);

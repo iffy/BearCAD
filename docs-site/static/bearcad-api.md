@@ -90,8 +90,8 @@ Shape-tool cuboids use the same edge calls with `kind = "vertical"` etc. on the 
 ## Parameters and constraints
 
 ```
-bearcad.parameter("add", "w", "24")
-bearcad.parameter("value", i, "30")
+bearcad.add_parameter("w", "24")
+bearcad.set_parameter("w", "30")
 bearcad.select{ kind, index, endpoint? }               -- second arg true = add
                                                        -- line vertex: endpoint = "start"|"end"
                                                        -- or line:start() / line:endpoint("end")
@@ -205,6 +205,7 @@ cover.
 bearcad.add_angle_constraint{ a, b, angle, sign }
 bearcad.add_constraint({ … }, expression)
 bearcad.add_geometric_constraint(name)
+bearcad.add_parameter(name, expression)
 bearcad.add_unit_instance{ unit, name }
 bearcad.apply_construction(construction)
 bearcad.apply_visibility(visible)
@@ -238,6 +239,7 @@ bearcad.cuboid{ width, depth, height, at?, normal?, u_axis?, name? }
 bearcad.cylinder{ radius, height, at?, normal?, u_axis?, name? }
 bearcad.delete(element_or_list)
 bearcad.delete_drawing_loupe{ drawing, view, index }
+bearcad.delete_parameter(name)
 bearcad.delete_section_plane{ view, cut }
 bearcad.delete_selection()
 bearcad.derive_parameter{ kind, a, b, body, body_b, name, instance, face, edge }
@@ -280,6 +282,7 @@ bearcad.edit_extrusion{ extrusion, distance, by, to }
 bearcad.edit_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.edit_mirror{ index, plane, bodies, output }
 bearcad.edit_move{ index, bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
+bearcad.edit_parameter{ name, private, min, max, step, rename }
 bearcad.edit_plane(index)
 bearcad.edit_repeat{ index, bodies, axis, around, flip, mode, count, spacing, gap, length, to }
 bearcad.edit_section_plane{ view, cut, offset, roll, depth, flip, bodies, exclude_bodies }
@@ -333,7 +336,13 @@ bearcad.new()
 bearcad.offset_sketch{ sketch, lines, circles, distance, construction }
 bearcad.open(path)
 bearcad.open_sketch(sketch)
-bearcad.parameter(…)
+bearcad.parameter_edit(name, field)
+bearcad.parameter_editing()
+bearcad.parameter_expression(name)
+bearcad.parameter_from_line_length(line, name?)
+bearcad.parameter_options(name, open?)
+bearcad.parameter_slider(name, value?)
+bearcad.parameter_value(name)
 bearcad.paste{ linked, x, y, z }?
 bearcad.picker(name)
 bearcad.pickers()
@@ -366,6 +375,7 @@ bearcad.set_gizmo{ name, value }
 bearcad.set_joint_rest(op)
 bearcad.set_material{ body, material }
 bearcad.set_name(element, name)
+bearcad.set_parameter(name, expression)
 bearcad.set_unit_parameter{ instance, name, value, expression }
 bearcad.set_units{ length, angle, component, sketch }
 bearcad.set_visible(element, visible)   -- element = { kind = "plane" } (no index): every element of that kind

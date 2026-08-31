@@ -1,7 +1,7 @@
 -- #1161: clicking the Offset tool's push-pull handle focuses the distance field so typing
 -- immediately overwrites and sets the offset distance (no click on the field required).
 bearcad.new()
-bearcad.parameter("add", "gap", "14mm")
+bearcad.add_parameter("gap", "14mm")
 bearcad.line{ x = -10, y = 0, x1 = 10, y1 = 0 }
 -- Hide the side panes (CI's WM-less Xvfb can't maximize; see tests/interaction).
 bearcad.ui.pane("elements", "hide")

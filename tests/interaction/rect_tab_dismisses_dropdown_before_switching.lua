@@ -2,7 +2,7 @@
 -- fuzzy-variable dropdown. The first Tab accepts the name and closes the dropdown *without*
 -- leaving the field; only the second Tab moves to the other dimension.
 bearcad.new()
-bearcad.parameter("add", "foo", "20mm")
+bearcad.add_parameter("foo", "20mm")
 -- Seed a ground sketch (line API auto-opens one); keep it clear of the rectangle area.
 bearcad.line{ x = -20, y = -20, x1 = -20, y1 = -15 }
 bearcad.ui.pane("elements", "hide")

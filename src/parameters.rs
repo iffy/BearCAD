@@ -317,7 +317,7 @@ pub struct ParametersPaneState {
     pub options_draft: String,
     pub options_editing_focus: bool,
     /// Slider widgets painted this frame (#1559): one per local or imported parameter
-    /// that has both min and max. Used by tests and by `bearcad.parameter("slider", …)`.
+    /// that has both min and max. Used by tests and by `bearcad.parameter_slider`.
     pub sliders: Vec<PaintedParameterSlider>,
 }
 

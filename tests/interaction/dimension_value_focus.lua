@@ -1,7 +1,7 @@
 -- #879/#1201: after the click that places a dimension's label, the value field already has
 -- the keyboard — a parameter name typed straight away lands in it, with no click on the field.
 bearcad.new()
-bearcad.parameter("add", "hole", "5mm")
+bearcad.add_parameter("hole", "5mm")
 bearcad.line{ x = 0, y = 0, x1 = 60, y1 = 0 }
 -- Hide the side panes (CI's WM-less Xvfb can't maximize; see tests/interaction).
 bearcad.ui.pane("elements", "hide")
