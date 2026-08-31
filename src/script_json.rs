@@ -486,12 +486,7 @@ pub fn instruction_from_json(
                 .unwrap_or(0.0);
             let symmetric = opt_bool(o, "symmetric")?.unwrap_or(false);
             let bodies = usize_list(o, "bodies")?;
-            // Same mapping as the closure: "add"→AddTouching, "cut"→Cut, else NewBody.
-            let body = match opt_str(o, "body")?.as_deref() {
-                Some("add") => RevolveBodyChoice::AddTouching,
-                Some("cut") => RevolveBodyChoice::Cut,
-                _ => RevolveBodyChoice::NewBody,
-            };
+            let body = RevolveBodyChoice::from_script(opt_str(o, "body")?.as_deref())?;
             Ok(Instruction::Revolve {
                 faces,
                 axis,
@@ -511,11 +506,7 @@ pub fn instruction_from_json(
                 return Err("loft requires at least two sections (`circles`/`polygons`)".into());
             }
             let bodies = usize_list(o, "bodies")?;
-            let body = match opt_str(o, "body")?.as_deref() {
-                Some("add") => RevolveBodyChoice::AddTouching,
-                Some("cut") => RevolveBodyChoice::Cut,
-                _ => RevolveBodyChoice::NewBody,
-            };
+            let body = RevolveBodyChoice::from_script(opt_str(o, "body")?.as_deref())?;
             Ok(Instruction::Loft { faces, body, bodies })
         }
         "combine" => {
@@ -1151,7 +1142,7 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
                     "extrude requires a `circle`/`polygon`/`boolean` or `circles` face list".into(),
                 );
             }
-            let body = body_choice(o);
+            let body = body_choice(o)?;
             // The instruction names the sketch by its ordinal (#1055).
             let sketch = crate::actions::extrude_face_sketch(doc, &faces[0])
                 .and_then(|key| doc.sketches.keys().position(|k| k == key))
@@ -1190,7 +1181,7 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
                 None if target.is_some() => 0.0,
                 None => return Err("extrude_face requires a `distance` or `to`".into()),
             };
-            Ok(Instruction::ExtrudeBodyFace { face, distance, body: body_choice(o), target })
+            Ok(Instruction::ExtrudeBodyFace { face, distance, body: body_choice(o)?, target })
         }
         "edit_extrusion" => {
             let extrusion = req_usize(o, "extrusion", "edit_extrusion")?;
@@ -1222,13 +1213,9 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
     }
 }
 
-/// `body = "merge" | "cut"` attaches the extrusion (else a new body), matching the closures.
-fn body_choice(o: &Map<String, Value>) -> ExtrudeBodyChoice {
-    match o.get("body").and_then(Value::as_str) {
-        Some("merge") => ExtrudeBodyChoice::Merge,
-        Some("cut") => ExtrudeBodyChoice::Cut,
-        _ => ExtrudeBodyChoice::New,
-    }
+/// `body = "new" | "add" | "cut" | "join"` attaches the extrusion (else a new body).
+fn body_choice(o: &Map<String, Value>) -> Result<ExtrudeBodyChoice, String> {
+    ExtrudeBodyChoice::from_script(o.get("body").and_then(Value::as_str))
 }
 
 /// An optional `to = {...}` extrude target.
@@ -1304,15 +1291,7 @@ fn extrude_face_from_json(
 /// A `{ op, a, b }` boolean region (mirrors `parse_boolean_face_table`).
 fn boolean_face_from_json(doc: &crate::model::Document, v: &Value) -> Result<ExtrudeFace, String> {
     let t = v.as_object().ok_or("boolean face must be an object")?;
-    let op = match req_str(t, "op", "boolean")?.to_ascii_lowercase().as_str() {
-        "intersection" => BooleanOp::Intersection,
-        "difference" => BooleanOp::Difference,
-        other => {
-            return Err(format!(
-                "unknown boolean op '{other}' (expected 'intersection' or 'difference')"
-            ))
-        }
-    };
+    let op = BooleanOp::from_script(&req_str(t, "op", "boolean")?)?;
     let a = extrude_face_from_json(doc, t.get("a").ok_or("boolean face requires `a`")?)?;
     let b = extrude_face_from_json(doc, t.get("b").ok_or("boolean face requires `b`")?)?;
     Ok(ExtrudeFace::Boolean { op, a: Box::new(a), b: Box::new(b) })
@@ -1541,12 +1520,11 @@ fn collect_profile_faces(
 /// `combine`/`edit_boolean` shared arguments: op kind (default "combine"), the A and B body
 /// lists, and the keep-B flag.
 fn boolean_op_args(o: &Map<String, Value>) -> Result<(BooleanOpKind, Vec<usize>, Vec<usize>, bool), String> {
-    let op_name = opt_str(o, "op")?.unwrap_or_else(|| "combine".to_string());
-    let kind = BooleanOpKind::from_name(&op_name)
-        .ok_or_else(|| format!("unknown boolean op '{op_name}' (combine|cut|intersect|difference)"))?;
-    let keep = opt_bool(o, "keep_leftovers")?
-        .or(opt_bool(o, "keep_b")?)
-        .unwrap_or(false);
+    let op_name = opt_str(o, "op")?.unwrap_or_else(|| "union".to_string());
+    let kind = BooleanOpKind::from_name(&op_name).ok_or_else(|| {
+        format!("unknown boolean op '{op_name}' ({})", BooleanOpKind::ACCEPTED)
+    })?;
+    let keep = opt_bool(o, "keep_b")?.unwrap_or(false);
     Ok((kind, usize_list(o, "a")?, usize_list(o, "b")?, keep))
 }
 
@@ -2038,12 +2016,7 @@ fn mirror_op_args(
         }
     };
     // `output` mirrors the pane's Output row (#639); omitted means a new body each.
-    let mode = match o.get("output").and_then(Value::as_str) {
-        None | Some("new") | Some("new_body") => MirrorMode::NewBody,
-        Some("join") | Some("add") | Some("combine") => MirrorMode::Join,
-        Some("cut") => MirrorMode::Cut,
-        Some(other) => return Err(format!("unknown mirror output '{other}' (new|join|cut)")),
-    };
+    let mode = MirrorMode::from_script(o.get("output").and_then(Value::as_str))?;
     Ok((plane, usize_list(o, "bodies")?, mode))
 }
 

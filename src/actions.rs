@@ -621,10 +621,11 @@ pub enum ExtrudeBodyMode {
 
 /// How a scripted / [`Action::CreateExtrusion`] extrude attaches to bodies, resolved against
 /// the extrusion's merge candidate at commit time (#35). Mirrors the Lua `body =` argument:
-/// omitted / `"new"` → [`New`](Self::New), `"merge"` → [`Merge`](Self::Merge),
-/// `"cut"` → [`Cut`](Self::Cut). When there's no candidate body, `Merge`/`Cut` are a hard
-/// error (#178) — the sketch must sit on a body face — rather than silently degrading to a
-/// standalone new body.
+/// omitted / `"new"` → [`New`](Self::New), `"add"` → [`Merge`](Self::Merge),
+/// `"cut"` → [`Cut`](Self::Cut), `"join"` → [`JoinNew`](Self::JoinNew). When there's no
+/// candidate body, `Merge`/`Cut` are a hard error (#178) — the sketch must sit on a body
+/// face — rather than silently degrading to a standalone new body. Unknown names error
+/// (#1860).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ExtrudeBodyChoice {
     #[default]
@@ -633,6 +634,31 @@ pub enum ExtrudeBodyChoice {
     Cut,
     /// One body for every profile in the extrude, touching or not (#837) — `body = "join"`.
     JoinNew,
+}
+
+impl ExtrudeBodyChoice {
+    /// Script names `body =` accepts (#1860/#1869).
+    pub const ACCEPTED: &'static str = "new|add|cut|join";
+
+    /// omitted/`"new"` → New, `"add"` → Merge, `"cut"` → Cut, `"join"` → JoinNew.
+    pub fn from_script(name: Option<&str>) -> Result<Self, String> {
+        match name {
+            None | Some("new") => Ok(Self::New),
+            Some("add") => Ok(Self::Merge),
+            Some("cut") => Ok(Self::Cut),
+            Some("join") => Ok(Self::JoinNew),
+            Some(other) => Err(format!("unknown body '{other}' ({})", Self::ACCEPTED)),
+        }
+    }
+
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Merge => "add",
+            Self::Cut => "cut",
+            Self::JoinNew => "join",
+        }
+    }
 }
 
 /// In-progress (or being-edited) extrusion: selected faces + live signed distance.
@@ -832,6 +858,28 @@ pub enum RevolveBodyChoice {
     Cut,
 }
 
+impl RevolveBodyChoice {
+    /// Script names `body =` accepts on revolve/sweep/loft (#1860/#1869).
+    pub const ACCEPTED: &'static str = "new|add|cut";
+
+    pub fn from_script(name: Option<&str>) -> Result<Self, String> {
+        match name {
+            None | Some("new") => Ok(Self::NewBody),
+            Some("add") => Ok(Self::AddTouching),
+            Some("cut") => Ok(Self::Cut),
+            Some(other) => Err(format!("unknown body '{other}' ({})", Self::ACCEPTED)),
+        }
+    }
+
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::NewBody => "new",
+            Self::AddTouching => "add",
+            Self::Cut => "cut",
+        }
+    }
+}
+
 /// A tool's **Output** choice normalized across every tool that offers one — Extrude,
 /// Revolve, Sweep, Loft, Mirror (#1397). Each tool's own mode enum carries extra data
 /// (e.g. which body to merge into), but the three-way new-body / add-to-body / cut choice
@@ -855,20 +903,20 @@ impl ToolOutputMode {
         }
     }
 
-    /// Script name (`"new"` / `"merge"` / `"cut"`). Inverse of [`Self::from_name`].
+    /// Script name (`"new"` / `"add"` / `"cut"`). Inverse of [`Self::from_name`].
     pub fn name(self) -> &'static str {
         match self {
             Self::NewBody => "new",
-            Self::AddToBody => "merge",
+            Self::AddToBody => "add",
             Self::Cut => "cut",
         }
     }
 
-    /// The Output-row names `bearcad.ui.tool_mode` accepts (#1499 / #1524).
+    /// The Output-row names `bearcad.ui.tool_mode` accepts (#1499 / #1524 / #1869).
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
             "new" | "new_body" => Some(Self::NewBody),
-            "merge" | "add" | "join" | "add_to_body" | "add_touching" => Some(Self::AddToBody),
+            "add" => Some(Self::AddToBody),
             "cut" => Some(Self::Cut),
             _ => None,
         }
@@ -22340,8 +22388,12 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
                 state.cycle_tool_output_mode();
                 return Ok(());
             }
-            let kind = crate::model::BooleanOpKind::from_name(name)
-                .ok_or_else(|| format!("unknown Combine mode '{name}'"))?;
+            let kind = crate::model::BooleanOpKind::from_name(name).ok_or_else(|| {
+                format!(
+                    "unknown Combine mode '{name}' ({})",
+                    crate::model::BooleanOpKind::ACCEPTED
+                )
+            })?;
             let picking_b = {
                 let cb = state.creating_boolean.get_or_insert_with(CreatingBoolean::default);
                 cb.set_kind(kind);
@@ -22389,8 +22441,9 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
                 state.cycle_tool_output_mode();
                 return Ok(());
             }
-            let mode = ToolOutputMode::from_name(&name)
-                .ok_or_else(|| format!("unknown Output mode '{name}'"))?;
+            let mode = ToolOutputMode::from_name(&name).ok_or_else(|| {
+                format!("unknown Output mode '{name}' (new|add|cut)")
+            })?;
             set_tool_output_mode(state, mode)?;
             state.tool_prefs.entry(tool).output_mode = Some(mode);
             Ok(())
@@ -22400,7 +22453,7 @@ pub fn set_tool_mode(state: &mut AppState, name: &str) -> Result<(), String> {
 }
 
 /// The active tool's armed mode name (#1524): Combine/Move/Shape kinds, or the
-/// Output-row `"new"`/`"merge"`/`"cut"` while Extrude/Revolve/Sweep/Loft/Mirror
+/// Output-row `"new"`/`"add"`/`"cut"` while Extrude/Revolve/Sweep/Loft/Mirror
 /// have a draft. `None` when that tool has no mode or nothing is in progress.
 pub fn current_tool_mode(state: &AppState) -> Option<String> {
     match state.tool {
@@ -23583,7 +23636,7 @@ mod tests {
         cb.a = vec![bkey(0)];
         cb.b = vec![bkey(1)];
         cb.picking_b = true;
-        set_tool_mode(&mut state, "combine").unwrap();
+        set_tool_mode(&mut state, "union").unwrap();
         let cb = state.creating_boolean.as_ref().unwrap();
         assert_eq!(cb.a, vec![bkey(0), bkey(1)]);
         assert!(cb.b.is_empty());
@@ -23591,8 +23644,8 @@ mod tests {
 
         // #1533: with side A already filled, leaving Combine for a two-sided mode
         // arms Side B so the next click is the other operand, not another A body.
-        for mode in ["cut", "intersect", "difference"] {
-            set_tool_mode(&mut state, "combine").unwrap();
+        for mode in ["cut", "intersect", "xor"] {
+            set_tool_mode(&mut state, "union").unwrap();
             let cb = state.creating_boolean.as_mut().unwrap();
             cb.a = vec![bkey(0)];
             cb.b.clear();
@@ -23612,7 +23665,7 @@ mod tests {
         }
 
         // Empty Side A still needs an A pick — don't skip ahead to B.
-        set_tool_mode(&mut state, "combine").unwrap();
+        set_tool_mode(&mut state, "union").unwrap();
         let cb = state.creating_boolean.as_mut().unwrap();
         cb.a.clear();
         cb.b.clear();
@@ -23658,7 +23711,7 @@ mod tests {
     }
 
     /// #1524: Extrude / Revolve / Sweep / Loft / Mirror expose their Output row
-    /// through `set_tool_mode("new"|"merge"|"cut")`, and the armed mode is readable.
+    /// through `set_tool_mode("new"|"add"|"cut")`, and the armed mode is readable.
     #[test]
     fn set_tool_mode_sets_output_row_and_is_readable() {
         use crate::model::MirrorMode;
@@ -23694,12 +23747,12 @@ mod tests {
             ExtrudeBodyMode::Cut(_)
         ));
         assert_eq!(current_tool_mode(&state).as_deref(), Some("cut"));
-        assert!(set_tool_mode(&mut state, "merge").is_ok());
+        assert!(set_tool_mode(&mut state, "add").is_ok());
         assert!(matches!(
             state.creating_extrusion.as_ref().unwrap().body_mode,
             ExtrudeBodyMode::MergeInto(_)
         ));
-        assert_eq!(current_tool_mode(&state).as_deref(), Some("merge"));
+        assert_eq!(current_tool_mode(&state).as_deref(), Some("add"));
         assert!(set_tool_mode(&mut state, "new").is_ok());
         assert_eq!(
             state.creating_extrusion.as_ref().unwrap().body_mode,
@@ -23717,7 +23770,7 @@ mod tests {
             RevolveBodyChoice::Cut
         );
         assert_eq!(current_tool_mode(&state).as_deref(), Some("cut"));
-        assert!(set_tool_mode(&mut state, "merge").is_ok());
+        assert!(set_tool_mode(&mut state, "add").is_ok());
         assert_eq!(
             state.creating_revolve.as_ref().unwrap().body_choice,
             RevolveBodyChoice::AddTouching
@@ -23733,7 +23786,7 @@ mod tests {
 
         state.tool = Tool::Loft;
         state.creating_loft = Some(CreatingLoft::default());
-        assert!(set_tool_mode(&mut state, "merge").is_ok());
+        assert!(set_tool_mode(&mut state, "add").is_ok());
         assert_eq!(
             state.creating_loft.as_ref().unwrap().body_choice,
             RevolveBodyChoice::AddTouching
@@ -23743,9 +23796,9 @@ mod tests {
         state.creating_mirror = Some(CreatingMirror::default());
         assert!(set_tool_mode(&mut state, "cut").is_ok());
         assert_eq!(state.creating_mirror.as_ref().unwrap().mode, MirrorMode::Cut);
-        assert!(set_tool_mode(&mut state, "merge").is_ok());
+        assert!(set_tool_mode(&mut state, "add").is_ok());
         assert_eq!(state.creating_mirror.as_ref().unwrap().mode, MirrorMode::Join);
-        assert_eq!(current_tool_mode(&state).as_deref(), Some("merge"));
+        assert_eq!(current_tool_mode(&state).as_deref(), Some("add"));
     }
 
     #[test]
@@ -33863,7 +33916,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
     #[test]
     fn combine_first_side_a_pick_arms_side_b_further_picks_keep_side_a() {
         use crate::hierarchy::SceneElement;
-        for mode in ["cut", "intersect", "difference"] {
+        for mode in ["cut", "intersect", "xor"] {
             let mut state = two_box_state(false);
             state.apply(Action::SetTool(Tool::Combine));
             set_tool_mode(&mut state, mode).unwrap();

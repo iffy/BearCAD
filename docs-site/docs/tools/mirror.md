@@ -62,9 +62,9 @@ Edit or delete it later just like the 3D version.
 bearcad.mirror_bodies{ plane = 0, bodies = { 0, 1 } }
 bearcad.edit_mirror{ index = 0, plane = { kind = "construction_plane", index = 0 }, bodies = { 0 } }
 
--- output = "new" (the default), "join", or "cut"
+-- output = "new" (the default), "add", or "cut"
 bearcad.mirror_bodies{ plane = { kind = "construction_plane", index = 0 },
-                       bodies = { 0 }, output = "join" }
+                       bodies = { 0 }, output = "add" }
 
 -- In a sketch: reflect lines/circles across a straight line, or `"x"`/`"y"` for
 -- the sketch origin axes (`"gx"`/`"gy"`/`"gz"` for an in-plane world axis)

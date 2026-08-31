@@ -815,11 +815,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     outputs the next combined solid). **Cut** still mutates the host in place. Deleting one
     extrusion of a multi-extrusion body only drops that extrusion's contribution — the body
     survives as long as it still has at least one added extrusion. Scriptable via
-    `bearcad.extrude{ ..., body = "merge" | "cut" }` (`"merge"` joins, `"cut"` subtracts from,
-    the face's body). An explicit `"merge"`/`"cut"` requires the sketch to sit on a body face:
-    with no such body it is a hard error (#178), never a silent fall-through to a new body.
-    Omitted or any other value always creates a new body, matching the declarative/OpenSCAD-style
-    default.
+    `bearcad.extrude{ ..., body = "add" | "cut" | "join" }` (`"add"` joins the host body,
+    `"cut"` subtracts from it, `"join"` puts every profile in one body). An explicit
+    `"add"`/`"cut"` requires the sketch to sit on a body face: with no such body it is a
+    hard error (#178), never a silent fall-through to a new body. Omitted / `"new"` creates
+    a new body. Unknown values error and list the accepted names (#1860).
   - **One extrude, several solids (#837):** an extrude's picked profiles are grouped into the
     solids they actually make (`extrude::disjoint_face_groups`) — profiles that touch (nested,
     like a hole in its own wall, or overlapping) stay in one solid; profiles sharing nothing
@@ -846,7 +846,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     trick that turns the same intersection-walk into a subtraction) is retained as the
     reference implementation for a parity test matrix holding both to the same strictness
     contract. The resolved loop feeds mesh generation, fill rendering, and
-    hover-highlighting the same way a `Polygon` face's loop already does. Scriptable via `bearcad.extrude{ boolean = { op = "intersection" |
+    hover-highlighting the same way a `Polygon` face's loop already does. Scriptable via `bearcad.extrude{ boolean = { op = "intersect" |
     "difference", a = <face spec>, b = <face spec> }, distance }`, where a face spec is
     `{circle=i}`/`{polygon={...}}` (a rectangle is a four-line polygon)/a nested `{boolean={...}}`.
     - **Rings / faces-with-holes (#268/#263)**: a `Difference` whose subtrahend lies strictly
@@ -969,12 +969,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     its red cut highlight, standing in for the tool, exactly as an extrude cut previews.
     The kernel result is cached per (document, kind, sides), so it is computed once per
     pick rather than once per frame.
-  - Scripting: `bearcad.combine{ op = "combine"|"cut"|"intersect"|"difference", a = {…},
-    b = {…}, keep_b? / keep_leftovers?, name? }` and `bearcad.edit_boolean{ index, … }`;
+  - Scripting: `bearcad.combine{ op = "union"|"cut"|"intersect"|"xor", a = {…},
+    b = {…}, keep_b?, name? }` (`difference` means cut, same as 2D) and
+    `bearcad.edit_boolean{ index, … }`;
     session-command export replays both. `bearcad.begin_combine{ op, a, b, keep_b? }` arms
     the tool with
     picked sides **without** committing, so a script can drive the result preview — the
-    counterpart `begin_move` gives Move. The result geometry is kernel-computed (difference
+    counterpart `begin_move` gives Move. The result geometry is kernel-computed (`xor`
     is (A∪B) − (A∩B); multi-solid results split via `Shape::solids`), on desktop and web
     alike via the kernel module.
 

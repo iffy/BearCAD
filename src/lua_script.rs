@@ -1278,7 +1278,7 @@ fn parse_primitive_face_field(table: &Table) -> mlua::Result<crate::model::Primi
 }
 
 /// An `ExtrudeFace` from a face-spec table: `{rect = i}`, `{circle = i}`, `{polygon = {..}}`,
-/// or a nested `{boolean = {op = "intersection"|"difference", a = <face spec>, b = <face
+/// or a nested `{boolean = {op = "intersect"|"difference", a = <face spec>, b = <face
 /// spec>}}` (#16/#62). Mirrors `extrude_face_spec_table`/`boolean_face_lua_table` in
 /// src/script.rs, which render this same shape back out for the recorded-script export.
 fn parse_extrude_face_table(
@@ -1362,15 +1362,7 @@ fn parse_text_anchor(name: &str) -> mlua::Result<crate::model::TextAnchor> {
 
 fn parse_boolean_face_table(lua: &Lua, table: &Table) -> mlua::Result<crate::model::ExtrudeFace> {
     let op: String = table.get("op")?;
-    let op = match op.to_ascii_lowercase().as_str() {
-        "intersection" => crate::model::BooleanOp::Intersection,
-        "difference" => crate::model::BooleanOp::Difference,
-        other => {
-            return Err(mlua::Error::external(format!(
-                "unknown boolean op '{other}' (expected 'intersection' or 'difference')"
-            )))
-        }
-    };
+    let op = crate::model::BooleanOp::from_script(&op).map_err(mlua::Error::external)?;
     let a: Table = table.get("a")?;
     let b: Table = table.get("b")?;
     Ok(crate::model::ExtrudeFace::Boolean {
@@ -1673,16 +1665,17 @@ fn parse_treatable_solid_ref(opts: &Table) -> mlua::Result<Option<TreatableSolid
 }
 
 /// Parses `bearcad.combine{}`/`bearcad.edit_boolean{}` arguments: the op kind, the A and
-/// B input body lists, and the leftovers flag (`keep_b` or `keep_leftovers`).
+/// B input body lists, and the leftovers flag (`keep_b`).
 fn parse_boolean_op_args(
     opts: &Table,
 ) -> mlua::Result<(crate::model::BooleanOpKind, Vec<usize>, Vec<usize>, bool)> {
     let op_name: String = opts
         .get::<Option<String>>("op")?
-        .unwrap_or_else(|| "combine".to_string());
+        .unwrap_or_else(|| "union".to_string());
     let kind = crate::model::BooleanOpKind::from_name(&op_name).ok_or_else(|| {
         mlua::Error::external(format!(
-            "unknown boolean op '{op_name}' (combine|cut|intersect|difference)"
+            "unknown boolean op '{op_name}' ({})",
+            crate::model::BooleanOpKind::ACCEPTED
         ))
     })?;
     let mut a: Vec<usize> = opts.ordinal_list("a")?;
@@ -1693,9 +1686,8 @@ fn parse_boolean_op_args(
     if kind == crate::model::BooleanOpKind::Combine && !b.is_empty() {
         a.append(&mut b);
     }
-    let keep_leftovers: Option<bool> = opts.get("keep_leftovers")?;
     let keep_b: Option<bool> = opts.get("keep_b")?;
-    Ok((kind, a, b, keep_leftovers.or(keep_b).unwrap_or(false)))
+    Ok((kind, a, b, keep_b.unwrap_or(false)))
 }
 
 /// Parses an `axis = …` argument into a [`crate::model::RevolveAxis`]: `"x"`/`"y"`/`"z"` for
@@ -2544,16 +2536,10 @@ fn parse_mirror_op_args(
     let plane = parse_mirror_plane(lua, opts)?;
     let targets: Vec<usize> = opts.ordinal_list("bodies")?;
     // `output` mirrors the pane's Output row (#639); omitted means a new body each.
-    let mode = match opts.get::<Option<String>>("output")?.as_deref() {
-        None | Some("new") | Some("new_body") => crate::model::MirrorMode::NewBody,
-        Some("join") | Some("add") | Some("combine") => crate::model::MirrorMode::Join,
-        Some("cut") => crate::model::MirrorMode::Cut,
-        Some(other) => {
-            return Err(mlua::Error::external(format!(
-                "unknown mirror output '{other}' (new|join|cut)"
-            )))
-        }
-    };
+    let mode = crate::model::MirrorMode::from_script(
+        opts.get::<Option<String>>("output")?.as_deref(),
+    )
+    .map_err(mlua::Error::external)?;
     Ok((plane, targets, mode))
 }
 
@@ -2640,7 +2626,25 @@ fn revolve_mode_name(mode: &crate::model::RevolveMode) -> &'static str {
     use crate::model::RevolveMode as M;
     match mode {
         M::NewBody => "new",
-        M::AddTo(_) => "merge",
+        M::AddTo(_) => "add",
+        M::Cut(_) => "cut",
+    }
+}
+
+fn sweep_mode_name(mode: &crate::model::SweepMode) -> &'static str {
+    use crate::model::SweepMode as M;
+    match mode {
+        M::NewBody => "new",
+        M::AddTo(_) => "add",
+        M::Cut(_) => "cut",
+    }
+}
+
+fn loft_mode_name(mode: &crate::model::LoftMode) -> &'static str {
+    use crate::model::LoftMode as M;
+    match mode {
+        M::NewBody => "new",
+        M::AddTo(_) => "add",
         M::Cut(_) => "cut",
     }
 }
@@ -4538,6 +4542,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("axis", revolve_axis_name(&rev.axis))?;
                     t.set("angle", rev.angle_deg)?;
                     t.set("pitch", rev.pitch_mm)?;
+                    t.set("body", revolve_mode_name(&rev.mode))?;
                     t.set("mode", revolve_mode_name(&rev.mode))?;
                     if let Some(name) = &rev.name {
                         t.set("name", name.as_str())?;
@@ -4550,6 +4555,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("sketch", doc.sketches.keys().position(|k| k == sweep.sketch))?;
                     t.set("faces", sweep.faces.len())?;
                     t.set("path", sweep.path.len())?;
+                    t.set("body", sweep_mode_name(&sweep.mode))?;
                     if let Some(name) = &sweep.name {
                         t.set("name", name.as_str())?;
                     }
@@ -4559,6 +4565,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         return Ok(Value::Nil);
                     };
                     t.set("sections", loft.sections.len())?;
+                    t.set("body", loft_mode_name(&loft.mode))?;
                     if let Some(name) = &loft.name {
                         t.set("name", name.as_str())?;
                     }
@@ -4571,6 +4578,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("op", op.kind.script_name())?;
                     t.set("a", op.a.len())?;
                     t.set("b", op.b.len())?;
+                    t.set("keep_b", op.keep_b)?;
                     t.set("outputs", op.outputs.len())?;
                     if let Some(name) = &op.name {
                         t.set("name", name.as_str())?;
@@ -4593,6 +4601,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     };
                     t.set("targets", op.targets.len())?;
                     t.set("outputs", op.outputs.len())?;
+                    t.set("output", op.mode.script_name())?;
                     t.set("plane", face_kind_name(&op.plane))?;
                     if let Some(name) = &op.name {
                         t.set("name", name.as_str())?;
@@ -7976,7 +7985,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     faces.push(crate::model::ExtrudeFace::TextGlyph { text, glyph });
                 }
             }
-            // `boolean = {op = "intersection"|"difference", a = <face spec>, b = <face
+            // `boolean = {op = "intersect"|"difference", a = <face spec>, b = <face
             // spec>}`: a boolean-combined region of two other (possibly nested) faces
             // (#16/#62) — the toggleable intersection/difference regions of two overlapping
             // shapes.
@@ -7988,16 +7997,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "extrude requires a `circle`/`polygon`/`boolean` or `circles` face list",
                 ));
             }
-            // `body = "merge"` joins the body of the face being extruded from (if any), and
-            // `body = "cut"` subtracts the extrusion from that body (#32/#35); any other value
-            // (including the default, omitted) creates a new body. A cut has no effect without
+            // `body = "add"` joins the body of the face being extruded from (if any), and
+            // `body = "cut"` subtracts the extrusion from that body (#32/#35); omitted / `"new"`
+            // creates a new body. Unknown names error (#1860). A cut has no effect without
             // a candidate body, and in a non-kernel build renders the additive geometry only.
-            let body = match opts.get::<Option<String>>("body")?.as_deref() {
-                Some("merge") => crate::actions::ExtrudeBodyChoice::Merge,
-                Some("cut") => crate::actions::ExtrudeBodyChoice::Cut,
-                Some("join") => crate::actions::ExtrudeBodyChoice::JoinNew,
-                _ => crate::actions::ExtrudeBodyChoice::New,
-            };
+            let body = crate::actions::ExtrudeBodyChoice::from_script(
+                opts.get::<Option<String>>("body")?.as_deref(),
+            )
+            .map_err(mlua::Error::external)?;
             // Sketch from the first face's geometry (all faces should be coplanar).
             let sketch = unsafe {
                 let doc = &tick.state().doc;
@@ -8057,7 +8064,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     // Push/pull a bare 3D body face directly (#130/#122): `face = { kind = "extrude_cap" |
     // "extrude_side", ... }` picks the face, `distance` (or `to = { face|plane|vertex }` to
-    // snap onto another surface) drives the depth, and `body = "merge"|"cut"` attaches it —
+    // snap onto another surface) drives the depth, and `body = "add"|"cut"` attaches it —
     // the declarative equivalent of clicking the face with the Extrude tool and pulling it.
     api.set(
         "extrude_face",
@@ -8086,12 +8093,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     ))
                 }
             };
-            let body = match opts.get::<Option<String>>("body")?.as_deref() {
-                Some("merge") => crate::actions::ExtrudeBodyChoice::Merge,
-                Some("cut") => crate::actions::ExtrudeBodyChoice::Cut,
-                Some("join") => crate::actions::ExtrudeBodyChoice::JoinNew,
-                _ => crate::actions::ExtrudeBodyChoice::New,
-            };
+            let body = crate::actions::ExtrudeBodyChoice::from_script(
+                opts.get::<Option<String>>("body")?.as_deref(),
+            )
+            .map_err(mlua::Error::external)?;
             unsafe {
                 tick.exec(Instruction::ExtrudeBodyFace { face, distance, body, target })?;
             }
@@ -8781,7 +8786,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "combine",
-                &["op", "a", "b", "keep_b", "keep_leftovers", "bake", "name"],
+                &["op", "a", "b", "keep_b", "bake", "name"],
             )?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
@@ -8830,7 +8835,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "begin_combine",
-                &["op", "a", "b", "keep_b", "keep_leftovers"],
+                &["op", "a", "b", "keep_b"],
             )?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
@@ -8847,7 +8852,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_boolean",
-                &["index", "op", "a", "b", "keep_b", "keep_leftovers"],
+                &["index", "op", "a", "b", "keep_b"],
             )?;
             let op: usize = opts.ordinal_req("index")?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
@@ -9021,11 +9026,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             };
             let symmetric: bool = opts.get::<Option<bool>>("symmetric")?.unwrap_or(false);
             let bodies: Vec<usize> = opts.ordinal_list("bodies")?;
-            let body = match opts.get::<Option<String>>("body")?.as_deref() {
-                Some("add") => crate::actions::RevolveBodyChoice::AddTouching,
-                Some("cut") => crate::actions::RevolveBodyChoice::Cut,
-                _ => crate::actions::RevolveBodyChoice::NewBody,
-            };
+            let body = crate::actions::RevolveBodyChoice::from_script(
+                opts.get::<Option<String>>("body")?.as_deref(),
+            )
+            .map_err(mlua::Error::external)?;
             unsafe {
                 tick.exec(Instruction::Revolve {
                     faces,
@@ -9151,11 +9155,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 ));
             }
             let bodies: Vec<usize> = opts.ordinal_list("bodies")?;
-            let body = match opts.get::<Option<String>>("body")?.as_deref() {
-                Some("add") => crate::actions::RevolveBodyChoice::AddTouching,
-                Some("cut") => crate::actions::RevolveBodyChoice::Cut,
-                _ => crate::actions::RevolveBodyChoice::NewBody,
-            };
+            let body = crate::actions::RevolveBodyChoice::from_script(
+                opts.get::<Option<String>>("body")?.as_deref(),
+            )
+            .map_err(mlua::Error::external)?;
             unsafe {
                 tick.exec(Instruction::Sweep { faces, path, body, bodies })?;
             }
@@ -9200,11 +9203,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 ));
             }
             let bodies: Vec<usize> = opts.ordinal_list("bodies")?;
-            let body = match opts.get::<Option<String>>("body")?.as_deref() {
-                Some("add") => crate::actions::RevolveBodyChoice::AddTouching,
-                Some("cut") => crate::actions::RevolveBodyChoice::Cut,
-                _ => crate::actions::RevolveBodyChoice::NewBody,
-            };
+            let body = crate::actions::RevolveBodyChoice::from_script(
+                opts.get::<Option<String>>("body")?.as_deref(),
+            )
+            .map_err(mlua::Error::external)?;
             unsafe {
                 tick.exec(Instruction::Loft { faces, body, bodies })?;
             }
@@ -10825,6 +10827,130 @@ pub mod tests {
         );
     }
 
+    /// #1860/#1861/#1869: solid output and boolean-op names are one vocabulary on write
+    /// and get; unknown values error with the accepted list (they used to fall through
+    /// to a new body).
+    #[test]
+    fn lua_solid_output_and_boolean_names_are_canonical() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.exit_sketch()
+            local function must_fail(fn, needle)
+              local ok, err = pcall(fn)
+              assert(not ok, "unknown value should error")
+              err = tostring(err)
+              assert(err:find(needle, 1, true), "unexpected error: " .. err)
+            end
+            must_fail(function()
+              bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10, body = "sideways" }
+            end, "sideways")
+            must_fail(function()
+              bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10, body = "merge" }
+            end, "new|add|cut|join")
+            must_fail(function()
+              bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", body = "merge" }
+            end, "new|add|cut")
+            must_fail(function()
+              bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", body = "join" }
+            end, "new|add|cut")
+
+            -- #1861: write `body = "add"`, get reports the same word (not "merge").
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.rect{ x = 10, y = 0, width = 10, height = 10 }
+            bearcad.exit_sketch()
+            bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", body = "add", bodies = {0} }
+            local rev = bearcad.get{ kind = "revolution", index = 0 }
+            assert(rev.body == "add", "get body, got " .. tostring(rev.body))
+            assert(rev.mode == "add", "get mode matches write, got " .. tostring(rev.mode))
+
+            -- Extrude `body = "add"` fuses into the host (the old silent-New bug).
+            bearcad.new()
+            bearcad.rect{ width = 80, height = 50 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
+            bearcad.begin_sketch{
+              kind = "extrude_cap", extrusion = 0,
+              profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
+            }
+            bearcad.rect{ x = 10, y = 10, width = 20, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5, body = "add" }
+            local n_live = 0
+            for i = 0, 20 do
+              local b = bearcad.get{ kind = "body", index = i }
+              if b == nil then break end
+              if not b.shadow then n_live = n_live + 1 end
+            end
+            assert(n_live == 1, "add should fuse into one live body, got " .. n_live)
+
+            -- Mirror `output = "add"` is the fuse; `join` is the extrude-only word.
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 6 }
+            bearcad.mirror_bodies{
+              plane = { kind = "construction_plane", index = 0 },
+              bodies = {0}, output = "add",
+            }
+            local mir = bearcad.get{ kind = "mirror", index = 0 }
+            assert(mir.output == "add", "mirror get output, got " .. tostring(mir.output))
+            must_fail(function()
+              bearcad.mirror_bodies{
+                plane = { kind = "construction_plane", index = 0 },
+                bodies = {0}, output = "join",
+              }
+            end, "new|add|cut")
+
+            -- 3D `difference` is a cut, not XOR; XOR is `xor`. `keep_leftovers` is gone.
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.cuboid{ width = 6, depth = 6, height = 20, at = {0, 0, 0} }
+            bearcad.combine{ op = "difference", a = {0}, b = {1} }
+            local c = bearcad.get{ kind = "combine", index = 0 }
+            assert(c.op == "cut", "difference writes as cut, got " .. tostring(c.op))
+            assert(c.outputs == 1, "difference is A−B (one result), got " .. tostring(c.outputs))
+            assert(c.keep_b == false, "keep_b round-trips")
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.cuboid{ width = 6, depth = 6, height = 20, at = {0, 0, 0} }
+            bearcad.combine{ op = "xor", a = {0}, b = {1} }
+            local x = bearcad.get{ kind = "combine", index = 0 }
+            assert(x.op == "xor", "xor round-trips, got " .. tostring(x.op))
+            assert(x.outputs == 2, "xor is the symmetric difference, got " .. tostring(x.outputs))
+            must_fail(function()
+              bearcad.combine{ op = "combine", a = {0}, b = {1} }
+            end, "union|cut|intersect|xor")
+            must_fail(function()
+              bearcad.combine{ op = "union", a = {0}, b = {1}, keep_leftovers = true }
+            end, "keep_leftovers")
+
+            -- 2D profile booleans: `intersect` (not intersection); `difference` is A−B.
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.circle{ x = 10, y = 10, r = 5 }
+            bearcad.extrude{
+              boolean = {
+                op = "intersect",
+                a = { polygon = {0, 1, 2, 3} },
+                b = { circle = 0 },
+              },
+              distance = 5,
+            }
+            assert(bearcad.count("extrusion") == 1, "intersect region extrudes")
+            must_fail(function()
+              bearcad.extrude{
+                boolean = {
+                  op = "intersection",
+                  a = { polygon = {0, 1, 2, 3} },
+                  b = { circle = 0 },
+                },
+                distance = 5,
+              }
+            end, "intersect|difference")
+            "#,
+        );
+    }
+
     /// #1660: the documented `{ op, a, b }` shape works for a union too — `b` used to be
     /// dropped, and the call then failed saying there were not two bodies.
     #[test]
@@ -10839,7 +10965,7 @@ pub mod tests {
             assert(math.abs(v - 1500) < 1, "the union spans both cuboids, got " .. v)
 
             -- The op names really are the ones the reference lists.
-            for _, op in ipairs({"union", "combine", "difference", "intersect", "cut"}) do
+            for _, op in ipairs({"union", "xor", "intersect", "cut", "difference"}) do
               bearcad.new()
               bearcad.cuboid{ width = 10, depth = 10, height = 10 }
               bearcad.cuboid{ width = 10, depth = 10, height = 10, at = {5, 0, 0} }
@@ -10848,7 +10974,7 @@ pub mod tests {
             local ok, err = pcall(function()
               bearcad.combine{ op = "join", a = {0}, b = {1} }
             end)
-            assert(not ok and tostring(err):find("combine"), tostring(err))
+            assert(not ok and tostring(err):find("union"), tostring(err))
             "#,
         );
         assert_eq!(state.doc.boolean_ops.len(), 1);
@@ -13331,8 +13457,8 @@ pub mod tests {
             local a = bearcad.cuboid{ width = 10, depth = 10, height = 10, at = { 0, 0, 0 } }
             local b = bearcad.cuboid{ width = 6, depth = 6, height = 20, at = { 0, 0, 0 } }
             -- `a`/`b` take handles; a difference that leaves an offcut hands back both bodies.
-            local cut = bearcad.combine{ a = { a }, b = { b }, op = "difference" }
-            assert(#cut == 2, "difference makes the result and its offcut, got " .. tostring(#cut))
+            local cut = bearcad.combine{ a = { a }, b = { b }, op = "xor" }
+            assert(#cut == 2, "xor makes the result and its offcut, got " .. tostring(#cut))
             -- `bodies` takes an id string just as happily.
             local moved = bearcad.move_bodies{ bodies = { cut[1]:id() }, z = 5 }
             assert(moved:kind() == "body", "move_bodies returns the moved body")
@@ -14559,7 +14685,7 @@ pub mod tests {
             r#"
             bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
             local ok, err = pcall(bearcad.extrude, {
-                polygon = {0, 1, 2, 99}, distance = 5, body = "merge",
+                polygon = {0, 1, 2, 99}, distance = 5, body = "add",
             })
             assert(not ok, "extrude with a nonexistent line index should error")
             -- The ordinal is resolved to a key at the script boundary (#1055), so a line that
@@ -14714,7 +14840,7 @@ pub mod tests {
             bearcad.cylinder{ radius = 44.5, height = 7 }
             bearcad.combine{ op = "difference", a = {0}, b = {1} }   -- ring
             bearcad.cylinder{ radius = 47.5, height = 4 }            -- base
-            bearcad.combine{ op = "combine", a = {2}, b = {3} }      -- coaster
+            bearcad.combine{ op = "union", a = {2}, b = {3} }      -- coaster
             local vol = bearcad.body_stats(2).volume
             bearcad.select{ kind = "body", index = 0 }
             bearcad.select({ kind = "body", index = 1 }, true)
@@ -14759,7 +14885,7 @@ pub mod tests {
             r#"
             bearcad.cuboid{ width = 10, depth = 10, height = 10 }
             bearcad.cuboid{ at = {5, 0, 0}, width = 10, depth = 10, height = 10 }
-            bearcad.combine{ op = "combine", a = {0}, b = {1}, bake = true }
+            bearcad.combine{ op = "union", a = {0}, b = {1}, bake = true }
             assert(bearcad.count("body") == 1, "expected exactly one body, got " .. bearcad.count("body"))
             local s = bearcad.body_stats(0)
             assert(s, "the baked body must have stats")
@@ -14777,7 +14903,7 @@ pub mod tests {
             r#"
             bearcad.cuboid{ width = 10, depth = 10, height = 10 }
             bearcad.cuboid{ at = {5, 0, 0}, width = 10, depth = 10, height = 10 }
-            bearcad.combine{ op = "combine", a = {0}, b = {1} }
+            bearcad.combine{ op = "union", a = {0}, b = {1} }
         "#,
         );
         assert_eq!(state.doc.bodies.len(), 3);
@@ -15660,7 +15786,7 @@ pub mod tests {
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
             bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true }
             bearcad.rect{ x = 10, y = 10, width = 20, height = 10 }
-            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5, body = "merge" }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5, body = "add" }
         "#,
         );
         assert_eq!(state.doc.extrusions.len(), 2);
@@ -15814,7 +15940,7 @@ pub mod tests {
             }
             bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "side", edge = 0 }
             bearcad.rect{ x = 5, y = 5, width = 10, height = 10 }
-            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15, body = "merge" }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15, body = "add" }
             "#,
         );
         assert_eq!(state.doc.shell_ops.len(), 1);
@@ -15918,7 +16044,7 @@ pub mod tests {
         );
     }
 
-    /// #1104/#1106: extruding from a Shape-tool cuboid face with `body = "merge"` shadows
+    /// #1104/#1106: extruding from a Shape-tool cuboid face with `body = "add"` shadows
     /// the pure cuboid body and produces a new combined Solid as the extrusion's output.
     #[test]
     fn lua_extrude_merge_into_shape_tool_cuboid() {
@@ -15928,7 +16054,7 @@ pub mod tests {
             bearcad.cuboid{ width = 40, depth = 30, height = 20, name = "Block" }
             bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "top" }
             bearcad.rect{ x = 5, y = 5, width = 10, height = 10 }
-            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15, body = "merge" }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15, body = "add" }
             "#,
         );
         assert_eq!(state.doc.primitives.len(), 1);
@@ -15992,7 +16118,7 @@ pub mod tests {
             local before = bearcad.body_stats(1).bbox
             bearcad.begin_sketch{ kind = "primitive_face", primitive = 1, face = "top" }
             bearcad.rect{ x = 5, y = 5, width = 10, height = 10 }
-            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15, body = "merge" }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15, body = "add" }
             local live = bearcad.count("body") - 1
             local after = bearcad.body_stats(live).bbox
             assert(after.min[3] > before.min[3] - 1,
@@ -16080,7 +16206,7 @@ pub mod tests {
             bearcad.new()
             bearcad.cuboid{ width = 40, depth = 40, height = 20 }
             bearcad.cuboid{ at = {20, 0, 0}, width = 40, depth = 40, height = 20 }
-            bearcad.combine{ op = "combine", a = {0, 1} }
+            bearcad.combine{ op = "union", a = {0, 1} }
             local live = bearcad.count("body") - 1
             local v0 = bearcad.body_stats(live).volume
             assert(v0 > 40000, "combined solid should be larger than one cuboid, got " .. v0)
@@ -16143,7 +16269,7 @@ pub mod tests {
             bearcad.new()
             bearcad.cuboid{ width = 40, depth = 40, height = 20 }
             bearcad.cuboid{ at = {20, 0, 0}, width = 40, depth = 40, height = 20 }
-            bearcad.combine{ op = "combine", a = {0, 1} }
+            bearcad.combine{ op = "union", a = {0, 1} }
             local live = bearcad.count("body") - 1
             local v0 = bearcad.body_stats(live).volume
             local faces = bearcad.body_faces(live)
@@ -16187,7 +16313,7 @@ pub mod tests {
             bearcad.new()
             bearcad.cuboid{ width = 40, depth = 40, height = 20 }
             bearcad.cuboid{ at = {20, 0, 0}, width = 40, depth = 40, height = 20 }
-            bearcad.combine{ op = "combine", a = {0, 1} }
+            bearcad.combine{ op = "union", a = {0, 1} }
             local live = bearcad.count("body") - 1
             local v0 = bearcad.body_stats(live).volume
             local faces = bearcad.body_faces(live)
@@ -16446,7 +16572,7 @@ pub mod tests {
                 normal = q(top.normal),
             }
             bearcad.rect{ x = -8, y = -6, width = 16, height = 12 }
-            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 30, body = "merge" }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 30, body = "add" }
             "#,
         );
         assert_eq!(state.doc.sketches.len(), 1, "one sketch on the moved body");
@@ -16508,7 +16634,7 @@ pub mod tests {
             bearcad.cuboid{ width = 40, depth = 30, height = 20 }
             bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "side", edge = 0 }
             bearcad.rect{ x = 2, y = 2, width = 8, height = 8 }
-            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 12, body = "merge" }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 12, body = "add" }
             "#,
         );
         let tree = crate::hierarchy::build_hierarchy(&state.doc, None);
@@ -16587,13 +16713,13 @@ pub mod tests {
             bearcad.cuboid{ width = 40, depth = 30, height = 20 }
             bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "side", edge = 0 }
             bearcad.rect{ x = 2, y = 2, width = 8, height = 8 }
-            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10, body = "merge" }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10, body = "add" }
             bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true }
             bearcad.rect{ x = 1, y = 1, width = 6, height = 6 }
-            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 10, body = "merge" }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 10, body = "add" }
             bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 1, profile = "polygon", profile_lines = {4, 5, 6, 7}, top = true }
             bearcad.rect{ x = 1, y = 1, width = 4, height = 4 }
-            bearcad.extrude{ polygon = {8, 9, 10, 11}, distance = 10, body = "merge" }
+            bearcad.extrude{ polygon = {8, 9, 10, 11}, distance = 10, body = "add" }
             "#,
         );
         assert_eq!(state.doc.extrusions.len(), 3);
@@ -16665,7 +16791,7 @@ pub mod tests {
         assert_eq!(live.source.cut_extrusion_indices(), [xkey(1)]);
     }
 
-    /// #178 part 1: `body = "cut"` (or `"merge"`) explicitly requested, but the sketch isn't
+    /// #178 part 1: `body = "cut"` (or `"add"`) explicitly requested, but the sketch isn't
     /// on a body face, must error rather than silently degrading to a standalone new body
     /// (which produces no holes and raises nothing). Nothing is created.
     #[test]
@@ -17774,14 +17900,14 @@ pub mod tests {
             bearcad.new()
             bearcad.cuboid{ width = 10, depth = 10, height = 5 }
             bearcad.cuboid{ width = 10, depth = 10, height = 5, at = {5, 0, 0} }
-            bearcad.combine{ op = "difference", a = {0}, b = {1}, keep_leftovers = true }
+            bearcad.combine{ op = "xor", a = {0}, b = {1}, keep_b = true }
             local n = 0
             for i = 0, 20 do
                 local b = bearcad.get{ kind = "body", index = i }
                 if b == nil then break end
                 if not b.shadow then n = n + 1 end
             end
-            assert(n == 3, "difference+keep should keep three parts, got " .. n)
+            assert(n == 3, "xor+keep should keep three parts, got " .. n)
             "#,
         );
     }
@@ -18300,7 +18426,7 @@ pub mod tests {
         );
     }
 
-    /// #1524: Extrude's Output row is `bearcad.ui.tool_mode("new"|"merge"|"cut")`
+    /// #1524: Extrude's Output row is `bearcad.ui.tool_mode("new"|"add"|"cut")`
     /// while an extrusion is in progress, and the armed mode is readable. Same
     /// names work on Revolve/Sweep/Loft/Mirror.
     #[test]
@@ -18342,8 +18468,8 @@ pub mod tests {
             assert(bearcad.ui.tool_mode() == "new", "default output is new body")
             bearcad.ui.tool_mode("cut")
             assert(bearcad.ui.tool_mode() == "cut")
-            bearcad.ui.tool_mode("merge")
-            assert(bearcad.ui.tool_mode() == "merge")
+            bearcad.ui.tool_mode("add")
+            assert(bearcad.ui.tool_mode() == "add")
             bearcad.ui.tool_mode("new")
             assert(bearcad.ui.tool_mode() == "new")
             "#,
@@ -18464,7 +18590,7 @@ pub mod tests {
     /// Side A pick (after re-arming A) stays on A. Union has no Side B to jump to.
     #[test]
     fn lua_combine_first_side_a_pick_focuses_side_b() {
-        for mode in ["cut", "intersect", "difference"] {
+        for mode in ["cut", "intersect", "xor"] {
             let state = run_lua(&format!(
                 r#"
                 bearcad.rect{{ width = 20, height = 20 }}
@@ -18553,15 +18679,15 @@ pub mod tests {
         run_lua_expect_ok(
             r#"
             bearcad.ui.tool("combine")
-            assert(bearcad.ui.tool_mode() == "combine", "SetTool arms Combine mode")
+            assert(bearcad.ui.tool_mode() == "union", "SetTool arms Union mode")
             bearcad.ui.tool_mode("next")
             assert(bearcad.ui.tool_mode() == "cut")
             bearcad.ui.tool_mode("cycle")
             assert(bearcad.ui.tool_mode() == "intersect")
             bearcad.ui.tool_mode("next")
-            assert(bearcad.ui.tool_mode() == "difference")
+            assert(bearcad.ui.tool_mode() == "xor")
             bearcad.ui.tool_mode("next")
-            assert(bearcad.ui.tool_mode() == "combine")
+            assert(bearcad.ui.tool_mode() == "union")
             bearcad.ui.tool_mode("cut")
             assert(bearcad.ui.tool_mode() == "cut")
             "#,
@@ -18751,7 +18877,7 @@ pub mod tests {
         );
     }
 
-    /// #639: `mirror_bodies{ output = }` picks how the reflections land. `join` fuses each
+    /// #639: `mirror_bodies{ output = }` picks how the reflections land. `add` fuses each
     /// into its own source and consumes it; the default keeps the original alongside.
     #[test]
     fn lua_mirror_output_mode() {
@@ -18761,7 +18887,7 @@ pub mod tests {
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 6 }
             bearcad.mirror_bodies{
                 plane = { kind = "construction_plane", index = 0 },
-                bodies = {0}, output = "join",
+                bodies = {0}, output = "add",
             }
             "#,
         );

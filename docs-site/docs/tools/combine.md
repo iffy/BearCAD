@@ -34,10 +34,10 @@ After — the cutting body is carved away:
 
 | Operation | Result |
 |---|---|
-| **Combine** | One body containing everything in the picked set (union). |
+| **Union** | One body containing everything in the picked set. |
 | **Cut** | Side A with side B carved away (A − B). |
 | **Intersect** | Only the material common to A and B. |
-| **Difference** | Only the material *not* common to A and B (symmetric difference). |
+| **Xor** | Only the material *not* common to A and B (symmetric difference). |
 
 ## How to use it
 
@@ -46,7 +46,7 @@ After — the cutting body is carved away:
 2. Click bodies to add them. Two-sided operations have **Side A** and **Side B** pickers;
    click a picker to make it the active side. Re-clicking a body removes it.
 3. **Keep cutting shape** / **Keep trimmed parts** / **Keep hole** keeps what that
-   operation would discard. Intersect and Difference with it on both split A and B
+   operation would discard. Intersect and Xor with it on both split A and B
    into three parts.
 4. Press **Enter**.
 
@@ -76,9 +76,9 @@ are ordinary bodies, so operations chain.
 
 ```lua
 bearcad.combine{ op = "cut", a = {0}, b = {1}, name = "Notched block" }
-bearcad.combine{ op = "combine", a = {0, 1, 2} }
-bearcad.combine{ op = "intersect", a = {0}, b = {1}, keep_leftovers = true }
-bearcad.edit_boolean{ index = 0, op = "difference", a = {0}, b = {1} }
+bearcad.combine{ op = "union", a = {0, 1, 2} }
+bearcad.combine{ op = "intersect", a = {0}, b = {1}, keep_b = true }
+bearcad.edit_boolean{ index = 0, op = "xor", a = {0}, b = {1} }
 -- `begin_combine` takes the same arguments but leaves the tool armed rather than
 -- committing, so the result preview is on screen for a screenshot.
 bearcad.begin_combine{ op = "cut", a = {0}, b = {1} }
@@ -86,8 +86,8 @@ bearcad.begin_combine{ op = "cut", a = {0}, b = {1} }
 
 ## Good to know
 
-- Switching from Combine to Cut, Intersect, or Difference after Side A is filled focuses Side B.
-- The first Side A pick in Cut, Intersect, or Difference also focuses Side B. Further Side A picks stay on Side A.
+- Switching from Union to Cut, Intersect, or Xor after Side A is filled focuses Side B.
+- The first Side A pick in Cut, Intersect, or Xor also focuses Side B. Further Side A picks stay on Side A.
 - All four operations undo as a single step.
 - An empty result (a cut that leaves nothing, or an intersect with no overlap) is
   refused — the inputs stay as they were.

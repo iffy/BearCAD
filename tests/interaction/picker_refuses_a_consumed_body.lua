@@ -20,7 +20,7 @@ bearcad.ui.auto_zoom(false)
 bearcad.ui.ground("off")
 
 -- Fuse them: both inputs become shadow bodies and the union is a new one.
-bearcad.combine{ op = "combine", a = {0, 1} }
+bearcad.combine{ op = "union", a = {0, 1} }
 
 bearcad.ui.tool("move")
 bearcad.ui.wait(5)

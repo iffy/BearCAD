@@ -57,17 +57,17 @@ bearcad.project{ body?, bodies?, plane?, planes?, entities? }
 ## Solids
 
 ```
-bearcad.extrude{ polygon = {line, …} | circle = i | circles = {i, …} | text = i | boolean = {…}, distance?, to?, body = "new"|"merge"|"cut"|"join"?, name?, symmetric?, taper?, taper_mode = "distance"|"angle"? }
+bearcad.extrude{ polygon = {line, …} | circle = i | circles = {i, …} | text = i | boolean = {…}, distance?, to?, body = "new"|"add"|"cut"|"join"?, name?, symmetric?, taper?, taper_mode = "distance"|"angle"? }
 bearcad.edit_extrusion{ extrusion, distance? | by? | to? }
 bearcad.extrude_face{ face = {…}, distance, body? }
 bearcad.revolve{ polygon = {…} | circle = i | circles = {i, …}, axis = "x"|"y"|"z"|{ line = i }, angle? | revolutions?, pitch?, body = "new"|"add"|"cut"?, bodies?, symmetric?, name? }
 bearcad.sweep{ polygon = {…} | circle = i | circles = {i, …}, path = {line, …}, body = "add"|"cut"?, bodies? }
 bearcad.loft{ circles = {i, …}?, polygons = { {line, …}, … }?, body? }
-bearcad.combine{ op = "combine"|"union"|"cut"|"intersect"|"difference", a = {i, …}, b = {i, …}, keep_b?, keep_leftovers?, bake?, name? }   -- bake = true consumes the inputs and leaves one standalone body
+bearcad.combine{ op = "union"|"cut"|"intersect"|"xor", a = {i, …}, b = {i, …}, keep_b?, bake?, name? }   -- `difference` means cut; bake = true consumes the inputs and leaves one standalone body
 bearcad.slice{ bodies = {i, …}, cutters = {…}, extend?, name? }
 bearcad.shell{ bodies = {i, …}, faces = {…}?, thickness, name? }
 bearcad.move_bodies{ bodies = {i, …}, x?, y?, z?, rx?, ry?, rz?, name? }
-bearcad.mirror_bodies{ plane = i, bodies = {i, …}, output = "new"|"join"|"cut"?, name? }
+bearcad.mirror_bodies{ plane = i, bodies = {i, …}, output = "new"|"add"|"cut"?, name? }
 bearcad.repeat_bodies{ bodies = {i, …}, axis = "x"|"y"|"z", mode?, count?, spacing? | gap?, length?, around?, flip?, to?, name? }
 ```
 
@@ -200,7 +200,7 @@ bearcad.add_unit_instance{ unit, name }
 bearcad.apply_construction(construction)
 bearcad.apply_visibility(visible)
 bearcad.bake(index)   -- freeze a boolean's result into standalone bodies and consume its inputs
-bearcad.begin_combine{ op, a, b, keep_b, keep_leftovers }
+bearcad.begin_combine{ op, a, b, keep_b }
 bearcad.begin_edit_section_plane{ view, cut }
 bearcad.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.begin_move{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
@@ -217,7 +217,7 @@ bearcad.circle{ x, y, r, radius, diameter, name }
 bearcad.clear()
 bearcad.clear_selection()
 bearcad.clone_unit_instance{ instance }
-bearcad.combine{ op, a, b, keep_b, keep_leftovers, name }
+bearcad.combine{ op, a, b, keep_b, name }
 bearcad.commit_dim()
 bearcad.commit_plane()
 bearcad.component{ name, parent }?
@@ -263,7 +263,7 @@ bearcad.drawing_view_section{ drawing, view, cross_section }
 bearcad.drawing_view_size{ drawing, view, width, height, size_x, size_y }
 bearcad.drawing_view_style{ drawing, view, style }   -- visible, wireframe, shaded, colorful, loose_pencil, color_pencil, watercolor
 bearcad.drawing_views(index)
-bearcad.edit_boolean{ index, op, a, b, keep_b, keep_leftovers }
+bearcad.edit_boolean{ index, op, a, b, keep_b }
 bearcad.edit_dim(axis)
 bearcad.edit_drawing_loupe{ drawing, view, index, at?, radius?, to?, to_radius?, style? }   -- style is a drawing view style, or "view" to follow the projection's
 bearcad.edit_extrusion{ extrusion, distance, by, to }
