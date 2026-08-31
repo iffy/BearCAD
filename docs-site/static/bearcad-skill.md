@@ -50,8 +50,8 @@ A script runs in a coroutine. Calls that wait for a frame — `bearcad.ui.wait`,
 
 ```lua
 bearcad.new()
-bearcad.rect{ width = 80, height = 50, name = "Base" }
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
+local box = bearcad.rect{ width = 80, height = 50, name = "Base" }
+bearcad.extrude{ profiles = box, distance = 20, name = "Block" }
 bearcad.export_step("block.step")
 bearcad.quit()
 ```
@@ -80,7 +80,7 @@ anywhere an index does:
 
 ```lua
 local sides = bearcad.rect{ width = 80, height = 50 }            -- four line handles
-local box   = bearcad.extrude{ polygon = sides, distance = 10 }  -- the new body
+local box   = bearcad.extrude{ profiles = sides, distance = 10 }  -- the new body
 box:id()    -- "body#3v0": unique in the document, never reused
 box:index() -- its ordinal right now; an error once it's gone
 ```
@@ -96,8 +96,8 @@ bearcad.plane{ axis = "x", angle = 45 }                                -- around
 ## Solids
 
 ```lua
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
-bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", angle = 180 }   -- axis is required
+bearcad.extrude{ profiles = {0, 1, 2, 3}, distance = 20, name = "Block" }
+bearcad.revolve{ profiles = {0, 1, 2, 3}, axis = "y", angle = 180 }   -- axis is required
 bearcad.combine{ op = "cut", a = {0}, b = {1} }  -- union | cut | intersect | xor  (`difference` means cut)
 bearcad.shell{ bodies = {0}, thickness = 2 }
 bearcad.move_bodies{ bodies = {0}, x = 40 }
@@ -118,7 +118,7 @@ bearcad.begin_sketch{
   profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
 }
 bearcad.circle{ x = 40, y = 25, r = 5 }            -- r is a radius; (0,0) is the rect corner
-bearcad.extrude{ circle = 0, distance = 20, body = "cut" }
+bearcad.extrude{ profiles = 0, distance = 20, body = "cut" }
 ```
 
 Rounding takes **one call per operation** — a set of edges in a single call, never one call

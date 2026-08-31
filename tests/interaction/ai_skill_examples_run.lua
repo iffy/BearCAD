@@ -21,8 +21,8 @@ assert(circle.r == 12 and circle.radius == 12 and circle.diameter == 24, "r is a
 
 -- The quickstart: sketch, extrude, check the volume.
 bearcad.new()
-bearcad.rect{ width = 80, height = 50, name = "Base" }
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
+local box = bearcad.rect{ width = 80, height = 50, name = "Base" }
+bearcad.extrude{ profiles = box, distance = 20, name = "Block" }
 assert(bearcad.count("body") == 1)
 local stats = bearcad.body_stats(0)
 assert(math.abs(stats.volume - 80 * 50 * 20) < 200,
@@ -36,7 +36,7 @@ assert(bearcad.selection()[1] ~= nil, "find + select should select the named bod
 bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon",
                       profile_lines = {0, 1, 2, 3}, top = true }
 bearcad.circle{ x = 40, y = 25, r = 5 }
-bearcad.extrude{ circle = 0, distance = 20, body = "cut" }
+bearcad.extrude{ profiles = 0, distance = 20, body = "cut" }
 local live = bearcad.count("body") - 1
 local cylinders = bearcad.body_cylinders(live)
 assert(#cylinders == 1, "the cut should leave one cylindrical hole, got " .. #cylinders)
@@ -49,12 +49,12 @@ assert(math.abs(bearcad.body_stats(live).volume - expected) < 200,
 -- Solids: the signatures the skill shows.
 bearcad.new()
 bearcad.rect{ width = 20, height = 40 }
-bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", angle = 180 }
+bearcad.revolve{ profiles = {0, 1, 2, 3}, axis = "y", angle = 180 }
 assert(bearcad.count("body") >= 1, "revolve needs an axis and should build a body")
 
 bearcad.new()
 bearcad.rect{ width = 20, height = 20 }
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+bearcad.extrude{ profiles = {0, 1, 2, 3}, distance = 10 }
 bearcad.shell{ bodies = {0}, thickness = 2 }
 -- An operation consumes its input body and produces a new one, so the index moves on —
 -- the skill says so, and this is what proves it.

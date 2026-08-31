@@ -1499,18 +1499,358 @@ fn parse_extrude_face_table(
     lua: &Lua,
     table: &Table,
 ) -> mlua::Result<crate::model::ExtrudeFace> {
+    let mut faces = parse_profile_spec(lua, table)?;
+    match faces.len() {
+        1 => Ok(faces.pop().unwrap()),
+        0 => Err(mlua::Error::external(
+            "face spec requires one of circle/polygon/boolean/text/text_glyph/region",
+        )),
+        _ => Err(mlua::Error::external(
+            "face spec named more than one profile (use `profiles` for a list)",
+        )),
+    }
+}
+
+fn profile_spec_keys(table: &Table) -> mlua::Result<bool> {
+    Ok(table.contains_key("circle")?
+        || table.contains_key("polygon")?
+        || table.contains_key("boolean")?
+        || table.contains_key("text")?
+        || table.contains_key("text_glyph")?
+        || table.contains_key("region")?)
+}
+
+fn table_seq(table: &Table) -> mlua::Result<Vec<Value>> {
+    let n = table.raw_len();
+    let mut out = Vec::with_capacity(n);
+    for i in 1..=n {
+        out.push(table.get(i)?);
+    }
+    Ok(out)
+}
+
+fn lua_element_of(value: &Value) -> Option<SceneElement> {
+    match value {
+        Value::UserData(ud) => ud.borrow::<LuaElement>().ok().map(|e| e.element.clone()),
+        _ => None,
+    }
+}
+
+fn text_faces(
+    lua: &Lua,
+    text: crate::model::SketchTextKey,
+) -> mlua::Result<Vec<crate::model::ExtrudeFace>> {
+    let tick = lua
+        .app_data_ref::<ScriptTickData>()
+        .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+    let glyphs = unsafe {
+        tick.state()
+            .doc
+            .sketch_texts
+            .get(text)
+            .map(|t| crate::text::group_glyphs(&t.contours).len())
+            .ok_or_else(|| mlua::Error::external("no sketch text"))?
+    };
+    Ok((0..glyphs)
+        .map(|glyph| crate::model::ExtrudeFace::TextGlyph { text, glyph })
+        .collect())
+}
+
+fn parse_region_table(lua: &Lua, table: &Table) -> mlua::Result<crate::model::ExtrudeFace> {
+    let sketch = table.ordinal_req("sketch")?;
+    let (u, v): (f32, f32) = if let Some(seed) = table.get::<Option<Table>>("seed")? {
+        (seed.get(1)?, seed.get(2)?)
+    } else {
+        (table.get("u")?, table.get("v")?)
+    };
+    let (seed_u, seed_v) = crate::model::sketch_region_seed(u, v);
+    Ok(crate::model::ExtrudeFace::SketchRegion {
+        sketch: sketch_key_from_ordinal(lua, sketch)?,
+        seed_u,
+        seed_v,
+    })
+}
+
+fn parse_profile_spec(
+    lua: &Lua,
+    table: &Table,
+) -> mlua::Result<Vec<crate::model::ExtrudeFace>> {
     if let Some(i) = table.ordinal_opt("circle")? {
-        return Ok(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
+        return Ok(vec![crate::model::ExtrudeFace::Circle(
+            circle_key_from_ordinal(lua, i)?,
+        )]);
     }
     if let Some(lines) = table.ordinal_list_opt("polygon")? {
-        return Ok(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
+        return Ok(vec![crate::model::ExtrudeFace::Polygon(
+            line_keys_from_ordinals(lua, lines)?,
+        )]);
     }
     if let Some(boolean) = table.get::<Option<Table>>("boolean")? {
-        return parse_boolean_face_table(lua, &boolean);
+        return Ok(vec![parse_boolean_face_table(lua, &boolean)?]);
     }
-    Err(mlua::Error::external(
-        "face spec requires one of circle/polygon/boolean",
-    ))
+    if let Some(ti) = table.ordinal_opt("text")? {
+        return text_faces(lua, sketch_text_key_from_ordinal(lua, ti)?);
+    }
+    if let Some(tg) = table.get::<Option<Table>>("text_glyph")? {
+        let text = tg.ordinal_req("text")?;
+        let glyph: usize = tg.get::<Option<usize>>("glyph")?.unwrap_or(0);
+        return Ok(vec![crate::model::ExtrudeFace::TextGlyph {
+            text: sketch_text_key_from_ordinal(lua, text)?,
+            glyph,
+        }]);
+    }
+    if let Some(region) = table.get::<Option<Table>>("region")? {
+        return Ok(vec![parse_region_table(lua, &region)?]);
+    }
+    Ok(Vec::new())
+}
+
+fn line_keys_form_closed_loop(lua: &Lua, keys: &[crate::model::LineKey]) -> bool {
+    if keys.len() < 3 {
+        return false;
+    }
+    let Some(tick) = lua.app_data_ref::<ScriptTickData>() else {
+        return false;
+    };
+    let doc = unsafe { &tick.state().doc };
+    let Some(line) = doc.lines.get(keys[0]) else {
+        return false;
+    };
+    let want: std::collections::HashSet<_> = keys.iter().copied().collect();
+    crate::polygon::closed_line_loops(doc, line.sketch)
+        .iter()
+        .any(|lp| lp.len() == keys.len() && lp.iter().copied().all(|k| want.contains(&k)))
+}
+
+fn parse_profile_handle(
+    lua: &Lua,
+    element: SceneElement,
+) -> mlua::Result<Vec<crate::model::ExtrudeFace>> {
+    match element {
+        SceneElement::Circle(k) => Ok(vec![crate::model::ExtrudeFace::Circle(k)]),
+        SceneElement::SketchText(k) => text_faces(lua, k),
+        SceneElement::SketchFace(crate::model::FaceId::Circle(k)) => {
+            Ok(vec![crate::model::ExtrudeFace::Circle(k)])
+        }
+        SceneElement::SketchFace(crate::model::FaceId::Polygon(lines)) => {
+            Ok(vec![crate::model::ExtrudeFace::Polygon(lines)])
+        }
+        SceneElement::Line(_) => Err(mlua::Error::external(
+            "a line is not a profile; pass a list of lines (a rect return works)",
+        )),
+        other => Err(mlua::Error::external(format!(
+            "expected a profile (circle, line loop, or text), got {}",
+            element_kind_name(other)
+        ))),
+    }
+}
+
+/// One `profiles` value: a circle handle, a list of line handles, a spec table, or a list
+/// of those (#1895/#1888).
+fn parse_profiles(lua: &Lua, value: Value) -> mlua::Result<Vec<crate::model::ExtrudeFace>> {
+    match value {
+        Value::Nil => Ok(Vec::new()),
+        Value::Integer(i) if i >= 0 => Ok(vec![crate::model::ExtrudeFace::Circle(
+            circle_key_from_ordinal(lua, i as usize)?,
+        )]),
+        Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => Ok(vec![
+            crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, n as usize)?),
+        ]),
+        Value::UserData(ref ud) => {
+            let element = ud.borrow::<LuaElement>()?.element.clone();
+            parse_profile_handle(lua, element)
+        }
+        Value::Table(t) => {
+            if profile_spec_keys(&t)? {
+                let faces = parse_profile_spec(lua, &t)?;
+                if faces.is_empty() {
+                    return Err(mlua::Error::external(
+                        "face spec requires one of circle/polygon/boolean/text/text_glyph/region",
+                    ));
+                }
+                return Ok(faces);
+            }
+            let items = table_seq(&t)?;
+            if items.is_empty() {
+                return Ok(Vec::new());
+            }
+            let kinds: Vec<Option<&str>> = items
+                .iter()
+                .map(|v| lua_element_of(v).map(element_kind_name))
+                .collect();
+            if kinds.iter().all(|k| *k == Some("line")) {
+                let mut ords = Vec::with_capacity(items.len());
+                for v in items {
+                    ords.push(Ordinal::from_lua(v, lua)?.0);
+                }
+                return Ok(vec![crate::model::ExtrudeFace::Polygon(
+                    line_keys_from_ordinals(lua, ords)?,
+                )]);
+            }
+            if kinds.iter().all(|k| *k == Some("circle")) {
+                let mut faces = Vec::with_capacity(items.len());
+                for v in items {
+                    let ord = Ordinal::from_lua(v, lua)?.0;
+                    faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(
+                        lua, ord,
+                    )?));
+                }
+                return Ok(faces);
+            }
+            if kinds.iter().all(|k| *k == Some("sketch_text")) {
+                let mut faces = Vec::new();
+                for v in items {
+                    let element = lua_element_of(&v).expect("sketch_text");
+                    faces.extend(parse_profile_handle(lua, element)?);
+                }
+                return Ok(faces);
+            }
+            if items.iter().all(|v| matches!(v, Value::Integer(_) | Value::Number(_))) {
+                let mut ords = Vec::with_capacity(items.len());
+                for v in items {
+                    ords.push(Ordinal::from_lua(v, lua)?.0);
+                }
+                if let Ok(keys) = line_keys_from_ordinals(lua, ords.clone()) {
+                    if line_keys_form_closed_loop(lua, &keys) {
+                        return Ok(vec![crate::model::ExtrudeFace::Polygon(keys)]);
+                    }
+                }
+                let mut faces = Vec::with_capacity(ords.len());
+                for o in ords {
+                    faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(
+                        lua, o,
+                    )?));
+                }
+                return Ok(faces);
+            }
+            let nested_number_lists = {
+                let mut lists: Vec<Vec<usize>> = Vec::new();
+                let mut ok = true;
+                for v in &items {
+                    let Value::Table(inner) = v else {
+                        ok = false;
+                        break;
+                    };
+                    if profile_spec_keys(inner)? {
+                        ok = false;
+                        break;
+                    }
+                    let seq = table_seq(inner)?;
+                    if seq.is_empty()
+                        || !seq
+                            .iter()
+                            .all(|x| matches!(x, Value::Integer(_) | Value::Number(_)))
+                    {
+                        ok = false;
+                        break;
+                    }
+                    let mut ords = Vec::with_capacity(seq.len());
+                    for x in seq {
+                        ords.push(Ordinal::from_lua(x, lua)?.0);
+                    }
+                    lists.push(ords);
+                }
+                ok.then_some(lists)
+            };
+            if let Some(lists) = nested_number_lists {
+                let mut faces = Vec::with_capacity(lists.len());
+                for ords in lists {
+                    faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(
+                        lua, ords,
+                    )?));
+                }
+                return Ok(faces);
+            }
+            let mut faces = Vec::new();
+            for v in items {
+                faces.extend(parse_profiles(lua, v)?);
+            }
+            Ok(faces)
+        }
+        other => Err(mlua::Error::external(format!(
+            "profiles expected a circle, a line list, or a list of those, got {other:?}"
+        ))),
+    }
+}
+
+fn collect_extrude_faces(lua: &Lua, opts: &Table) -> mlua::Result<Vec<crate::model::ExtrudeFace>> {
+    let mut faces = Vec::new();
+    if let Some(v) = opts.get::<Option<Value>>("profiles")? {
+        faces.extend(parse_profiles(lua, v)?);
+    }
+    if let Some(i) = opts.ordinal_opt("circle")? {
+        faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(
+            lua, i,
+        )?));
+    }
+    if let Some(list) = opts.ordinal_list_opt("circles")? {
+        for i in list {
+            faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(
+                lua, i,
+            )?));
+        }
+    }
+    if let Some(lines) = opts.ordinal_list_opt("polygon")? {
+        faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(
+            lua, lines,
+        )?));
+    }
+    if let Some(v) = opts.get::<Option<Value>>("polygons")? {
+        faces.extend(parse_profiles(lua, v)?);
+    }
+    if let Some(ti) = opts.ordinal_opt("text")? {
+        faces.extend(text_faces(lua, sketch_text_key_from_ordinal(lua, ti)?)?);
+    }
+    if let Some(boolean) = opts.get::<Option<Table>>("boolean")? {
+        faces.push(parse_boolean_face_table(lua, &boolean)?);
+    }
+    Ok(faces)
+}
+
+
+
+fn extrude_face_to_lua(lua: &Lua, face: &crate::model::ExtrudeFace) -> mlua::Result<Value> {
+    match face {
+        crate::model::ExtrudeFace::Circle(k) => make_element(lua, SceneElement::Circle(*k)),
+        crate::model::ExtrudeFace::Polygon(lines) => {
+            let t = lua.create_table()?;
+            for (i, k) in lines.iter().enumerate() {
+                t.set(i + 1, make_element(lua, SceneElement::Line(*k))?)?;
+            }
+            Ok(Value::Table(t))
+        }
+        crate::model::ExtrudeFace::Boolean { op, a, b } => {
+            let inner = lua.create_table()?;
+            inner.set("op", op.script_name())?;
+            inner.set("a", extrude_face_to_lua(lua, a)?)?;
+            inner.set("b", extrude_face_to_lua(lua, b)?)?;
+            let t = lua.create_table()?;
+            t.set("boolean", inner)?;
+            Ok(Value::Table(t))
+        }
+        crate::model::ExtrudeFace::TextGlyph { text, glyph } => {
+            let inner = lua.create_table()?;
+            inner.set("text", make_element(lua, SceneElement::SketchText(*text))?)?;
+            inner.set("glyph", *glyph)?;
+            let t = lua.create_table()?;
+            t.set("text_glyph", inner)?;
+            Ok(Value::Table(t))
+        }
+        crate::model::ExtrudeFace::SketchRegion {
+            sketch,
+            seed_u,
+            seed_v,
+        } => {
+            let (u, v) = crate::model::sketch_region_seed_point(*seed_u, *seed_v);
+            let inner = lua.create_table()?;
+            inner.set("sketch", make_element(lua, SceneElement::Sketch(*sketch))?)?;
+            inner.set("u", u)?;
+            inner.set("v", v)?;
+            let t = lua.create_table()?;
+            t.set("region", inner)?;
+            Ok(Value::Table(t))
+        }
+    }
 }
 
 /// Parse an image-edge name like `"left"` / `"top"` (#1589).
@@ -4472,6 +4812,41 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::external(format!("unknown dimension '{axis}'")))?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::SetDimLabelOffset { axis, offset }) }
+        })?,
+    )?;
+
+    api.set(
+        "sketch_faces",
+        lua.create_function(|lua, sketch: Option<Ordinal>| {
+            let sketch = sketch.map(|o| o.0);
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let sketches: Vec<crate::model::SketchId> = match sketch {
+                Some(ordinal) => vec![state
+                    .doc
+                    .sketches
+                    .keys()
+                    .nth(ordinal)
+                    .ok_or_else(|| mlua::Error::external(format!("no sketch {ordinal}")))?],
+                None => {
+                    if let Some(session) = state.sketch_session {
+                        vec![session.sketch]
+                    } else {
+                        state.doc.sketches.keys().collect()
+                    }
+                }
+            };
+            let out = lua.create_table()?;
+            let mut n = 0;
+            for sketch in sketches {
+                for face in crate::polygon::sketch_profiles(&state.doc, sketch) {
+                    n += 1;
+                    out.set(n, extrude_face_to_lua(lua, &face)?)?;
+                }
+            }
+            Ok(out)
         })?,
     )?;
 
@@ -8375,9 +8750,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &[
                     "distance",
                     "to",
+                    "profiles",
                     "circle",
                     "circles",
                     "polygon",
+                    "polygons",
                     "text",
                     "boolean",
                     "body",
@@ -8400,48 +8777,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 None if target.is_some() => (0.0, None),
                 None => return Err(mlua::Error::external("extrude requires a `distance` or `to`")),
             };
-            // Faces: `circle` (single) and/or `circles` (array of indices), a `polygon` loop
-            // (#66 — a rectangle is four lines forming such a loop), or a `boolean` region.
-            let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
-            if let Some(i) = opts.ordinal_opt("circle")? {
-                faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
-            }
-            if let Some(list) = opts.ordinal_list_opt("circles")? {
-                for i in list {
-                    faces
-                        .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
-                }
-            }
-            // `polygon = {line0, line1, ...}`: a single closed-loop face (#66).
-            if let Some(lines) = opts.ordinal_list_opt("polygon")? {
-                faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
-            }
-            // `text = index`: extrude/engrave a whole sketch text — every glyph region of it,
-            // counters (letter holes) preserved (#285/#355).
-            if let Some(ti) = opts.ordinal_opt("text")? {
-                let text = sketch_text_key_from_ordinal(lua, ti)?;
-                let glyphs = unsafe {
-                    tick.state()
-                        .doc
-                        .sketch_texts
-                        .get(text)
-                        .map(|t| crate::text::group_glyphs(&t.contours).len())
-                        .ok_or_else(|| mlua::Error::external(format!("no sketch text {ti}")))?
-                };
-                for glyph in 0..glyphs {
-                    faces.push(crate::model::ExtrudeFace::TextGlyph { text, glyph });
-                }
-            }
-            // `boolean = {op = "intersect"|"difference", a = <face spec>, b = <face
-            // spec>}`: a boolean-combined region of two other (possibly nested) faces
-            // (#16/#62) — the toggleable intersection/difference regions of two overlapping
-            // shapes.
-            if let Some(boolean) = opts.get::<Option<Table>>("boolean")? {
-                faces.push(parse_boolean_face_table(lua, &boolean)?);
-            }
+            // Faces: `profiles` is one circle, one line-loop (a rect return), or a list of
+            // those (#1895/#1888). `circle`/`circles`/`polygon`/`polygons`/`text`/`boolean`
+            // stay as aliases.
+            let faces = collect_extrude_faces(lua, &opts)?;
             if faces.is_empty() {
                 return Err(mlua::Error::external(
-                    "extrude requires a `circle`/`polygon`/`boolean` or `circles` face list",
+                    "extrude requires `profiles` (a circle, a line loop, or a list of those)",
                 ));
             }
             // `body = "add"` joins the body of the face being extruded from (if any), and
@@ -9431,22 +9773,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "revolve",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
-            if let Some(i) = opts.ordinal_opt("circle")? {
-                faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
-            }
-            if let Some(list) = opts.ordinal_list_opt("circles")? {
-                for i in list {
-                    faces
-                        .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
-                }
-            }
-            if let Some(lines) = opts.ordinal_list_opt("polygon")? {
-                faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
-            }
+            let faces = collect_extrude_faces(lua, &opts)?;
             if faces.is_empty() {
                 return Err(mlua::Error::external(
-                    "revolve requires a `circle`/`circles`/`polygon` face",
+                    "revolve requires `profiles` (a circle, a line loop, or a list of those)",
                 ));
             }
             let axis = parse_revolve_axis(lua, opts.get::<mlua::Value>("axis")?, "revolve")?;
@@ -9479,9 +9809,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &opts,
                 "revolve",
                 &[
+                    "profiles",
                     "circle",
                     "circles",
                     "polygon",
+                    "polygons",
                     "axis",
                     "symmetric",
                     "bodies",
@@ -9729,29 +10061,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // Sweep profiles along a path of sketch lines (SPEC §3.5 Sweep):
-    // `bearcad.sweep{ circles = {i, ...} and/or polygon = {line, ...},
-    // path = {line, ...}, body = "add"|"cut"?, bodies = {i, ...}? }`. Each face's sketch
-    // is inferred like `extrude`'s; the path lines are chained tip-to-tail.
+    // `bearcad.sweep{ profiles = circle | {lines} | {…}, path = {line, ...},
+    // body = "add"|"cut"?, bodies = {i, ...}? }`. Each face's sketch is inferred
+    // like `extrude`'s; the path lines are chained tip-to-tail.
     api.set(
         "sweep",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
-            if let Some(i) = opts.ordinal_opt("circle")? {
-                faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
-            }
-            if let Some(list) = opts.ordinal_list_opt("circles")? {
-                for i in list {
-                    faces
-                        .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
-                }
-            }
-            if let Some(lines) = opts.ordinal_list_opt("polygon")? {
-                faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
-            }
+            let faces = collect_extrude_faces(lua, &opts)?;
             if faces.is_empty() {
                 return Err(mlua::Error::external(
-                    "sweep requires a `circle`/`circles`/`polygon` face",
+                    "sweep requires `profiles` (a circle, a line loop, or a list of those)",
                 ));
             }
             let path =
@@ -9839,36 +10159,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // Loft a solid through two or more closed cross-section profiles (SPEC §3.5).
-    // `circles = {i, ...}` and/or `polygons = {{line, ...}, ...}` list the sections
-    // (singular `circle`/`polygon` also accepted); each face's sketch is inferred like
-    // `extrude`'s. Section order along the loft is recovered from the geometry.
+    // `profiles` lists the sections (circle handles, line loops, or a mix); `circle`/
+    // `circles`/`polygon`/`polygons` stay as aliases. Section order along the loft is
+    // recovered from the geometry.
     api.set(
         "loft",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
-            if let Some(i) = opts.ordinal_opt("circle")? {
-                faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
-            }
-            if let Some(list) = opts.ordinal_list_opt("circles")? {
-                for i in list {
-                    faces
-                        .push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
-                }
-            }
-            if let Some(lines) = opts.ordinal_list_opt("polygon")? {
-                faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
-            }
-            if let Some(loops) = opts.get::<Option<Vec<Vec<usize>>>>("polygons")? {
-                for loop_lines in loops {
-                    faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(
-                        lua, loop_lines,
-                    )?));
-                }
-            }
+            let faces = collect_extrude_faces(lua, &opts)?;
             if faces.len() < 2 {
                 return Err(mlua::Error::external(
-                    "loft requires at least two sections (`circles`/`polygons`)",
+                    "loft requires at least two sections (`profiles`)",
                 ));
             }
             let bodies: Vec<usize> = opts.ordinal_list("bodies")?;
@@ -14253,6 +14554,7 @@ pub mod tests {
                                     "export_step", "export_preview",
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
                                     "fillet_vertex", "chamfer_edge", "fillet_edge", "project",
+                                    "sketch_faces",
                                     "globals", "count_saved", "version" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
             end
@@ -16227,6 +16529,90 @@ pub mod tests {
         "#,
         );
         assert_eq!(state.doc.extrusions.len(), 1);
+    }
+
+    /// #1895: `profiles` takes a circle handle or a list; a rect's four lines are one loop.
+    #[test]
+    fn lua_extrude_profiles_takes_a_rect_or_circle() {
+        let state = run_lua(
+            r#"
+            local box = bearcad.rect{ width = 10, height = 8 }
+            bearcad.extrude{ profiles = box, distance = 3 }
+            local hole = bearcad.circle{ x = 20, y = 0, r = 2 }
+            bearcad.extrude{ profiles = hole, distance = 4 }
+            local a = bearcad.circle{ x = 40, y = 0, r = 5 }
+            local b = bearcad.circle{ x = 40, y = 0, r = 2 }
+            bearcad.extrude{ profiles = {a, b}, distance = 2 }
+            "#,
+        );
+        let faces: Vec<_> = state
+            .doc
+            .extrusions
+            .values()
+            .map(|e| e.faces.clone())
+            .collect();
+        assert_eq!(faces.len(), 3);
+        assert!(
+            matches!(faces[0].as_slice(), [crate::model::ExtrudeFace::Polygon(lines)] if lines.len() == 4),
+            "rect return is one polygon, got {:?}",
+            faces[0]
+        );
+        assert!(
+            matches!(faces[1].as_slice(), [crate::model::ExtrudeFace::Circle(_)]),
+            "one circle handle is one circle profile, got {:?}",
+            faces[1]
+        );
+        assert_eq!(faces[2].len(), 2, "two circle handles are two profiles");
+        assert!(faces[2]
+            .iter()
+            .all(|f| matches!(f, crate::model::ExtrudeFace::Circle(_))));
+    }
+
+    /// #1895: two closed loops in one `profiles` list — the key that export was missing.
+    #[test]
+    fn lua_extrude_profiles_takes_two_polygons() {
+        let state = run_lua(
+            r#"
+            local a = bearcad.rect{ width = 20, height = 20 }
+            local b = bearcad.rect{ x = 5, y = 5, width = 8, height = 8 }
+            bearcad.extrude{ profiles = {a, b}, distance = 5 }
+            "#,
+        );
+        let ex = state.doc.extrusions.values().next().expect("one extrusion");
+        assert_eq!(ex.faces.len(), 2, "both loops survive in one call");
+        assert!(ex
+            .faces
+            .iter()
+            .all(|f| matches!(f, crate::model::ExtrudeFace::Polygon(_))));
+    }
+
+    /// #1888: `sketch_faces` lists closed loops a later `extrude{ profiles = face }` consumes.
+    #[test]
+    fn lua_sketch_faces_lists_loops_circles_and_feeds_extrude() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.rect{ x = 5, y = 5, width = 6, height = 6 }
+            bearcad.circle{ x = 10, y = 10, r = 2 }
+            local faces = bearcad.sketch_faces()
+            assert(#faces == 3, "two rects and a circle, got " .. #faces)
+            bearcad.extrude{ profiles = faces, distance = 4, body = "join" }
+            "#,
+        );
+        let ex = state.doc.extrusions.values().next().expect("one extrusion");
+        assert_eq!(ex.faces.len(), 3);
+        let polygons = ex
+            .faces
+            .iter()
+            .filter(|f| matches!(f, crate::model::ExtrudeFace::Polygon(_)))
+            .count();
+        let circles = ex
+            .faces
+            .iter()
+            .filter(|f| matches!(f, crate::model::ExtrudeFace::Circle(_)))
+            .count();
+        assert_eq!(polygons, 2);
+        assert_eq!(circles, 1);
     }
 
     /// #1793: `combine{ bake = true }` ends with exactly one body — the result baked

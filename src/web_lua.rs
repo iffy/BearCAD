@@ -178,6 +178,36 @@ fn run_command(
             return crate::constraints::sketch_conflicting_constraints(&state.doc, sketch)
                 .map(|v| json!(v));
         }
+        "sketch_faces" => {
+            let sketches: Vec<_> = match args
+                .get("__args")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(Value::as_u64)
+                .or_else(|| args.get("sketch").and_then(Value::as_u64))
+            {
+                Some(n) => vec![state
+                    .doc
+                    .sketches
+                    .keys()
+                    .nth(n as usize)
+                    .ok_or_else(|| format!("no sketch {n}"))?],
+                None => {
+                    if let Some(session) = state.sketch_session {
+                        vec![session.sketch]
+                    } else {
+                        state.doc.sketches.keys().collect()
+                    }
+                }
+            };
+            let mut out = Vec::new();
+            for sketch in sketches {
+                for face in crate::polygon::sketch_profiles(&state.doc, sketch) {
+                    out.push(extrude_face_json(&state.doc, &face));
+                }
+            }
+            return Ok(json!(out));
+        }
         "set_units" => {
             let instr = set_units_instruction(&args, &state.doc)?;
             exec(runner, instr, state, synthetic, viewport, ctx)?;
@@ -749,6 +779,43 @@ fn selection_json(state: &AppState) -> Value {
     json!(items)
 }
 
+fn extrude_face_json(doc: &Document, face: &crate::model::ExtrudeFace) -> Value {
+    use crate::model::ExtrudeFace;
+    match face {
+        ExtrudeFace::Circle(k) => {
+            let i = doc.circles.keys().position(|x| x == *k).unwrap_or(0);
+            json!({ "circle": i })
+        }
+        ExtrudeFace::Polygon(lines) => {
+            let idx: Vec<usize> = lines
+                .iter()
+                .map(|l| doc.lines.keys().position(|x| x == *l).unwrap_or(0))
+                .collect();
+            json!({ "polygon": idx })
+        }
+        ExtrudeFace::Boolean { op, a, b } => json!({
+            "boolean": {
+                "op": op.script_name(),
+                "a": extrude_face_json(doc, a),
+                "b": extrude_face_json(doc, b),
+            }
+        }),
+        ExtrudeFace::TextGlyph { text, glyph } => {
+            let i = doc.sketch_texts.keys().position(|x| x == *text).unwrap_or(0);
+            json!({ "text_glyph": { "text": i, "glyph": glyph } })
+        }
+        ExtrudeFace::SketchRegion {
+            sketch,
+            seed_u,
+            seed_v,
+        } => {
+            let i = doc.sketches.keys().position(|x| x == *sketch).unwrap_or(0);
+            let (u, v) = crate::model::sketch_region_seed_point(*seed_u, *seed_v);
+            json!({ "region": { "sketch": i, "u": u, "v": v } })
+        }
+    }
+}
+
 /// The sketch a `sketch_dof`/`sketch_conflicts` call targets: an explicit index (positional
 /// `__args[0]` or a `sketch` field) or the active sketch session.
 fn arg_sketch(args: &Value, state: &AppState) -> Result<crate::model::SketchId, String> {
@@ -815,7 +882,7 @@ fn value_to_string(v: &Value) -> Option<String> {
 /// (#1801). Mirrors the desktop `Operands` reads; a `name` or a `path` is left alone.
 const ID_OPERAND_KEYS: &[&str] = &[
     "index", "drawing", "revolution", "primitive", "extrusion", "body", "body_b", "sketch",
-    "sketches", "plane", "line", "lines", "circle", "circles", "polygon", "text", "image",
+    "sketches", "plane", "line", "lines", "circle", "circles", "polygon", "polygons", "profiles", "text", "image",
     "component", "cross_section", "joint", "bodies", "images", "cutters", "path", "cuts",
     "from", "parent", "unit", "profile_lines", "view", "a", "b", "repeat_op",
 ];
