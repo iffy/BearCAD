@@ -488,7 +488,7 @@ pub fn instruction_from_json(
         "revolve" => {
             let faces = collect_profile_faces(doc, o, false)?;
             if faces.is_empty() {
-                return Err("revolve requires a `circle`/`circles`/`polygon` face".into());
+                return Err("revolve requires `profiles` (a circle, a line loop, or a list of those)".into());
             }
             let axis = match o.get("axis") {
                 None | Some(Value::Null) => {
@@ -527,7 +527,7 @@ pub fn instruction_from_json(
         "loft" => {
             let faces = collect_profile_faces(doc, o, true)?;
             if faces.len() < 2 {
-                return Err("loft requires at least two sections (`circles`/`polygons`)".into());
+                return Err("loft requires at least two sections (`profiles`)".into());
             }
             let bodies = usize_list(o, "bodies")?;
             let body = RevolveBodyChoice::from_script(opt_str(o, "body")?.as_deref())?;
@@ -1162,23 +1162,7 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
                 None if target.is_some() => (0.0, None),
                 None => return Err("extrude requires a `distance` or `to`".into()),
             };
-            let mut faces = Vec::new();
-            // A script names a circle by its ordinal among the live ones (#1055).
-            let circle_key = |ordinal: usize| {
-                doc.circles
-                    .keys()
-                    .nth(ordinal)
-                    .ok_or_else(|| format!("no circle {ordinal}"))
-            };
-            if let Some(i) = opt_usize(o, "circle")? {
-                faces.push(ExtrudeFace::Circle(circle_key(i)?));
-            }
-            for i in usize_list(o, "circles")? {
-                faces.push(ExtrudeFace::Circle(circle_key(i)?));
-            }
-            if let Some(lines) = opt_usize_array(o, "polygon")? {
-                faces.push(ExtrudeFace::Polygon(line_keys_from_ordinals(doc, lines)?));
-            }
+            let mut faces = collect_profile_faces(doc, o, true)?;
             if let Some(b) = o.get("boolean") {
                 if !b.is_null() {
                     faces.push(boolean_face_from_json(doc, b)?);
@@ -1186,7 +1170,7 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
             }
             if faces.is_empty() {
                 return Err(
-                    "extrude requires a `circle`/`polygon`/`boolean` or `circles` face list".into(),
+                    "extrude requires `profiles` (a circle, a line loop, or a list of those)".into(),
                 );
             }
             let body = body_choice(o)?;
@@ -1332,7 +1316,152 @@ fn extrude_face_from_json(
             return boolean_face_from_json(doc, b);
         }
     }
-    Err("face spec requires one of circle/polygon/boolean".into())
+    if let Some(tg) = t.get("text_glyph") {
+        if !tg.is_null() {
+            let g = tg.as_object().ok_or("text_glyph must be an object")?;
+            let text = opt_usize(g, "text")?.ok_or("text_glyph requires `text`")?;
+            let glyph = opt_usize(g, "glyph")?.unwrap_or(0);
+            let text = doc
+                .sketch_texts
+                .keys()
+                .nth(text)
+                .ok_or_else(|| format!("no sketch text {text}"))?;
+            return Ok(ExtrudeFace::TextGlyph { text, glyph });
+        }
+    }
+    if let Some(region) = t.get("region") {
+        if !region.is_null() {
+            return region_face_from_json(doc, region);
+        }
+    }
+    Err("face spec requires one of circle/polygon/boolean/text_glyph/region".into())
+}
+
+fn region_face_from_json(doc: &crate::model::Document, v: &Value) -> Result<ExtrudeFace, String> {
+    let t = v.as_object().ok_or("region must be an object")?;
+    let sketch = opt_usize(t, "sketch")?.ok_or("region requires `sketch`")?;
+    let sketch = doc
+        .sketches
+        .keys()
+        .nth(sketch)
+        .ok_or_else(|| format!("no sketch {sketch}"))?;
+    let (u, v) = if let Some(seed) = t.get("seed").and_then(Value::as_array) {
+        let u = seed.first().and_then(Value::as_f64).ok_or("region seed needs u")? as f32;
+        let v = seed.get(1).and_then(Value::as_f64).ok_or("region seed needs v")? as f32;
+        (u, v)
+    } else {
+        let u = t.get("u").and_then(Value::as_f64).ok_or("region requires u")? as f32;
+        let v = t.get("v").and_then(Value::as_f64).ok_or("region requires v")? as f32;
+        (u, v)
+    };
+    let (seed_u, seed_v) = crate::model::sketch_region_seed(u, v);
+    Ok(ExtrudeFace::SketchRegion {
+        sketch,
+        seed_u,
+        seed_v,
+    })
+}
+
+fn text_faces_from_ordinal(doc: &crate::model::Document, ordinal: usize) -> Result<Vec<ExtrudeFace>, String> {
+    let text = doc
+        .sketch_texts
+        .keys()
+        .nth(ordinal)
+        .ok_or_else(|| format!("no sketch text {ordinal}"))?;
+    let n = doc
+        .sketch_texts
+        .get(text)
+        .map(|t| crate::text::group_glyphs(&t.contours).len())
+        .unwrap_or(0);
+    Ok((0..n)
+        .map(|glyph| ExtrudeFace::TextGlyph { text, glyph })
+        .collect())
+}
+
+fn json_profile_spec_keys(t: &Map<String, Value>) -> bool {
+    ["circle", "polygon", "boolean", "text", "text_glyph", "region"]
+        .iter()
+        .any(|k| t.contains_key(*k))
+}
+
+fn line_keys_form_closed_loop(doc: &crate::model::Document, keys: &[crate::model::LineKey]) -> bool {
+    if keys.len() < 3 {
+        return false;
+    }
+    let Some(line) = doc.lines.get(keys[0]) else {
+        return false;
+    };
+    let want: std::collections::HashSet<_> = keys.iter().copied().collect();
+    crate::polygon::closed_line_loops(doc, line.sketch)
+        .iter()
+        .any(|lp| lp.len() == keys.len() && lp.iter().copied().all(|k| want.contains(&k)))
+}
+
+fn profiles_from_json(doc: &crate::model::Document, v: &Value) -> Result<Vec<ExtrudeFace>, String> {
+    match v {
+        Value::Null => Ok(Vec::new()),
+        Value::Number(n) => {
+            let i = n.as_f64().filter(|x| *x >= 0.0).map(|x| x.round() as usize)
+                .ok_or("profiles number must be a non-negative integer")?;
+            let key = doc.circles.keys().nth(i).ok_or_else(|| format!("no circle {i}"))?;
+            Ok(vec![ExtrudeFace::Circle(key)])
+        }
+        Value::Object(t) => {
+            if !json_profile_spec_keys(t) {
+                return Err("face spec requires one of circle/polygon/boolean/text/text_glyph/region".into());
+            }
+            if t.contains_key("text") {
+                let i = opt_usize(t, "text")?.ok_or("profiles text requires an index")?;
+                return text_faces_from_ordinal(doc, i);
+            }
+            Ok(vec![extrude_face_from_json(doc, v)?])
+        }
+        Value::Array(items) => {
+            if items.is_empty() {
+                return Ok(Vec::new());
+            }
+            let is_num = |x: &Value| x.as_f64().is_some();
+            if items.iter().all(is_num) {
+                let ords: Result<Vec<usize>, _> =
+                    items.iter().map(|x| as_index(x, "profiles")).collect();
+                let ords = ords?;
+                if let Ok(keys) = line_keys_from_ordinals(doc, ords.clone()) {
+                    if line_keys_form_closed_loop(doc, &keys) {
+                        return Ok(vec![ExtrudeFace::Polygon(keys)]);
+                    }
+                }
+                let mut faces = Vec::with_capacity(ords.len());
+                for i in ords {
+                    let key = doc
+                        .circles
+                        .keys()
+                        .nth(i)
+                        .ok_or_else(|| format!("no circle {i}"))?;
+                    faces.push(ExtrudeFace::Circle(key));
+                }
+                return Ok(faces);
+            }
+            if items.iter().all(|x| x.as_array().is_some_and(|a| a.iter().all(is_num))) {
+                let mut faces = Vec::new();
+                for item in items {
+                    let ords: Vec<usize> = item
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|x| as_index(x, "profiles"))
+                        .collect::<Result<_, _>>()?;
+                    faces.push(ExtrudeFace::Polygon(line_keys_from_ordinals(doc, ords)?));
+                }
+                return Ok(faces);
+            }
+            let mut faces = Vec::new();
+            for item in items {
+                faces.extend(profiles_from_json(doc, item)?);
+            }
+            Ok(faces)
+        }
+        other => Err(format!("profiles expected a circle, a line list, or a list of those, got {other}")),
+    }
 }
 
 /// A `{ op, a, b }` boolean region (mirrors `parse_boolean_face_table`).
@@ -1641,16 +1770,19 @@ fn geometric_constraint_from_name(name: &str) -> Option<GeometricConstraintType>
     }
 }
 
-/// Collect the profile faces shared by `revolve`/`loft` (and, in the stateful path,
-/// `extrude`): a single `circle`, a `circles` list, a single `polygon` loop, and — only for
-/// `loft` (`allow_polygons`) — a `polygons` list of loops. Order matches the closures: single
-/// circle, circles list, polygon, polygons.
+/// Collect the profile faces shared by `revolve`/`loft`/`extrude`. `profiles` is the
+/// canonical key (#1895); `circle`/`circles`/`polygon`/`polygons`/`text` stay as aliases.
 fn collect_profile_faces(
     doc: &crate::model::Document,
     o: &Map<String, Value>,
     allow_polygons: bool,
 ) -> Result<Vec<ExtrudeFace>, String> {
     let mut faces = Vec::new();
+    if let Some(v) = o.get("profiles") {
+        if !v.is_null() {
+            faces.extend(profiles_from_json(doc, v)?);
+        }
+    }
     let circle_key = |ordinal: usize| {
         doc.circles
             .keys()
@@ -1670,6 +1802,9 @@ fn collect_profile_faces(
         for lines in usize_array_list(o, "polygons")? {
             faces.push(ExtrudeFace::Polygon(line_keys_from_ordinals(doc, lines)?));
         }
+    }
+    if let Some(i) = opt_usize(o, "text")? {
+        faces.extend(text_faces_from_ordinal(doc, i)?);
     }
     Ok(faces)
 }

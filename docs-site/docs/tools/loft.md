@@ -52,8 +52,8 @@ bearcad.plane{ offset = 10 }
 bearcad.begin_sketch{ kind = "plane", index = 3 }
 bearcad.circle{ r = 2 }
 bearcad.exit_sketch()
-bearcad.loft{ circles = {0, 1}, name = "Horn" }
+bearcad.loft{ profiles = {0, 1}, name = "Horn" }
 ```
 
-`polygons = {{line, ...}, ...}` lofts line loops; each face's sketch is inferred, like
-`bearcad.extrude`.
+`profiles` is a list of sections (circle handles or line loops); each face's sketch is
+inferred, like `bearcad.extrude`.

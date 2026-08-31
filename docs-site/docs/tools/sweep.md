@@ -48,7 +48,7 @@ to re-open it with its faces, path, and body mode loaded.
 
 ```lua
 bearcad.sweep{
-  circles = { 0 },          -- and/or polygon = { line indices of a closed loop }
+  profiles = 0,             -- circle handle, line loop, or a list of those
   path = { 4, 5 },          -- line indices, chained tip-to-tail
   body = "cut",             -- "add" | "cut"; omit for a new body
   bodies = { 0 },           -- the Add/Cut body list

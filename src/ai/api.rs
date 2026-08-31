@@ -83,12 +83,13 @@ bearcad.project{ body?, bodies?, plane?, planes?, entities? }
 ## Solids
 
 ```
-bearcad.extrude{ polygon = {line, …} | circle = i | circles = {i, …} | text = i | boolean = {…}, distance?, to?, body = "new"|"add"|"cut"|"join"?, name?, symmetric?, taper?, taper_mode = "distance"|"angle"? }
+bearcad.extrude{ profiles = circle | {line, …} | {…}, distance?, to?, body = "new"|"add"|"cut"|"join"?, name?, symmetric?, taper?, taper_mode = "distance"|"angle"? }
+bearcad.sketch_faces(sketch?)            -- closed loops/circles/text/regions for `profiles`
 bearcad.edit_extrusion{ extrusion, distance? | by? | to? }
 bearcad.extrude_face{ face = {…}, distance, body? }
-bearcad.revolve{ polygon = {…} | circle = i | circles = {i, …}, axis = "x"|"y"|"z"|{ line = i }, angle? | revolutions?, pitch?, body = "new"|"add"|"cut"?, bodies?, symmetric?, name? }
-bearcad.sweep{ polygon = {…} | circle = i | circles = {i, …}, path = {line, …}, body = "add"|"cut"?, bodies? }
-bearcad.loft{ circles = {i, …}?, polygons = { {line, …}, … }?, body? }
+bearcad.revolve{ profiles = circle | {line, …} | {…}, axis = "x"|"y"|"z"|{ line = i }, angle? | revolutions?, pitch?, body = "new"|"add"|"cut"?, bodies?, symmetric?, name? }
+bearcad.sweep{ profiles = circle | {line, …} | {…}, path = {line, …}, body = "add"|"cut"?, bodies? }
+bearcad.loft{ profiles = { circle | {line, …}, … }, body? }
 bearcad.combine{ op = "union"|"cut"|"intersect"|"xor", a = {i, …}, b = {i, …}, keep_b?, bake?, name? }   -- `difference` means cut; bake = true consumes the inputs and leaves one standalone body
 bearcad.slice{ bodies = {i, …}, cutters = {…}, extend?, name? }
 bearcad.shell{ bodies = {i, …}, faces = {…}?, thickness, name? }
@@ -163,6 +164,8 @@ bearcad.set_visible(el, false)     -- handle, list, or { kind = "plane" }; boole
 bearcad.set_construction(el, true) -- same targets; selection forms are bearcad.ui.*
 bearcad.sketch_dof()
 bearcad.sketch_conflicts()
+bearcad.sketch_faces()
+
 bearcad.status()
 ```
 
@@ -174,7 +177,7 @@ A creation call hands back what it made: one element, or a list of them.
 
 ```
 local sides = bearcad.rect{ x = 0, y = 0, width = 20, height = 10 }   -- four lines
-local box   = bearcad.extrude{ polygon = sides, distance = 5 }        -- the new body
+local box   = bearcad.extrude{ profiles = sides, distance = 5 }        -- the new body
 box:kind()  box:index()  box:id()  box:name()  box:exists()  box:delete()  tostring(box)
 bearcad.delete(box)                -- or a list; does not replace the scene selection
 bearcad.delete_selection()         -- whatever is selected (the GUI Delete)

@@ -4,8 +4,8 @@
 
 bearcad.new()
 
-bearcad.rect{ width = 80, height = 50, name = "Base" }
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
+local box = bearcad.rect{ width = 80, height = 50, name = "Base" }
+bearcad.extrude{ profiles = box, distance = 20, name = "Block" }
 
 -- Export every body in the document to a 3MF file.
 bearcad.export_3mf("block.3mf")

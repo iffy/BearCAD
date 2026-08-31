@@ -18,13 +18,13 @@ is exercised by CI.
 
 bearcad.new()
 
-bearcad.rect{ width = 80, height = 50, name = "Base" }
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
+local box = bearcad.rect{ width = 80, height = 50, name = "Base" }
+bearcad.extrude{ profiles = box, distance = 20, name = "Block" }
 
 bearcad.export_step("block.step")
 
 -- A single body can be exported on its own (handle, id, name, or ordinal):
--- local box = bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
+-- local box = bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
 -- bearcad.export_step("block.step", box)
 
 bearcad.quit()
@@ -40,8 +40,8 @@ for mesh export. Whole-document `export_3mf` keeps each body as its own colored 
 Every creation call returns what it made — one element, or a list.
 
 ```lua
-local sides = bearcad.rect{ width = 80, height = 50 }   -- four lines
-local box   = bearcad.extrude{ polygon = sides, distance = 10 }  -- the new body
+local sides = bearcad.rect{ width = 80, height = 50 }   -- four lines; a profile
+local box   = bearcad.extrude{ profiles = sides, distance = 10 }  -- the new body
 ```
 
 Ordinals shift when elements are deleted, and a solid operation consumes the body it acts
@@ -60,7 +60,7 @@ box:delete()    -- or `bearcad.delete(box)` / `bearcad.delete{ box, other }`
 
 A line handle names its vertices: `line:start()` or `line:endpoint("end")`.
 
-Anywhere an index is accepted — `bodies`, `polygon`, `extrusion`, `{ kind, index }` — a
+Anywhere an index is accepted — `bodies`, `profiles`, `extrusion`, `{ kind, index }` — a
 handle, its `id` string, or a name works too. `bearcad.element(id)` turns an id back into a
 handle; `bearcad.id(el)` is the method spelled as a function.
 
@@ -104,7 +104,7 @@ the model rebuilds when the parameter changes:
 bearcad.add_parameter("w", "24")
 bearcad.rect{ width = "w", height = "w / 3" }
 bearcad.circle{ x = 40, y = 0, diameter = "w" }        -- `r`/`radius` take expressions too
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = "w / 2" }
+bearcad.extrude{ profiles = {0, 1, 2, 3}, distance = "w / 2" }
 bearcad.edit_extrusion{ extrusion = 0, distance = "w" }
 bearcad.set_parameter("w", "30")                       -- everything above re-sizes
 ```
@@ -189,8 +189,23 @@ bearcad.new()
 bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
 bearcad.line{ x = 10, y = 0, x1 = 5, y1 = 8 }
 bearcad.line{ x = 5, y = 8, x1 = 0, y1 = 0 }
-bearcad.extrude{ polygon = {0, 1, 2}, distance = 6 }
+bearcad.extrude{ profiles = {0, 1, 2}, distance = 6 }
 ```
+
+`bearcad.sketch_faces(sketch?)` lists closed loops, circles, text glyphs, and plane regions
+on a sketch (the open one, or every sketch if none is open). Each value is a `profiles`
+operand:
+
+```lua
+local faces = bearcad.sketch_faces()
+bearcad.extrude{ profiles = faces[1], distance = 6 }
+bearcad.extrude{ profiles = faces, distance = 4, body = "join" }
+```
+
+`profiles` takes one circle handle, one line list (a `rect` return), a spec
+(`{circle=i}`, `{polygon={…}}`, `{text=i}`, `{text_glyph={text, glyph}}`,
+`{region={sketch, u, v}}`, `{boolean={…}}`), or a list of those. `body` is still the
+add/cut/join mode; `bodies` is still the target list.
 
 ## Push or pull a body face
 
@@ -206,7 +221,7 @@ when filleted edges sit between walls.
 ```lua
 bearcad.rect{ x = 0, y = 0, width = 20, height = 20 }
 bearcad.exit_sketch()
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
+bearcad.extrude{ profiles = {0, 1, 2, 3}, distance = 20 }
 
 -- Pull a side wall outward by 10 mm into a boss.
 bearcad.extrude_face{

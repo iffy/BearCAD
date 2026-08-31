@@ -101,6 +101,46 @@ fn is_end(end: LineEnd) -> bool {
 /// (so the same polygon found by walking it in either direction, or starting from a
 /// different line, is reported once), and returned in a deterministic order: sorted by
 /// their lowest-numbered line, then by length.
+/// Closed sketch profiles a script can extrude: circles, line loops, text glyphs, and
+/// hosted-plane regions (#1888).
+pub fn sketch_profiles(
+    doc: &Document,
+    sketch: SketchId,
+) -> Vec<crate::model::ExtrudeFace> {
+    let mut faces = Vec::new();
+    for (k, c) in doc.circles.iter() {
+        if c.sketch == sketch && !c.construction {
+            faces.push(crate::model::ExtrudeFace::Circle(k));
+        }
+    }
+    for lines in closed_line_loops(doc, sketch) {
+        faces.push(crate::model::ExtrudeFace::Polygon(lines));
+    }
+    for (k, t) in doc.sketch_texts.iter() {
+        if t.sketch == sketch {
+            let n = crate::text::group_glyphs(&t.contours).len();
+            for glyph in 0..n {
+                faces.push(crate::model::ExtrudeFace::TextGlyph { text: k, glyph });
+            }
+        }
+    }
+    for region in sketch_plane_regions(doc, sketch) {
+        if region.is_empty() {
+            continue;
+        }
+        let n = region.len() as f32;
+        let u = region.iter().map(|p| p.0).sum::<f32>() / n;
+        let v = region.iter().map(|p| p.1).sum::<f32>() / n;
+        let (seed_u, seed_v) = crate::model::sketch_region_seed(u, v);
+        faces.push(crate::model::ExtrudeFace::SketchRegion {
+            sketch,
+            seed_u,
+            seed_v,
+        });
+    }
+    faces
+}
+
 pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<crate::model::LineKey>> {
     let lines: Vec<crate::model::LineKey> = doc
         .lines

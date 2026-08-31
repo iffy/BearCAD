@@ -1458,40 +1458,13 @@ impl Instruction {
                 format!("bearcad.edit_extrusion{{ extrusion = {extrusion}{d}{to} }}")
             }
             Instruction::Loft { faces, body, bodies } => {
-                use crate::model::ExtrudeFace;
                 let index_list = |indices: &[usize]| -> String {
                     indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
                 };
-                // The lines' arena slots, not their ordinals (#1070).
-                let line_list = |lines: &[crate::model::LineKey]| -> String {
-                    lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ")
-                };
-                let mut circles = Vec::new();
-                let mut polygons = Vec::new();
-                for face in faces {
-                    match face {
-                        ExtrudeFace::Circle(i) => circles.push(circle_ord(doc, *i)),
-                        ExtrudeFace::Polygon(lines) => polygons.push(lines),
-                        // Boolean regions aren't loftable sections (no interactive path
-                        // constructs one), so nothing to render.
-                        ExtrudeFace::Boolean { .. }
-                        | ExtrudeFace::TextGlyph { .. }
-                        | ExtrudeFace::SketchRegion { .. } => {}
-                    }
-                }
                 let mut parts = Vec::new();
-                if !circles.is_empty() {
-                    parts.push(format!("circles = {{{}}}", index_list(&circles)));
-                }
-                if !polygons.is_empty() {
-                    parts.push(format!(
-                        "polygons = {{{}}}",
-                        polygons
-                            .iter()
-                            .map(|lines| format!("{{{}}}", line_list(lines)))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
+                let profiles = extrude_face_args(faces, doc);
+                if !profiles.is_empty() {
+                    parts.push(profiles);
                 }
                 match body {
                     crate::actions::RevolveBodyChoice::NewBody => {}
@@ -1856,29 +1829,13 @@ impl Instruction {
                 body,
                 bodies,
             } => {
-                use crate::model::ExtrudeFace;
                 let index_list = |indices: &[usize]| -> String {
                     indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
                 };
-                // The lines' arena slots, not their ordinals (#1070).
-                let line_list = |lines: &[crate::model::LineKey]| -> String {
-                    lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ")
-                };
                 let mut parts = Vec::new();
-                let circles: Vec<usize> = faces
-                    .iter()
-                    .filter_map(|f| match f {
-                        ExtrudeFace::Circle(i) => Some(circle_ord(doc, *i)),
-                        _ => None,
-                    })
-                    .collect();
-                if !circles.is_empty() {
-                    parts.push(format!("circles = {{{}}}", index_list(&circles)));
-                }
-                for f in faces {
-                    if let ExtrudeFace::Polygon(lines) = f {
-                        parts.push(format!("polygon = {{{}}}", line_list(lines)));
-                    }
+                let profiles = extrude_face_args(faces, doc);
+                if !profiles.is_empty() {
+                    parts.push(profiles);
                 }
                 parts.push(format!("axis = {}", revolve_axis_lua(*axis)));
                 if !angle_expression.trim().is_empty() {
@@ -1914,29 +1871,16 @@ impl Instruction {
                 format!("bearcad.revolve{{ {} }}", parts.join(", "))
             }
             Instruction::Sweep { faces, path, body, bodies } => {
-                use crate::model::ExtrudeFace;
                 let index_list = |indices: &[usize]| -> String {
                     indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
                 };
-                // The lines' arena slots, not their ordinals (#1070).
                 let line_list = |lines: &[crate::model::LineKey]| -> String {
                     lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ")
                 };
                 let mut parts = Vec::new();
-                let circles: Vec<usize> = faces
-                    .iter()
-                    .filter_map(|f| match f {
-                        ExtrudeFace::Circle(i) => Some(circle_ord(doc, *i)),
-                        _ => None,
-                    })
-                    .collect();
-                if !circles.is_empty() {
-                    parts.push(format!("circles = {{{}}}", index_list(&circles)));
-                }
-                for f in faces {
-                    if let ExtrudeFace::Polygon(lines) = f {
-                        parts.push(format!("polygon = {{{}}}", line_list(lines)));
-                    }
+                let profiles = extrude_face_args(faces, doc);
+                if !profiles.is_empty() {
+                    parts.push(profiles);
                 }
                 parts.push(format!("path = {{{}}}", line_list(path)));
                 match body {
@@ -4810,55 +4754,61 @@ fn slice_cutter_lua_ref(
     }
 }
 
-/// Render an extrusion's faces as `bearcad.extrude{}` keyword arguments
-/// (`rect=`/`rects=`, `circle=`/`circles=`, `polygon=`). A single rect or circle uses the
-/// singular field to match how `bearcad.extrude` is normally called by hand; multiple of a
-/// kind use the plural array form. Only the first polygon face is kept — the Lua API has no
-/// way to extrude more than one closed-loop face alongside the others in one call.
+/// Render an extrusion's faces as `profiles = …` (#1895/#1885). One face is a spec table;
+/// several are a list of spec tables. Consecutive glyphs of one sketch text collapse to
+/// `{text = i}` when they cover that text.
 fn extrude_face_args(
     faces: &[crate::model::ExtrudeFace],
     doc: Option<&crate::model::Document>,
 ) -> String {
+    if faces.is_empty() {
+        return String::new();
+    }
+    if let Some(text) = collapsed_text_profile(faces, doc) {
+        return format!("profiles = {{text = {text}}}");
+    }
+    let specs: Vec<String> = faces
+        .iter()
+        .map(|face| extrude_face_spec_table(face, doc))
+        .collect();
+    match specs.as_slice() {
+        [one] => format!("profiles = {one}"),
+        many => format!("profiles = {{{}}}", many.join(", ")),
+    }
+}
+
+fn collapsed_text_profile(
+    faces: &[crate::model::ExtrudeFace],
+    doc: Option<&crate::model::Document>,
+) -> Option<usize> {
     use crate::model::ExtrudeFace;
-    let mut circles = Vec::new();
-    let mut polygon = None;
-    let mut boolean = None;
-    for face in faces {
-        match face {
-            ExtrudeFace::Circle(i) => circles.push(circle_ord(doc, *i)),
-            ExtrudeFace::Polygon(lines) => {
-                polygon.get_or_insert(lines);
-            }
-            // Only the first is kept, same "one non-rect/circle profile per call" limitation
-            // as `polygon` above — the Lua API has no way to extrude more than one alongside
-            // the others in a single call.
-            ExtrudeFace::Boolean { op, a, b } => {
-                boolean.get_or_insert((*op, a.as_ref(), b.as_ref()));
-            }
-            // Text glyphs aren't reconstructable from a flat script arg (they reference baked
-            // outlines); nor is a plane region, whose seed the flat arg shape has nowhere to
-            // put (#993). The script round-trip skips both.
-            ExtrudeFace::TextGlyph { .. } | ExtrudeFace::SketchRegion { .. } => {}
-        };
-    }
-    let index_list = |indices: &[usize]| -> String {
-        indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+    let ExtrudeFace::TextGlyph { text, glyph: 0 } = faces.first()? else {
+        return None;
     };
-    let mut parts = Vec::new();
-    match circles.as_slice() {
-        [] => {}
-        [single] => parts.push(format!("circle = {single}")),
-        many => parts.push(format!("circles = {{{}}}", index_list(many))),
+    if !faces.iter().all(|f| matches!(f, ExtrudeFace::TextGlyph { text: t, .. } if t == text))
+    {
+        return None;
     }
-    if let Some(lines) = polygon {
-        // The lines' arena slots, not their ordinals (#1070).
-        let idx = lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ");
-        parts.push(format!("polygon = {{{idx}}}"));
+    let n = doc.and_then(|d| {
+        d.sketch_texts
+            .get(*text)
+            .map(|t| crate::text::group_glyphs(&t.contours).len())
+    })?;
+    if n == 0 || faces.len() != n {
+        return None;
     }
-    if let Some((op, a, b)) = boolean {
-        parts.push(format!("boolean = {}", boolean_face_lua_table(op, a, b, doc)));
+    for (i, f) in faces.iter().enumerate() {
+        let ExtrudeFace::TextGlyph { glyph, .. } = f else {
+            return None;
+        };
+        if *glyph != i {
+            return None;
+        }
     }
-    parts.join(", ")
+    Some(ordinal_or_slot(
+        doc.map(|d| d.sketch_texts.keys().position(|k| k == *text)),
+        text.index(),
+    ))
 }
 
 /// Lua table literal for a boolean-combined face's inner fields (#16/#62): `{op = "...",
@@ -4896,13 +4846,25 @@ fn extrude_face_spec_table(
             format!("{{boolean = {}}}", boolean_face_lua_table(*op, a, b, doc))
         }
         ExtrudeFace::TextGlyph { text, glyph } => {
-            format!("{{text_glyph = {{text = {}, glyph = {glyph}}}}}", text.index())
+            format!(
+                "{{text_glyph = {{text = {}, glyph = {glyph}}}}}",
+                ordinal_or_slot(
+                    doc.map(|d| d.sketch_texts.keys().position(|k| k == *text)),
+                    text.index()
+                )
+            )
         }
         // A plane region (#993) names its sketch and the seed point that picks it out.
-        ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => format!("{{region = {{sketch = {}, u = {}, v = {}}}}}", sketch.index(),
-            *seed_u as f32 / crate::model::SKETCH_REGION_SEED_SCALE,
-            *seed_v as f32 / crate::model::SKETCH_REGION_SEED_SCALE
-        ),
+        ExtrudeFace::SketchRegion { sketch, seed_u, seed_v } => {
+            let (u, v) = crate::model::sketch_region_seed_point(*seed_u, *seed_v);
+            format!(
+                "{{region = {{sketch = {}, u = {u}, v = {v}}}}}",
+                ordinal_or_slot(
+                    doc.map(|d| d.sketches.keys().position(|k| k == *sketch)),
+                    sketch.index()
+                )
+            )
+        }
     }
 }
 

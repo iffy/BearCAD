@@ -57,12 +57,13 @@ bearcad.project{ body?, bodies?, plane?, planes?, entities? }
 ## Solids
 
 ```
-bearcad.extrude{ polygon = {line, …} | circle = i | circles = {i, …} | text = i | boolean = {…}, distance?, to?, body = "new"|"add"|"cut"|"join"?, name?, symmetric?, taper?, taper_mode = "distance"|"angle"? }
+bearcad.extrude{ profiles = circle | {line, …} | {…}, distance?, to?, body = "new"|"add"|"cut"|"join"?, name?, symmetric?, taper?, taper_mode = "distance"|"angle"? }
+bearcad.sketch_faces(sketch?)            -- closed loops/circles/text/regions for `profiles`
 bearcad.edit_extrusion{ extrusion, distance? | by? | to? }
 bearcad.extrude_face{ face = {…}, distance, body? }
-bearcad.revolve{ polygon = {…} | circle = i | circles = {i, …}, axis = "x"|"y"|"z"|{ line = i }, angle? | revolutions?, pitch?, body = "new"|"add"|"cut"?, bodies?, symmetric?, name? }
-bearcad.sweep{ polygon = {…} | circle = i | circles = {i, …}, path = {line, …}, body = "add"|"cut"?, bodies? }
-bearcad.loft{ circles = {i, …}?, polygons = { {line, …}, … }?, body? }
+bearcad.revolve{ profiles = circle | {line, …} | {…}, axis = "x"|"y"|"z"|{ line = i }, angle? | revolutions?, pitch?, body = "new"|"add"|"cut"?, bodies?, symmetric?, name? }
+bearcad.sweep{ profiles = circle | {line, …} | {…}, path = {line, …}, body = "add"|"cut"?, bodies? }
+bearcad.loft{ profiles = { circle | {line, …}, … }, body? }
 bearcad.combine{ op = "union"|"cut"|"intersect"|"xor", a = {i, …}, b = {i, …}, keep_b?, bake?, name? }   -- `difference` means cut; bake = true consumes the inputs and leaves one standalone body
 bearcad.slice{ bodies = {i, …}, cutters = {…}, extend?, name? }
 bearcad.shell{ bodies = {i, …}, faces = {…}?, thickness, name? }
@@ -137,6 +138,8 @@ bearcad.set_visible(el, false)     -- handle, list, or { kind = "plane" }; boole
 bearcad.set_construction(el, true) -- same targets; selection forms are bearcad.ui.*
 bearcad.sketch_dof()
 bearcad.sketch_conflicts()
+bearcad.sketch_faces()
+
 bearcad.status()
 ```
 
@@ -148,7 +151,7 @@ A creation call hands back what it made: one element, or a list of them.
 
 ```
 local sides = bearcad.rect{ x = 0, y = 0, width = 20, height = 10 }   -- four lines
-local box   = bearcad.extrude{ polygon = sides, distance = 5 }        -- the new body
+local box   = bearcad.extrude{ profiles = sides, distance = 5 }        -- the new body
 box:kind()  box:index()  box:id()  box:name()  box:exists()  box:delete()  tostring(box)
 bearcad.delete(box)                -- or a list; does not replace the scene selection
 bearcad.delete_selection()         -- whatever is selected (the GUI Delete)
@@ -308,7 +311,7 @@ bearcad.export_drawing_svg{ drawing, path }
 bearcad.export_preview(path)
 bearcad.export_step(path, body?)
 bearcad.export_stl(path, body?)
-bearcad.extrude{ distance, to, circle, circles, polygon, text, boolean, body, name, symmetric, taper, taper_mode }
+bearcad.extrude{ distance, to, profiles, circle, circles, polygon, polygons, text, boolean, body, name, symmetric, taper, taper_mode }
 bearcad.extrude_edges(index)   -- edge refs fillet_edge/chamfer_edge accept: kind vertical|top|bottom
 bearcad.extrude_face{ to, distance, body, name }
 bearcad.fillet_edge{ edges, edge, extrusion, primitive, radius }
@@ -330,7 +333,7 @@ bearcad.import_unit(value)
 bearcad.joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.line{ x, y, x1, y1, length, angle, bezier, dimension, name }
 bearcad.line_endpoints(index)
-bearcad.loft{ circle, circles, polygon, polygons, bodies, body, name }
+bearcad.loft{ profiles, circle, circles, polygon, polygons, bodies, body, name }
 bearcad.material{ name, color, bodies }   -- no color + an existing name applies that material
 bearcad.mirror_bodies{ plane, bodies, output, name }
 bearcad.mirror_sketch{ sketch, line, lines, circles }
@@ -363,7 +366,7 @@ bearcad.repeat_sketch{ sketch, lines, circles, angle, dir, mode, count, spacing,
 bearcad.repeat_sketches{ sketches, axis, around, flip, mode, count, spacing, gap, length, to }
 bearcad.revert_joint(op)
 bearcad.revert_joints()
-bearcad.revolve{ circle, circles, polygon, axis, symmetric, bodies, body, line, revolutions, angle, pitch, offset, gap, name }
+bearcad.revolve{ profiles, circle, circles, polygon, axis, symmetric, bodies, body, line, revolutions, angle, pitch, offset, gap, name }
 bearcad.save(path?)
 bearcad.section_plane{ view, plane, origin, normal, offset, roll, depth, flip, bodies, exclude_bodies }   -- depth: how far the cut reaches; omitted or false cuts through
 bearcad.section_planes(view?)   -- view: cross-section index or name; omitted = the view being edited
@@ -386,11 +389,12 @@ bearcad.set_visible(element, visible)   -- handle, list, or { kind = "plane" }; 
 bearcad.shell{ bodies, faces, thickness, name }
 bearcad.sketch_conflicts(sketch?)
 bearcad.sketch_dof(sketch?)
+bearcad.sketch_faces(sketch?)   -- closed loops/circles/text/regions; pass one to extrude{ profiles = face }
 bearcad.slice{ bodies, cutters, extend, name }
 bearcad.slice_sketch{ sketch, lines, circles, faces, cutters }
 bearcad.sphere{ radius, at?, name? }
 bearcad.status()
-bearcad.sweep{ circle, circles, polygon, path, bodies, body, name }
+bearcad.sweep{ profiles, circle, circles, polygon, path, bodies, body, name }
 bearcad.sync_unit(value)
 bearcad.text{ text, x, y, size, font, bold, italic, underline, rotation, wrap, flip, name }
 bearcad.ui.add_geometric_constraint(name)

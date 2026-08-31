@@ -2810,6 +2810,87 @@ mod tests {
         );
     }
 
+    /// #1885/#1895: two polygon loops in one extrude must both appear in the export.
+    #[test]
+    fn multi_polygon_extrude_round_trips() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.rect{ x = 5, y = 5, width = 8, height = 8 }
+            bearcad.extrude{ profiles = {{0, 1, 2, 3}, {4, 5, 6, 7}}, distance = 5 }
+            "#,
+        );
+        assert_eq!(
+            state.doc.extrusions.values().next().map(|e| e.faces.len()),
+            Some(2)
+        );
+        let script = document_to_lua(&state.doc);
+        assert!(
+            script.contains("profiles"),
+            "export should use profiles:\n{script}"
+        );
+        let rebuilt = run_lua(&script);
+        let diffs = document_diff(&state.doc, &rebuilt.doc);
+        assert!(
+            diffs.is_empty(),
+            "round-trip diffs: {diffs:?}\n--- script ---\n{script}"
+        );
+        assert_eq!(
+            rebuilt.doc.extrusions.values().next().map(|e| e.faces.len()),
+            Some(2),
+            "replay dropped a loop:\n{script}"
+        );
+    }
+
+    /// #1885: extruded sketch text round-trips instead of being skipped.
+    #[test]
+    fn text_extrude_round_trips() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        if family.is_none() {
+            eprintln!("no usable system font; skipping");
+            return;
+        }
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.text{ text = "Hi", x = 0, y = 0, size = 10 }
+            bearcad.extrude{ text = 0, distance = 2 }
+            "#,
+        );
+        let n_faces = state
+            .doc
+            .extrusions
+            .values()
+            .next()
+            .map(|e| e.faces.len())
+            .unwrap_or(0);
+        assert!(n_faces > 0, "text should extrude glyph faces");
+        let script = document_to_lua(&state.doc);
+        assert!(
+            script.contains("text") || script.contains("text_glyph") || script.contains("profiles"),
+            "export should name the text profile:\n{script}"
+        );
+        let rebuilt = run_lua(&script);
+        let diffs = document_diff(&state.doc, &rebuilt.doc);
+        assert!(
+            diffs.is_empty(),
+            "round-trip diffs: {diffs:?}\n--- script ---\n{script}"
+        );
+        assert_eq!(
+            rebuilt
+                .doc
+                .extrusions
+                .values()
+                .next()
+                .map(|e| e.faces.len()),
+            Some(n_faces),
+            "replay dropped text glyphs:\n{script}"
+        );
+    }
+
     /// #1857: a tangency exports as `constrain("tangent", …)`, and replaying the
     /// export rebuilds the same two tangencies.
     #[test]

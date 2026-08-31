@@ -661,9 +661,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     **Body** (the solid result) that depends on it: the body nests under the extrusion in the
     Elements pane and is removed if the extrusion is deleted.
     Created in script via
-    `bearcad.extrude{ circle|polygon|circles|text, distance?, name?, body?, to?, taper?,
-    taper_mode? }` (`text = i` extrudes/engraves a whole sketch text — all its glyph regions,
-    #355; `taper`/`taper_mode` #1243).
+    `bearcad.extrude{ profiles, distance?, name?, body?, to?, taper?,
+    taper_mode? }` (`profiles` is one circle, one line loop, a text, or a list of those;
+    `bearcad.sketch_faces(sketch?)` lists them. `taper`/`taper_mode` #1243).
     **Extrude to object (#114):** instead of a fixed distance, `to = { plane = i }` /
     `{ face = <face spec> }` / `{ vertex = <point> }` snaps the extrusion to that object's
     extended plane, and the link is parametric — the snapped extrusion follows when the
@@ -2337,9 +2337,9 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   quads, and the end sections are capped; the kernel path builds the same ruled blend as
   pairwise `ThruSections` segments fused into one BREP solid, which is what Add/Cut boolean
   against. Scriptable as
-  `bearcad.loft{ circles = {i, ...}, polygons = {{line, ...}, ...}, body = "new"|"add"|"cut",
-  bodies = {..}, name = }` (singular
-  `circle`/`polygon` also accepted; each face's sketch is inferred as in `bearcad.extrude`),
+  `bearcad.loft{ profiles = {…}, body = "new"|"add"|"cut",
+  bodies = {..}, name = }` (`profiles` is two or more circles or line loops;
+  each face's sketch is inferred as in `bearcad.extrude`),
   and interactive lofts replay to the command log as the same call. In the Elements pane a
   loft shows as its **own operation node** (`HierarchyNode::Loft`) with its output body nested
   beneath it and its cross-section **sketches** feeding it as Graph-view dependency edges
