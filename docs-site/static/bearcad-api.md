@@ -43,6 +43,7 @@ Every dimension takes a number or an expression string.
 bearcad.rect{ width, height, x = 0?, y = 0?, name? }
 bearcad.line{ x, y, x1, y1, name?, dimension? }          -- or length + angle (degrees)
 bearcad.circle{ x, y, r | radius | diameter, name? }
+bearcad.edit_circle{ index, r | radius | diameter, name? }
 bearcad.text{ text, x, y, size?, font?, bold?, italic?, underline?, rotation?, wrap?, flip?, name? }
 bearcad.begin_sketch("construction_plane", i)
 bearcad.begin_sketch{ kind = "extrude_cap"|"extrude_side"|…, … }
@@ -58,12 +59,16 @@ bearcad.project{ body?, bodies?, plane?, planes?, entities? }
 
 ```
 bearcad.extrude{ polygon = {line, …} | circle = i | circles = {i, …} | text = i | boolean = {…}, distance?, to?, body = "new"|"add"|"cut"|"join"?, name?, symmetric?, taper?, taper_mode = "distance"|"angle"? }
-bearcad.edit_extrusion{ extrusion, distance? | by? | to? }
+bearcad.edit_extrusion{ index | extrusion, distance? | by? | to? }
 bearcad.extrude_face{ face = {…}, distance, body? }
 bearcad.revolve{ polygon = {…} | circle = i | circles = {i, …}, axis = "x"|"y"|"z"|{ line = i }, angle? | revolutions?, pitch?, body = "new"|"add"|"cut"?, bodies?, symmetric?, name? }
+bearcad.edit_revolve{ index, angle? | revolutions?, pitch?, axis?, … }
 bearcad.sweep{ polygon = {…} | circle = i | circles = {i, …}, path = {line, …}, body = "add"|"cut"?, bodies? }
+bearcad.edit_sweep{ index, path?, … }
 bearcad.loft{ circles = {i, …}?, polygons = { {line, …}, … }?, body? }
+bearcad.edit_loft{ index, circles?, polygons?, … }
 bearcad.combine{ op = "union"|"cut"|"intersect"|"xor", a = {i, …}, b = {i, …}, keep_b?, bake?, name? }   -- `difference` means cut; bake = true consumes the inputs and leaves one standalone body
+bearcad.edit_combine{ index, op, a, b, keep_b? }
 bearcad.slice{ bodies = {i, …}, cutters = {…}, extend?, name? }
 bearcad.shell{ bodies = {i, …}, faces = {…}?, thickness, name? }
 bearcad.move_bodies{ bodies = {i, …}, x?, y?, z?, rx?, ry?, rz?, name? }
@@ -79,7 +84,9 @@ edge (four calls would make four bodies):
 
 ```
 bearcad.fillet_edge{ extrusion = i, edges = { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, radius }
+bearcad.edit_fillet{ index, radius? }
 bearcad.chamfer_edge{ extrusion = i, edges = { … }, distance }
+bearcad.edit_chamfer{ index, distance? }
 bearcad.extrude_edges(i)               -- the edge refs fillet/chamfer accept on extrusion i
 bearcad.fillet_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, radius }
 bearcad.chamfer_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, distance }
@@ -281,16 +288,21 @@ bearcad.drawing_view_section{ drawing, view, cross_section }
 bearcad.drawing_view_size{ drawing, view, width, height, size_x, size_y }
 bearcad.drawing_view_style{ drawing, view, style }   -- visible, wireframe, shaded, colorful, loose_pencil, color_pencil, watercolor
 bearcad.drawing_views(index)
-bearcad.edit_boolean{ index, op, a, b, keep_b }
+bearcad.edit_chamfer{ index, edge, edges, extrusion, primitive, distance }
+bearcad.edit_circle{ index, r, radius, diameter, name }
+bearcad.edit_combine{ index, op, a, b, keep_b }
 bearcad.edit_dim(axis)
 bearcad.edit_drawing_loupe{ drawing, view, index, at?, radius?, to?, to_radius?, style? }   -- style is a drawing view style, or "view" to follow the projection's
-bearcad.edit_extrusion{ extrusion, distance, by, to }
+bearcad.edit_extrusion{ index, extrusion, distance, by, to }
+bearcad.edit_fillet{ index, edge, edges, extrusion, primitive, radius }
 bearcad.edit_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
+bearcad.edit_loft{ index, circle, circles, polygon, polygons, bodies, body, name }
 bearcad.edit_mirror{ index, plane, bodies, output }
 bearcad.edit_move{ index, bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
 bearcad.edit_parameter{ name, private, min, max, step, rename }
 bearcad.edit_plane(index)
 bearcad.edit_repeat{ index, bodies, axis, around, flip, mode, count, spacing, gap, length, to }
+bearcad.edit_revolve{ index, circle, circles, polygon, axis, angle, revolutions, pitch, offset, gap, symmetric, bodies, body, name }
 bearcad.edit_section_plane{ view, cut, offset, roll, depth, flip, bodies, exclude_bodies }
 bearcad.edit_shape{ index, shape, at, normal, u_axis, width, depth, height, radius, name }
 bearcad.edit_shell{ index, bodies, faces, thickness }
@@ -299,6 +311,7 @@ bearcad.edit_sketch_offset{ index, sketch, lines, circles, distance, constructio
 bearcad.edit_sketch_repeat{ index, sketch, lines, circles, angle, dir, mode, count, spacing, gap, length }
 bearcad.edit_sketch_slice{ index, lines, circles, faces, cutters }
 bearcad.edit_slice{ index, bodies, cutters, extend }
+bearcad.edit_sweep{ index, circle, circles, polygon, path, bodies, body, name }
 bearcad.element(kind, index)   -- or bearcad.element(id_or_name)
 bearcad.exit_sketch()
 bearcad.exploder()

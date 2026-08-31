@@ -1924,7 +1924,52 @@ fn parse_treatable_solid_ref(opts: &Table) -> mlua::Result<Option<TreatableSolid
     }
 }
 
-/// Parses `bearcad.combine{}`/`bearcad.edit_boolean{}` arguments: the op kind, the A and
+/// Closed sketch profiles named by `circle`/`circles`/`polygon` (`polygons` when allowed).
+fn parse_profile_faces(
+    lua: &Lua,
+    opts: &Table,
+    allow_polygons: bool,
+) -> mlua::Result<Vec<crate::model::ExtrudeFace>> {
+    let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
+    if let Some(i) = opts.ordinal_opt("circle")? {
+        faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
+    }
+    if let Some(list) = opts.ordinal_list_opt("circles")? {
+        for i in list {
+            faces.push(crate::model::ExtrudeFace::Circle(circle_key_from_ordinal(lua, i)?));
+        }
+    }
+    if let Some(lines) = opts.ordinal_list_opt("polygon")? {
+        faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(lua, lines)?));
+    }
+    if allow_polygons {
+        if let Some(loops) = opts.get::<Option<Vec<Vec<usize>>>>("polygons")? {
+            for loop_lines in loops {
+                faces.push(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(
+                    lua, loop_lines,
+                )?));
+            }
+        }
+    }
+    Ok(faces)
+}
+
+fn named_profile_faces(
+    lua: &Lua,
+    opts: &Table,
+    allow_polygons: bool,
+) -> mlua::Result<Option<Vec<crate::model::ExtrudeFace>>> {
+    if !(opts.contains_key("circle")?
+        || opts.contains_key("circles")?
+        || opts.contains_key("polygon")?
+        || (allow_polygons && opts.contains_key("polygons")?))
+    {
+        return Ok(None);
+    }
+    Ok(Some(parse_profile_faces(lua, opts, allow_polygons)?))
+}
+
+/// Parses `bearcad.combine{}`/`bearcad.edit_combine{}` arguments: the op kind, the A and
 /// B input body lists, and the leftovers flag (`keep_b`).
 fn parse_boolean_op_args(
     opts: &Table,
@@ -8107,6 +8152,47 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    api.set(
+        "edit_circle",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_circle",
+                &["index", "r", "radius", "diameter", "name"],
+            )?;
+            let circle: usize = opts.ordinal_req("index")?;
+            let (r, diameter_expr) = if let Some((r, e)) = scalar_arg(lua, &opts, "r")? {
+                (r, e.map(|e| format!("({e}) * 2")))
+            } else if let Some((radius, e)) = scalar_arg(lua, &opts, "radius")? {
+                (radius, e.map(|e| format!("({e}) * 2")))
+            } else if let Some((d, e)) = scalar_arg(lua, &opts, "diameter")? {
+                (d * 0.5, e)
+            } else {
+                return Err(mlua::Error::external(
+                    "edit_circle requires a size: one of `r`, `radius`, or `diameter`",
+                ));
+            };
+            let element = unsafe {
+                tick.exec(Instruction::EditCircle {
+                    circle,
+                    r,
+                    diameter_expr,
+                })?;
+                SceneElement::Circle(
+                    tick.state()
+                        .doc
+                        .circles
+                        .keys()
+                        .nth(circle)
+                        .ok_or_else(|| mlua::Error::external(format!("no circle {circle}")))?,
+                )
+            };
+            drop(tick);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
     // Sketch text (#282/#286): the scripted equivalent of the Text tool — glyph outlines are
     // baked from a system font and the font bytes embed in the document. `size` accepts an
     // expression (parameters work); `rotation` is degrees about the baseline origin.
@@ -9182,12 +9268,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
-        "edit_boolean",
+        "edit_combine",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             check_keys(
                 &opts,
-                "edit_boolean",
+                "edit_combine",
                 &["index", "op", "a", "b", "keep_b"],
             )?;
             let op: usize = opts.ordinal_req("index")?;
@@ -9387,6 +9473,117 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    api.set(
+        "edit_revolve",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_revolve",
+                &[
+                    "index",
+                    "circle",
+                    "circles",
+                    "polygon",
+                    "axis",
+                    "angle",
+                    "revolutions",
+                    "pitch",
+                    "offset",
+                    "gap",
+                    "symmetric",
+                    "body",
+                    "bodies",
+                    "name",
+                ],
+            )?;
+            let op: usize = opts.ordinal_req("index")?;
+            let faces = named_profile_faces(lua, &opts, false)?;
+            let axis = match opts.get::<Option<mlua::Value>>("axis")? {
+                Some(v) if !matches!(v, mlua::Value::Nil) => {
+                    Some(parse_revolve_axis(lua, v, "edit_revolve")?)
+                }
+                _ => None,
+            };
+            let (angle_deg, angle_expression, angle_is_revolutions) =
+                if let Some((turns, turns_expr)) = scalar_arg(lua, &opts, "revolutions")? {
+                    let expr = turns_expr.unwrap_or_default();
+                    let turns = if expr.is_empty() {
+                        turns
+                    } else {
+                        crate::value::eval_length_mm_in_doc(&expr, unsafe { &tick.state().doc })
+                            .unwrap_or(turns)
+                    };
+                    (Some(turns * 360.0), Some(expr), Some(true))
+                } else if let Some((deg, deg_expr)) = scalar_arg(lua, &opts, "angle")? {
+                    let expr = deg_expr.unwrap_or_default();
+                    let deg = if expr.is_empty() {
+                        deg
+                    } else {
+                        crate::value::eval_angle_rad_in_doc(&expr, unsafe { &tick.state().doc })
+                            .map(|r| r.to_degrees())
+                            .unwrap_or(deg)
+                    };
+                    (Some(deg), Some(expr), Some(false))
+                } else {
+                    (None, None, None)
+                };
+            let pitch_arg = match scalar_arg(lua, &opts, "pitch")? {
+                Some(v) => Some(v),
+                None => match scalar_arg(lua, &opts, "offset")? {
+                    Some(v) => Some(v),
+                    None => scalar_arg(lua, &opts, "gap")?,
+                },
+            };
+            let (pitch_mm, pitch_expression) = if let Some((v, e)) = pitch_arg {
+                let expr = e.unwrap_or_default();
+                let v = if expr.is_empty() {
+                    v
+                } else {
+                    crate::value::eval_length_mm_in_doc(&expr, unsafe { &tick.state().doc })
+                        .unwrap_or(v)
+                };
+                (Some(v), Some(expr))
+            } else {
+                (None, None)
+            };
+            let symmetric: Option<bool> = opts.get("symmetric")?;
+            let bodies = opts.ordinal_list_opt("bodies")?;
+            let body = match opts.get::<Option<String>>("body")? {
+                Some(s) => Some(
+                    crate::actions::RevolveBodyChoice::from_script(Some(s.as_str()))
+                        .map_err(mlua::Error::external)?,
+                ),
+                None => None,
+            };
+            let element = unsafe {
+                tick.exec(Instruction::EditRevolve {
+                    op,
+                    faces,
+                    axis,
+                    angle_deg,
+                    angle_expression,
+                    angle_is_revolutions,
+                    pitch_mm,
+                    pitch_expression,
+                    symmetric,
+                    body,
+                    bodies,
+                })?;
+                SceneElement::Revolution(
+                    tick.state()
+                        .doc
+                        .revolutions
+                        .keys()
+                        .nth(op)
+                        .ok_or_else(|| mlua::Error::external(format!("no revolution {op}")))?,
+                )
+            };
+            drop(tick);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
     // Primitive shapes (#909): `bearcad.cuboid{ at = {x,y,z}?, normal = {..}?, u_axis = {..}?,
     // width =, depth =, height =, name = }`, `bearcad.cylinder{ radius =, height = }`,
     // `bearcad.sphere{ radius = }`. Every dimension takes a number or an expression string;
@@ -9505,6 +9702,68 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    api.set(
+        "edit_sweep",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_sweep",
+                &[
+                    "index",
+                    "circle",
+                    "circles",
+                    "polygon",
+                    "path",
+                    "body",
+                    "bodies",
+                    "name",
+                ],
+            )?;
+            let op: usize = opts.ordinal_req("index")?;
+            let faces = named_profile_faces(lua, &opts, false)?;
+            let path = match opts.ordinal_list_opt("path")? {
+                Some(lines) => {
+                    let path = line_keys_from_ordinals(lua, lines)?;
+                    if path.is_empty() {
+                        return Err(mlua::Error::external(
+                            "edit_sweep `path` must name at least one line",
+                        ));
+                    }
+                    Some(path)
+                }
+                None => None,
+            };
+            let bodies = opts.ordinal_list_opt("bodies")?;
+            let body = match opts.get::<Option<String>>("body")? {
+                Some(s) => Some(
+                    crate::actions::RevolveBodyChoice::from_script(Some(s.as_str()))
+                        .map_err(mlua::Error::external)?,
+                ),
+                None => None,
+            };
+            let element = unsafe {
+                tick.exec(Instruction::EditSweep {
+                    op,
+                    faces,
+                    path,
+                    body,
+                    bodies,
+                })?;
+                SceneElement::SweepOp(
+                    tick.state()
+                        .doc
+                        .sweeps
+                        .keys()
+                        .nth(op)
+                        .ok_or_else(|| mlua::Error::external(format!("no sweep {op}")))?,
+                )
+            };
+            drop(tick);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
     // Loft a solid through two or more closed cross-section profiles (SPEC §3.5).
     // `circles = {i, ...}` and/or `polygons = {{line, ...}, ...}` list the sections
     // (singular `circle`/`polygon` also accepted); each face's sketch is inferred like
@@ -9549,6 +9808,62 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let key = unsafe { tick.state().doc.bodies.keys().last() };
             let element =
                 SceneElement::Body(key.ok_or_else(|| mlua::Error::external("no body was made"))?);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    api.set(
+        "edit_loft",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_loft",
+                &[
+                    "index",
+                    "circle",
+                    "circles",
+                    "polygon",
+                    "polygons",
+                    "body",
+                    "bodies",
+                    "name",
+                ],
+            )?;
+            let op: usize = opts.ordinal_req("index")?;
+            let faces = named_profile_faces(lua, &opts, true)?;
+            if let Some(faces) = &faces {
+                if faces.len() < 2 {
+                    return Err(mlua::Error::external(
+                        "edit_loft requires at least two sections (`circles`/`polygons`)",
+                    ));
+                }
+            }
+            let bodies = opts.ordinal_list_opt("bodies")?;
+            let body = match opts.get::<Option<String>>("body")? {
+                Some(s) => Some(
+                    crate::actions::RevolveBodyChoice::from_script(Some(s.as_str()))
+                        .map_err(mlua::Error::external)?,
+                ),
+                None => None,
+            };
+            let element = unsafe {
+                tick.exec(Instruction::EditLoft {
+                    op,
+                    faces,
+                    body,
+                    bodies,
+                })?;
+                SceneElement::Loft(
+                    tick.state()
+                        .doc
+                        .lofts
+                        .keys()
+                        .nth(op)
+                        .ok_or_else(|| mlua::Error::external(format!("no loft {op}")))?,
+                )
+            };
+            drop(tick);
             apply_optional_name(lua, element, Some(opts))
         })?,
     )?;
@@ -10774,8 +11089,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_extrusion",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "edit_extrusion", &["extrusion", "distance", "by", "to"])?;
-            let extrusion: usize = opts.ordinal_req("extrusion")?;
+            check_keys(&opts, "edit_extrusion", &["index", "extrusion", "distance", "by", "to"])?;
+            let extrusion: usize = match opts.ordinal_opt("index")? {
+                Some(i) => i,
+                None => opts.ordinal_req("extrusion")?,
+            };
             // `distance` accepts a plain number or a parameter expression string (#402).
             let (mut distance, expression) = match scalar_arg(lua, &opts, "distance")? {
                 Some((d, e @ Some(_))) => (Some(d), e),
@@ -10899,6 +11217,84 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             .unwrap_or(0.0);
             unsafe {
                 tick.exec(Instruction::EdgeTreatment {
+                    edges,
+                    kind: VertexTreatmentKind::Fillet,
+                    amount,
+                    expression,
+                })
+            }
+        })?,
+    )?;
+
+    api.set(
+        "edit_chamfer",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_chamfer",
+                &["index", "edge", "edges", "extrusion", "primitive", "distance"],
+            )?;
+            let op: usize = opts.ordinal_req("index")?;
+            let edges = if opts.contains_key("edge")? || opts.contains_key("edges")? {
+                Some(parse_extrusion_edge_set(&opts)?)
+            } else {
+                None
+            };
+            let (amount, expression) = match opts.get::<Option<mlua::Value>>("distance")? {
+                Some(mlua::Value::Nil) | None => (None, None),
+                Some(_) => {
+                    let expression = lua_amount_expr(&opts, "distance")?;
+                    let amount = crate::value::eval_length_mm_in_doc(
+                        &expression,
+                        unsafe { &tick.state().doc },
+                    )
+                    .unwrap_or(0.0);
+                    (Some(amount), Some(expression))
+                }
+            };
+            unsafe {
+                tick.exec(Instruction::EditEdgeTreatment {
+                    op,
+                    edges,
+                    kind: VertexTreatmentKind::Chamfer,
+                    amount,
+                    expression,
+                })
+            }
+        })?,
+    )?;
+
+    api.set(
+        "edit_fillet",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_fillet",
+                &["index", "edge", "edges", "extrusion", "primitive", "radius"],
+            )?;
+            let op: usize = opts.ordinal_req("index")?;
+            let edges = if opts.contains_key("edge")? || opts.contains_key("edges")? {
+                Some(parse_extrusion_edge_set(&opts)?)
+            } else {
+                None
+            };
+            let (amount, expression) = match opts.get::<Option<mlua::Value>>("radius")? {
+                Some(mlua::Value::Nil) | None => (None, None),
+                Some(_) => {
+                    let expression = lua_amount_expr(&opts, "radius")?;
+                    let amount = crate::value::eval_length_mm_in_doc(
+                        &expression,
+                        unsafe { &tick.state().doc },
+                    )
+                    .unwrap_or(0.0);
+                    (Some(amount), Some(expression))
+                }
+            };
+            unsafe {
+                tick.exec(Instruction::EditEdgeTreatment {
+                    op,
                     edges,
                     kind: VertexTreatmentKind::Fillet,
                     amount,
@@ -15892,6 +16288,41 @@ pub mod tests {
         let output = state.doc.edge_treatment_ops.values().nth(0).unwrap().outputs[0];
         let mesh = crate::extrude::body_solid_mesh(&state.doc, output).unwrap();
         assert_ne!(mesh.triangles.len(), 12);
+    }
+
+    /// #1875: `edit_chamfer` / `edit_fillet` change a committed edge treatment in place.
+    #[test]
+    fn lua_edit_fillet_and_chamfer_change_amount_in_place() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.fillet_edge{
+                extrusion = 0,
+                edge = { kind = "vertical", face = 0, edge = 0 },
+                radius = 1,
+            }
+            local n = bearcad.count("edge_treatment")
+            bearcad.edit_fillet{ index = 0, radius = 3 }
+            assert(bearcad.count("edge_treatment") == n)
+            local f = bearcad.get{ kind = "edge_treatment", index = 0 }
+            assert(math.abs(f.amount - 3) < 1e-3, "fillet stayed " .. tostring(f.amount))
+
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.chamfer_edge{
+                extrusion = 0,
+                edge = { kind = "vertical", face = 0, edge = 0 },
+                distance = 1,
+            }
+            bearcad.edit_chamfer{ index = 0, distance = 2.5 }
+            local c = bearcad.get{ kind = "edge_treatment", index = 0 }
+            assert(math.abs(c.amount - 2.5) < 1e-3, "chamfer stayed " .. tostring(c.amount))
+        "#,
+        );
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1);
+        assert!((state.doc.edge_treatment_ops.values().nth(0).unwrap().amount - 2.5).abs() < 1e-3);
     }
 
     /// #672: `edges = { ... }` treats the whole set in ONE operation (one undo, one amount).
@@ -20996,6 +21427,35 @@ pub mod tests {
         assert!((state.doc.extrusions[xkey(0)].distance - 6.0).abs() < 1e-3);
     }
 
+    /// #1875: `edit_extrusion` accepts `index` as an alias of `extrusion`.
+    #[test]
+    fn lua_edit_extrusion_accepts_index_alias() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8 }
+            bearcad.edit_extrusion{ index = 0, distance = 12 }
+        "#,
+        );
+        assert!((state.doc.extrusions[xkey(0)].distance - 12.0).abs() < 1e-3);
+    }
+
+    /// #1875: `edit_circle` changes a committed circle's radius.
+    #[test]
+    fn lua_edit_circle_changes_radius() {
+        let state = run_lua(
+            r#"
+            bearcad.circle{ x = 0, y = 0, r = 4 }
+            bearcad.edit_circle{ index = 0, radius = 10 }
+            local c = bearcad.get{ kind = "circle", index = 0 }
+            assert(math.abs(c.r - 10) < 1e-3, "radius stayed " .. tostring(c.r))
+            assert(math.abs(c.diameter - 20) < 1e-3, "diameter stayed " .. tostring(c.diameter))
+        "#,
+        );
+        assert!((state.doc.circles[rkey(0)].r - 10.0).abs() < 1e-3);
+        assert!((state.doc.circles[rkey(0)].diameter() - 20.0).abs() < 1e-3);
+    }
+
     /// #114: `extrude{ to = { vertex = ... } }` snaps the new extrusion to another
     /// body's surface, and the snap is parametric — resizing the target body moves the
     /// snapped extrusion with it. A plain `edit_extrusion` distance clears the target.
@@ -21328,6 +21788,63 @@ pub mod tests {
         );
     }
 
+    /// #1875: `edit_revolve` re-points a committed revolution in place (angle, no new op).
+    #[test]
+    fn lua_edit_revolve_changes_angle_in_place() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 10, y = 0, width = 10, height = 10 }
+            bearcad.exit_sketch()
+            bearcad.revolve{ polygon = {0,1,2,3}, axis = "y", name = "Ring" }
+            local n = bearcad.count("revolution")
+            local bodies = bearcad.count("body")
+            bearcad.edit_revolve{ index = 0, angle = 180 }
+            assert(bearcad.count("revolution") == n)
+            assert(bearcad.count("body") == bodies)
+            local r = bearcad.get{ kind = "revolution", index = 0 }
+            assert(math.abs(r.angle - 180) < 1e-3, "angle stayed " .. tostring(r.angle))
+        "#,
+        );
+        assert_eq!(state.doc.revolutions.len(), 1);
+        let rev = state.doc.revolutions.keys().next().expect("the revolve");
+        assert!((state.doc.revolutions[rev].angle_deg - 180.0).abs() < 1e-3);
+        assert_eq!(state.doc.bodies.len(), 1);
+        let vol = crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.keys().next().unwrap())
+            .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
+            .unwrap_or(0.0);
+        let expected = std::f32::consts::PI * (400.0 - 100.0) * 10.0 * 0.5;
+        assert!(
+            (vol - expected).abs() < expected * 0.05,
+            "half-turn ring ~{expected}, got {vol}"
+        );
+    }
+
+    /// #1875: `edit_sweep` re-points a committed sweep (shorter path, same op).
+    #[test]
+    fn lua_edit_sweep_changes_path_in_place() {
+        let state = run_lua(
+            r#"
+            bearcad.circle{ x = 0, y = 0, r = 5 }
+            bearcad.exit_sketch()
+            bearcad.plane{ origin = { 0, 0, 0 }, normal = { 0, 1, 0 } }
+            bearcad.begin_sketch{ kind = "plane", index = 3 }
+            bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 20 }
+            bearcad.line{ x = 0, y = 20, x1 = 25, y1 = 20 }
+            bearcad.exit_sketch()
+            bearcad.sweep{ circle = 0, path = { 0, 1 }, name = "Tube" }
+            local n = bearcad.count("sweep")
+            bearcad.edit_sweep{ index = 0, path = { 0 } }
+            assert(bearcad.count("sweep") == n)
+            local s = bearcad.get{ kind = "sweep", index = 0 }
+            assert(s.path == 1, "path should be one segment, got " .. tostring(s.path))
+        "#,
+        );
+        assert_eq!(state.doc.sweeps.len(), 1);
+        let sweep = state.doc.sweeps.keys().next().expect("the sweep");
+        assert_eq!(state.doc.sweeps[sweep].path.len(), 1);
+        assert_eq!(state.doc.bodies.len(), 1);
+    }
+
     /// Combine tool scripting: `bearcad.combine{}` cuts one body out of another, shadows
     /// #130: a bare body face is push/pulled declaratively with `bearcad.extrude_face{}`,
     /// no simulated viewport click — the scripting path the user asked for.
@@ -21390,6 +21907,27 @@ pub mod tests {
         assert!(state.doc.bodies.values().nth(0).unwrap().shadow);
         assert!(state.doc.bodies.values().nth(1).unwrap().shadow);
         assert!(!op.outputs.is_empty());
+    }
+
+    /// #1875: the combine editor is `edit_combine` (not `edit_boolean`).
+    #[test]
+    fn lua_edit_combine_repoints_the_op() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.cuboid{ width = 10, depth = 10, height = 10, at = {5, 0, 0} }
+            bearcad.combine{ op = "cut", a = {0}, b = {1} }
+            assert(bearcad.edit_boolean == nil, "edit_boolean was renamed")
+            bearcad.edit_combine{ index = 0, op = "union", a = {0}, b = {1} }
+            local c = bearcad.get{ kind = "combine", index = 0 }
+            assert(c.op == "union", "kind stayed " .. tostring(c.op))
+        "#,
+        );
+        assert_eq!(state.doc.boolean_ops.len(), 1);
+        assert_eq!(
+            state.doc.boolean_ops.values().nth(0).unwrap().kind,
+            crate::model::BooleanOpKind::Combine
+        );
     }
 
     /// Slice tool scripting: `bearcad.slice{}` cuts a box with an offset plane into two
@@ -21719,6 +22257,36 @@ pub mod tests {
             assert(tostring(err):find("two sections"), tostring(err))
         "#,
         );
+    }
+
+    /// #1875: `edit_loft` re-points a committed loft (same op, extra section).
+    #[test]
+    fn lua_edit_loft_changes_sections_in_place() {
+        let state = run_lua(
+            r#"
+            bearcad.circle{ r = 5 }
+            bearcad.plane{ offset = 10 }
+            bearcad.begin_sketch{ kind = "plane", index = 1 }
+            bearcad.circle{ r = 2 }
+            bearcad.exit_sketch()
+            bearcad.loft{ circles = {0, 1}, name = "Horn" }
+            bearcad.plane{ offset = 20 }
+            bearcad.begin_sketch{ kind = "plane", index = 2 }
+            bearcad.circle{ r = 4 }
+            bearcad.exit_sketch()
+            local n = bearcad.count("loft")
+            local bodies = bearcad.count("body")
+            bearcad.edit_loft{ index = 0, circles = {0, 1, 2} }
+            assert(bearcad.count("loft") == n)
+            assert(bearcad.count("body") == bodies)
+            local l = bearcad.get{ kind = "loft", index = 0 }
+            assert(l.sections == 3, "sections stayed " .. tostring(l.sections))
+        "#,
+        );
+        assert_eq!(state.doc.lofts.len(), 1);
+        let loft = state.doc.lofts.keys().next().expect("the loft");
+        assert_eq!(state.doc.lofts[loft].sections.len(), 3);
+        assert_eq!(state.doc.bodies.len(), 1);
     }
 
     /// #180: `bearcad.drawing{}` creates a technical drawing (opening its pane) and

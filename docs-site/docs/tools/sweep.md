@@ -56,4 +56,4 @@ bearcad.sweep{
 }
 ```
 
-Interactive sweeps replay to the command log as the same call.
+`bearcad.edit_sweep{ index, … }` re-points one. Interactive sweeps replay to the command log as the same call.

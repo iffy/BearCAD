@@ -105,7 +105,7 @@ bearcad.add_parameter("w", "24")
 bearcad.rect{ width = "w", height = "w / 3" }
 bearcad.circle{ x = 40, y = 0, diameter = "w" }        -- `r`/`radius` take expressions too
 bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = "w / 2" }
-bearcad.edit_extrusion{ extrusion = 0, distance = "w" }
+bearcad.edit_extrusion{ index = 0, distance = "w" }
 bearcad.set_parameter("w", "30")                       -- everything above re-sizes
 ```
 

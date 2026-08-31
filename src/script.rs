@@ -239,6 +239,12 @@ pub enum Instruction {
         r: f32,
         diameter_expr: Option<String>,
     },
+    /// Change a committed circle's radius (`bearcad.edit_circle{ index, r|radius|diameter }`, #1875).
+    EditCircle {
+        circle: usize,
+        r: f32,
+        diameter_expr: Option<String>,
+    },
     /// Place a text element in the active sketch (#282/#286): glyph outlines baked from a
     /// system font, the same as the Text tool. `size` is an expression (parameters work).
     CreateSketchText {
@@ -305,6 +311,13 @@ pub enum Instruction {
         faces: Vec<crate::model::ExtrudeFace>,
         body: crate::actions::RevolveBodyChoice,
         bodies: Vec<usize>,
+    },
+    /// Re-point an existing loft (#1875). `None` fields keep the committed values.
+    EditLoft {
+        op: usize,
+        faces: Option<Vec<crate::model::ExtrudeFace>>,
+        body: Option<crate::actions::RevolveBodyChoice>,
+        bodies: Option<Vec<usize>>,
     },
     /// Create a technical drawing (#180), optionally named.
     CreateDrawing { name: Option<String> },
@@ -579,6 +592,28 @@ pub enum Instruction {
         path: Vec<crate::model::LineKey>,
         body: crate::actions::RevolveBodyChoice,
         bodies: Vec<usize>,
+    },
+    /// Re-point an existing revolution (#1875). `None` fields keep the committed values.
+    EditRevolve {
+        op: usize,
+        faces: Option<Vec<crate::model::ExtrudeFace>>,
+        axis: Option<crate::model::RevolveAxis>,
+        angle_deg: Option<f32>,
+        angle_expression: Option<String>,
+        angle_is_revolutions: Option<bool>,
+        pitch_mm: Option<f32>,
+        pitch_expression: Option<String>,
+        symmetric: Option<bool>,
+        body: Option<crate::actions::RevolveBodyChoice>,
+        bodies: Option<Vec<usize>>,
+    },
+    /// Re-point an existing sweep (#1875). `None` fields keep the committed values.
+    EditSweep {
+        op: usize,
+        faces: Option<Vec<crate::model::ExtrudeFace>>,
+        path: Option<Vec<crate::model::LineKey>>,
+        body: Option<crate::actions::RevolveBodyChoice>,
+        bodies: Option<Vec<usize>>,
     },
     /// Boolean operation between whole bodies (the Combine tool).
     CreateBooleanOp {
@@ -969,6 +1004,14 @@ pub enum Instruction {
         amount: f32,
         expression: String,
     },
+    /// Re-point an existing 3D fillet/chamfer (#1875). `None` fields keep the committed values.
+    EditEdgeTreatment {
+        op: usize,
+        edges: Option<Vec<(TreatableSolidRef, crate::model::ExtrusionEdgeRef)>>,
+        kind: VertexTreatmentKind,
+        amount: Option<f32>,
+        expression: Option<String>,
+    },
     SetLineLength { value: String },
     SetCircleDiameter { value: String },
     BeginEditConstructionPlane { index: usize },
@@ -1337,6 +1380,10 @@ impl Instruction {
                 Some(e) => format!("bearcad.circle{{ x = {cx}, y = {cy}, diameter = {e:?} }}"),
                 None => format!("bearcad.circle{{ x = {cx}, y = {cy}, r = {r} }}"),
             },
+            Instruction::EditCircle { circle, r, diameter_expr } => match diameter_expr {
+                Some(e) => format!("bearcad.edit_circle{{ index = {circle}, diameter = {e:?} }}"),
+                None => format!("bearcad.edit_circle{{ index = {circle}, r = {r} }}"),
+            },
             Instruction::CreateSketchText {
                 text,
                 font,
@@ -1507,6 +1554,62 @@ impl Instruction {
                     }
                 }
                 format!("bearcad.loft{{ {} }}", parts.join(", "))
+            }
+            Instruction::EditLoft { op, faces, body, bodies } => {
+                let mut parts = vec![format!("index = {op}")];
+                if let Some(faces) = faces {
+                    use crate::model::ExtrudeFace;
+                    let index_list = |indices: &[usize]| -> String {
+                        indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                    };
+                    let line_list = |lines: &[crate::model::LineKey]| -> String {
+                        lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ")
+                    };
+                    let mut circles = Vec::new();
+                    let mut polygons = Vec::new();
+                    for face in faces {
+                        match face {
+                            ExtrudeFace::Circle(i) => circles.push(circle_ord(doc, *i)),
+                            ExtrudeFace::Polygon(lines) => polygons.push(lines),
+                            ExtrudeFace::Boolean { .. }
+                            | ExtrudeFace::TextGlyph { .. }
+                            | ExtrudeFace::SketchRegion { .. } => {}
+                        }
+                    }
+                    if !circles.is_empty() {
+                        parts.push(format!("circles = {{{}}}", index_list(&circles)));
+                    }
+                    if !polygons.is_empty() {
+                        parts.push(format!(
+                            "polygons = {{{}}}",
+                            polygons
+                                .iter()
+                                .map(|lines| format!("{{{}}}", line_list(lines)))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                }
+                if let Some(body) = body {
+                    match body {
+                        crate::actions::RevolveBodyChoice::NewBody => {}
+                        crate::actions::RevolveBodyChoice::AddTouching => {
+                            parts.push("body = \"add\"".to_string());
+                        }
+                        crate::actions::RevolveBodyChoice::Cut => {
+                            parts.push("body = \"cut\"".to_string());
+                        }
+                    }
+                }
+                if let Some(bodies) = bodies {
+                    if !bodies.is_empty() {
+                        parts.push(format!(
+                            "bodies = {{{}}}",
+                            bodies.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                        ));
+                    }
+                }
+                format!("bearcad.edit_loft{{ {} }}", parts.join(", "))
             }
             Instruction::SetDrawingPage { drawing, width_mm, height_mm, margin_mm } => {
                 let field = |name: &str, v: &Option<f32>| {
@@ -1913,6 +2016,91 @@ impl Instruction {
                 }
                 format!("bearcad.revolve{{ {} }}", parts.join(", "))
             }
+            Instruction::EditRevolve {
+                op,
+                faces,
+                axis,
+                angle_deg,
+                angle_expression,
+                angle_is_revolutions,
+                pitch_mm,
+                pitch_expression,
+                symmetric,
+                body,
+                bodies,
+            } => {
+                use crate::model::ExtrudeFace;
+                let mut parts = vec![format!("index = {op}")];
+                if let Some(faces) = faces {
+                    let index_list = |indices: &[usize]| -> String {
+                        indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                    };
+                    let line_list = |lines: &[crate::model::LineKey]| -> String {
+                        lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ")
+                    };
+                    let circles: Vec<usize> = faces
+                        .iter()
+                        .filter_map(|f| match f {
+                            ExtrudeFace::Circle(i) => Some(circle_ord(doc, *i)),
+                            _ => None,
+                        })
+                        .collect();
+                    if !circles.is_empty() {
+                        parts.push(format!("circles = {{{}}}", index_list(&circles)));
+                    }
+                    for f in faces {
+                        if let ExtrudeFace::Polygon(lines) = f {
+                            parts.push(format!("polygon = {{{}}}", line_list(lines)));
+                        }
+                    }
+                }
+                if let Some(axis) = axis {
+                    parts.push(format!("axis = {}", revolve_axis_lua(*axis)));
+                }
+                if let Some(expr) = angle_expression {
+                    if !expr.trim().is_empty() {
+                        if angle_is_revolutions.unwrap_or(false) {
+                            parts.push(format!("revolutions = {:?}", expr));
+                        } else {
+                            parts.push(format!("angle = {:?}", expr));
+                        }
+                    }
+                } else if let Some(angle_deg) = angle_deg {
+                    parts.push(format!("angle = {angle_deg}"));
+                }
+                if let Some(expr) = pitch_expression {
+                    if !expr.trim().is_empty() {
+                        parts.push(format!("pitch = {:?}", expr));
+                    }
+                } else if let Some(pitch_mm) = pitch_mm {
+                    if pitch_mm.abs() > 1e-9 {
+                        parts.push(format!("pitch = {pitch_mm}"));
+                    }
+                }
+                if symmetric.unwrap_or(false) {
+                    parts.push("symmetric = true".to_string());
+                }
+                if let Some(body) = body {
+                    match body {
+                        crate::actions::RevolveBodyChoice::NewBody => {}
+                        crate::actions::RevolveBodyChoice::AddTouching => {
+                            parts.push("body = \"add\"".to_string());
+                        }
+                        crate::actions::RevolveBodyChoice::Cut => {
+                            parts.push("body = \"cut\"".to_string());
+                        }
+                    }
+                }
+                if let Some(bodies) = bodies {
+                    if !bodies.is_empty() {
+                        parts.push(format!(
+                            "bodies = {{{}}}",
+                            bodies.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                        ));
+                    }
+                }
+                format!("bearcad.edit_revolve{{ {} }}", parts.join(", "))
+            }
             Instruction::Sweep { faces, path, body, bodies } => {
                 use crate::model::ExtrudeFace;
                 let index_list = |indices: &[usize]| -> String {
@@ -1954,6 +2142,53 @@ impl Instruction {
                 }
                 format!("bearcad.sweep{{ {} }}", parts.join(", "))
             }
+            Instruction::EditSweep { op, faces, path, body, bodies } => {
+                use crate::model::ExtrudeFace;
+                let mut parts = vec![format!("index = {op}")];
+                let index_list = |indices: &[usize]| -> String {
+                    indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                };
+                let line_list = |lines: &[crate::model::LineKey]| -> String {
+                    lines.iter().map(|i| line_ord(doc, *i).to_string()).collect::<Vec<_>>().join(", ")
+                };
+                if let Some(faces) = faces {
+                    let circles: Vec<usize> = faces
+                        .iter()
+                        .filter_map(|f| match f {
+                            ExtrudeFace::Circle(i) => Some(circle_ord(doc, *i)),
+                            _ => None,
+                        })
+                        .collect();
+                    if !circles.is_empty() {
+                        parts.push(format!("circles = {{{}}}", index_list(&circles)));
+                    }
+                    for f in faces {
+                        if let ExtrudeFace::Polygon(lines) = f {
+                            parts.push(format!("polygon = {{{}}}", line_list(lines)));
+                        }
+                    }
+                }
+                if let Some(path) = path {
+                    parts.push(format!("path = {{{}}}", line_list(path)));
+                }
+                if let Some(body) = body {
+                    match body {
+                        crate::actions::RevolveBodyChoice::NewBody => {}
+                        crate::actions::RevolveBodyChoice::AddTouching => {
+                            parts.push("body = \"add\"".to_string());
+                        }
+                        crate::actions::RevolveBodyChoice::Cut => {
+                            parts.push("body = \"cut\"".to_string());
+                        }
+                    }
+                }
+                if let Some(bodies) = bodies {
+                    if !bodies.is_empty() {
+                        parts.push(format!("bodies = {{{}}}", index_list(bodies)));
+                    }
+                }
+                format!("bearcad.edit_sweep{{ {} }}", parts.join(", "))
+            }
             Instruction::CreateBooleanOp { kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.combine", None, *kind, a, b, *keep_b)
             }
@@ -1961,7 +2196,7 @@ impl Instruction {
                 boolean_op_lua("bearcad.begin_combine", None, *kind, a, b, *keep_b)
             }
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
-                boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
+                boolean_op_lua("bearcad.edit_combine", Some(*op), *kind, a, b, *keep_b)
             }
             Instruction::BakeBooleanOp { op } => format!("bearcad.bake({op})"),
             Instruction::CreateMoveOp { targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
@@ -2335,6 +2570,48 @@ impl Instruction {
                         format!("bearcad.{fname}{{ edges = {{ {list} }}, {amount_key} = {amount_lua} }}")
                     }
                 }
+            }
+            Instruction::EditEdgeTreatment { op, edges, kind, amount, expression } => {
+                let (fname, amount_key) = match kind {
+                    VertexTreatmentKind::Chamfer => ("edit_chamfer", "distance"),
+                    VertexTreatmentKind::Fillet => ("edit_fillet", "radius"),
+                };
+                let mut parts = vec![format!("index = {op}")];
+                if let Some(edges) = edges {
+                    let host_lua = |host: TreatableSolidRef| match host {
+                        TreatableSolidRef::Extrusion(i) => format!("extrusion = {i}"),
+                        TreatableSolidRef::Primitive(i) => format!("primitive = {i}"),
+                    };
+                    match edges.as_slice() {
+                        [(host, edge)] => {
+                            parts.push(host_lua(*host));
+                            parts.push(format!("edge = {}", extrusion_edge_lua_ref(*edge)));
+                        }
+                        many => {
+                            let list = many
+                                .iter()
+                                .map(|(host, edge)| {
+                                    let e = extrusion_edge_lua_ref(*edge);
+                                    format!("{{ {}, edge = {e} }}", host_lua(*host))
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            parts.push(format!("edges = {{ {list} }}"));
+                        }
+                    }
+                }
+                if let Some(expr) = expression {
+                    if !expr.trim().is_empty() && expr.trim().parse::<f32>().is_err() {
+                        parts.push(format!("{amount_key} = {expr:?}"));
+                    } else if let Some(amount) = amount {
+                        parts.push(format!("{amount_key} = {amount}"));
+                    } else if !expr.trim().is_empty() {
+                        parts.push(format!("{amount_key} = {expr}"));
+                    }
+                } else if let Some(amount) = amount {
+                    parts.push(format!("{amount_key} = {amount}"));
+                }
+                format!("bearcad.{fname}{{ {} }}", parts.join(", "))
             }
             Instruction::SetLineLength { value } => {
                 format!("bearcad.set_dim(\"length\", {value:?})")
@@ -3242,6 +3519,83 @@ fn extrusion_key(
     ordinal: usize,
 ) -> Option<crate::model::ExtrusionKey> {
     doc.extrusions.keys().nth(ordinal)
+}
+
+fn circle_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::CircleKey> {
+    doc.circles.keys().nth(ordinal)
+}
+
+fn revolution_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::RevolutionKey> {
+    doc.revolutions.keys().nth(ordinal)
+}
+
+fn sweep_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::SweepKey> {
+    doc.sweeps.keys().nth(ordinal)
+}
+
+fn loft_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::LoftKey> {
+    doc.lofts.keys().nth(ordinal)
+}
+
+fn edge_treatment_op_key(
+    doc: &crate::model::Document,
+    ordinal: usize,
+) -> Option<crate::model::EdgeTreatmentOpKey> {
+    doc.edge_treatment_ops.keys().nth(ordinal)
+}
+
+fn revolve_mode_choice(
+    mode: &crate::model::RevolveMode,
+) -> (crate::actions::RevolveBodyChoice, Vec<crate::model::BodyKey>) {
+    match mode {
+        crate::model::RevolveMode::NewBody => {
+            (crate::actions::RevolveBodyChoice::NewBody, Vec::new())
+        }
+        crate::model::RevolveMode::AddTo(b) => {
+            (crate::actions::RevolveBodyChoice::AddTouching, b.clone())
+        }
+        crate::model::RevolveMode::Cut(b) => (crate::actions::RevolveBodyChoice::Cut, b.clone()),
+    }
+}
+
+fn sweep_mode_choice(
+    mode: &crate::model::SweepMode,
+) -> (crate::actions::RevolveBodyChoice, Vec<crate::model::BodyKey>) {
+    match mode {
+        crate::model::SweepMode::NewBody => {
+            (crate::actions::RevolveBodyChoice::NewBody, Vec::new())
+        }
+        crate::model::SweepMode::AddTo(b) => {
+            (crate::actions::RevolveBodyChoice::AddTouching, b.clone())
+        }
+        crate::model::SweepMode::Cut(b) => (crate::actions::RevolveBodyChoice::Cut, b.clone()),
+    }
+}
+
+fn loft_mode_choice(
+    mode: &crate::model::LoftMode,
+) -> (crate::actions::RevolveBodyChoice, Vec<crate::model::BodyKey>) {
+    match mode {
+        crate::model::LoftMode::NewBody => {
+            (crate::actions::RevolveBodyChoice::NewBody, Vec::new())
+        }
+        crate::model::LoftMode::AddTo(b) => {
+            (crate::actions::RevolveBodyChoice::AddTouching, b.clone())
+        }
+        crate::model::LoftMode::Cut(b) => (crate::actions::RevolveBodyChoice::Cut, b.clone()),
+    }
 }
 
 fn primitive_ordinal(
@@ -4373,7 +4727,7 @@ pub fn instructions_for_new_edge_treatment_op(
     }]
 }
 
-/// Render a boolean-operation call (`bearcad.combine{}` / `bearcad.edit_boolean{}`).
+/// Render a boolean-operation call (`bearcad.combine{}` / `bearcad.edit_combine{}`).
 fn boolean_op_lua(
     call: &str,
     op: Option<usize>,
@@ -7001,6 +7355,27 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
+            Instruction::EditCircle { circle, r, diameter_expr } => {
+                let r = match &diameter_expr {
+                    Some(_) => {
+                        match eval_scalar_input(&state.doc, r, &diameter_expr, "circle diameter") {
+                            Ok(d) => d * 0.5,
+                            Err(e) => {
+                                self.record_action_error(crate::actions::ActionResult::Err(e));
+                                return StepResult::Continue;
+                            }
+                        }
+                    }
+                    None => r,
+                };
+                let Some(circle) = circle_key(&state.doc, circle) else {
+                    self.last_action_error = Some(format!("No circle {circle}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::EditCircle { circle, r, diameter_expr });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
             Instruction::CreateSketchText {
                 text,
                 font,
@@ -7174,6 +7549,36 @@ impl ScriptRunner {
                     cl.cut_bodies = bodies;
                 }
                 let result = state.apply(Action::CommitLoft);
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditLoft { op, faces, body, bodies } => {
+                let Some(key) = loft_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("No loft {op}"));
+                    return StepResult::Continue;
+                };
+                let existing = state.doc.lofts[key].clone();
+                let faces = faces.unwrap_or_else(|| {
+                    existing.sections.iter().map(|s| s.face.clone()).collect()
+                });
+                let (body, bodies) = match (body, bodies) {
+                    (Some(body), Some(bodies)) => (body, body_keys(&state.doc, &bodies)),
+                    (Some(body), None) => (body, Vec::new()),
+                    (None, Some(bodies)) => {
+                        let (b, _) = loft_mode_choice(&existing.mode);
+                        (b, body_keys(&state.doc, &bodies))
+                    }
+                    (None, None) => {
+                        let (b, keys) = loft_mode_choice(&existing.mode);
+                        (b, keys)
+                    }
+                };
+                let result = state.apply(Action::EditLoft {
+                    op: key,
+                    faces,
+                    body,
+                    bodies,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }
@@ -7947,6 +8352,66 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
+            Instruction::EditRevolve {
+                op,
+                faces,
+                axis,
+                angle_deg,
+                angle_expression,
+                angle_is_revolutions,
+                pitch_mm,
+                pitch_expression,
+                symmetric,
+                body,
+                bodies,
+            } => {
+                let Some(key) = revolution_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("No revolution {op}"));
+                    return StepResult::Continue;
+                };
+                let existing = state.doc.revolutions[key].clone();
+                let faces = faces.unwrap_or_else(|| existing.faces.clone());
+                let Some(sketch) = faces
+                    .first()
+                    .and_then(|f| crate::actions::extrude_face_sketch(&state.doc, f))
+                    .or(Some(existing.sketch))
+                else {
+                    self.record_action_error(crate::actions::ActionResult::Err(
+                        "revolve face does not exist".to_string(),
+                    ));
+                    return StepResult::Continue;
+                };
+                let (body, bodies) = match (body, bodies) {
+                    (Some(body), Some(bodies)) => (body, body_keys(&state.doc, &bodies)),
+                    (Some(body), None) => (body, Vec::new()),
+                    (None, Some(bodies)) => {
+                        let (b, _) = revolve_mode_choice(&existing.mode);
+                        (b, body_keys(&state.doc, &bodies))
+                    }
+                    (None, None) => {
+                        let (b, keys) = revolve_mode_choice(&existing.mode);
+                        (b, keys)
+                    }
+                };
+                let result = state.apply(Action::EditRevolution {
+                    op: key,
+                    sketch,
+                    faces,
+                    axis: axis.unwrap_or(existing.axis),
+                    angle_deg: angle_deg.unwrap_or(existing.angle_deg),
+                    angle_expression: angle_expression.unwrap_or(existing.angle_expression),
+                    angle_is_revolutions: angle_is_revolutions
+                        .unwrap_or(existing.angle_is_revolutions),
+                    pitch_mm: pitch_mm.unwrap_or(existing.pitch_mm),
+                    pitch_expression: pitch_expression.unwrap_or(existing.pitch_expression),
+                    gap_is_offset: existing.gap_is_offset,
+                    symmetric: symmetric.unwrap_or(existing.symmetric),
+                    body,
+                    bodies,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
             Instruction::Sweep { faces, path, body, bodies } => {
                 let Some(sketch) = faces
                     .first()
@@ -7962,6 +8427,46 @@ impl ScriptRunner {
                     sketch,
                     faces,
                     path,
+                    body,
+                    bodies,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditSweep { op, faces, path, body, bodies } => {
+                let Some(key) = sweep_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("No sweep {op}"));
+                    return StepResult::Continue;
+                };
+                let existing = state.doc.sweeps[key].clone();
+                let faces = faces.unwrap_or_else(|| existing.faces.clone());
+                let Some(sketch) = faces
+                    .first()
+                    .and_then(|f| crate::actions::extrude_face_sketch(&state.doc, f))
+                    .or(Some(existing.sketch))
+                else {
+                    self.record_action_error(crate::actions::ActionResult::Err(
+                        "sweep face does not exist".to_string(),
+                    ));
+                    return StepResult::Continue;
+                };
+                let (body, bodies) = match (body, bodies) {
+                    (Some(body), Some(bodies)) => (body, body_keys(&state.doc, &bodies)),
+                    (Some(body), None) => (body, Vec::new()),
+                    (None, Some(bodies)) => {
+                        let (b, _) = sweep_mode_choice(&existing.mode);
+                        (b, body_keys(&state.doc, &bodies))
+                    }
+                    (None, None) => {
+                        let (b, keys) = sweep_mode_choice(&existing.mode);
+                        (b, keys)
+                    }
+                };
+                let result = state.apply(Action::EditSweep {
+                    op: key,
+                    sketch,
+                    faces,
+                    path: path.unwrap_or(existing.path),
                     body,
                     bodies,
                 });
@@ -8003,6 +8508,50 @@ impl ScriptRunner {
                     return StepResult::Continue;
                 };
                 let result = state.apply(Action::CommitEdgeTreatments { edges, kind, amount, expression });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditEdgeTreatment { op, edges, kind, amount, expression } => {
+                let Some(key) = edge_treatment_op_key(&state.doc, op) else {
+                    self.last_action_error = Some(format!("No edge treatment {op}"));
+                    return StepResult::Continue;
+                };
+                let edges = match edges {
+                    None => None,
+                    Some(edges) => {
+                        let Some(edges) = edges
+                            .iter()
+                            .map(|(host, edge)| {
+                                let solid = match host {
+                                    TreatableSolidRef::Extrusion(o) => {
+                                        crate::model::TreatableSolid::Extrusion(extrusion_key(
+                                            &state.doc, *o,
+                                        )?)
+                                    }
+                                    TreatableSolidRef::Primitive(o) => {
+                                        crate::model::TreatableSolid::Primitive(primitive_key(
+                                            &state.doc, *o,
+                                        )?)
+                                    }
+                                };
+                                Some((solid, *edge))
+                            })
+                            .collect::<Option<Vec<_>>>()
+                        else {
+                            self.last_action_error =
+                                Some("No such extrusion or primitive".to_string());
+                            return StepResult::Continue;
+                        };
+                        Some(edges)
+                    }
+                };
+                let result = state.apply(Action::UpdateEdgeTreatmentOp {
+                    op: key,
+                    edges,
+                    kind,
+                    amount,
+                    expression,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }

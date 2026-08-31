@@ -2840,6 +2840,12 @@ pub enum Action {
     CommitCircle,
     SetCircleDiameter { value: String },
     FocusCircleDiameter,
+    /// Change a committed circle's radius (#1875).
+    EditCircle {
+        circle: crate::model::CircleKey,
+        r: f32,
+        diameter_expr: Option<String>,
+    },
     SetDimLabelOffset {
         target: DimLabelTarget,
         offset: f32,
@@ -3229,6 +3235,15 @@ pub enum Action {
     /// kind, and amount into `creating_edge_treatment`, removes the op (releasing its shadow
     /// inputs and outputs) so the gizmo commit rebuilds it, and switches to the matching tool.
     EditEdgeTreatmentOp { op: crate::model::EdgeTreatmentOpKey },
+    /// Re-point a committed fillet/chamfer in place (#1875): amount, edges, or kind,
+    /// without reopening the gizmo.
+    UpdateEdgeTreatmentOp {
+        op: crate::model::EdgeTreatmentOpKey,
+        edges: Option<Vec<(crate::model::TreatableSolid, ExtrusionEdgeRef)>>,
+        kind: VertexTreatmentKind,
+        amount: Option<f32>,
+        expression: Option<String>,
+    },
     /// Create a rectangle directly in the active sketch (face-local mm) with locked dimensions.
     CreateRectangle {
         x: f32,
@@ -3336,6 +3351,13 @@ pub enum Action {
     ToggleLoftSection { section: crate::model::LoftSection },
     /// Finalize the in-progress loft: blend the picked sections into a new body.
     CommitLoft,
+    /// Re-point an existing loft (#1875).
+    EditLoft {
+        op: crate::model::LoftKey,
+        faces: Vec<ExtrudeFace>,
+        body: RevolveBodyChoice,
+        bodies: Vec<crate::model::BodyKey>,
+    },
     /// Create a new technical drawing (#180) and open it in the drawing pane.
     CreateDrawing { name: Option<String> },
     /// Add a cross-section view (#1671): a saved way of looking at the model. It makes no
@@ -3648,6 +3670,22 @@ pub enum Action {
         body: RevolveBodyChoice,
         bodies: Vec<crate::model::BodyKey>,
     },
+    /// Re-point an existing revolution (#1875).
+    EditRevolution {
+        op: crate::model::RevolutionKey,
+        sketch: SketchId,
+        faces: Vec<ExtrudeFace>,
+        axis: crate::model::RevolveAxis,
+        angle_deg: f32,
+        angle_expression: String,
+        angle_is_revolutions: bool,
+        pitch_mm: f32,
+        pitch_expression: String,
+        gap_is_offset: bool,
+        symmetric: bool,
+        body: RevolveBodyChoice,
+        bodies: Vec<crate::model::BodyKey>,
+    },
     /// The Move tool's rotation-candidate spacing in degrees (#917), clamped to 0–90.
     SetMoveAngleSnap(f32),
     /// Choose which shape the Create Shape tool places (#909); repeated presses of the
@@ -3672,6 +3710,15 @@ pub enum Action {
     /// explicit Add/Cut body list; an empty list with `AddTouching` auto-resolves the
     /// touching bodies, like the interactive tool.
     CreateSweep {
+        sketch: SketchId,
+        faces: Vec<ExtrudeFace>,
+        path: Vec<crate::model::LineKey>,
+        body: RevolveBodyChoice,
+        bodies: Vec<crate::model::BodyKey>,
+    },
+    /// Re-point an existing sweep (#1875).
+    EditSweep {
+        op: crate::model::SweepKey,
         sketch: SketchId,
         faces: Vec<ExtrudeFace>,
         path: Vec<crate::model::LineKey>,
@@ -7058,6 +7105,99 @@ impl AppState {
         self.status = match first_error {
             Some(e) => format!("{noun} {} body(ies); skipped some: {e}", targets.len()),
             None => format!("{noun} {} body(ies) ({amount:.1} mm)", targets.len()),
+        };
+        ActionResult::Ok
+    }
+
+    /// Re-point a committed fillet/chamfer (#1875): keep its outputs, change amount/edges.
+    fn update_edge_treatment_op(
+        &mut self,
+        op: crate::model::EdgeTreatmentOpKey,
+        edges: Option<Vec<(crate::model::TreatableSolid, ExtrusionEdgeRef)>>,
+        kind: VertexTreatmentKind,
+        amount: Option<f32>,
+        expression: Option<String>,
+    ) -> ActionResult {
+        let Some(existing) = self.doc.edge_treatment_ops.get(op).cloned() else {
+            return ActionResult::Err("Edge treatment not found".to_string());
+        };
+        if existing.kind != kind {
+            let want = match kind {
+                VertexTreatmentKind::Chamfer => "chamfer",
+                VertexTreatmentKind::Fillet => "fillet",
+            };
+            let have = match existing.kind {
+                VertexTreatmentKind::Chamfer => "chamfer",
+                VertexTreatmentKind::Fillet => "fillet",
+            };
+            let e = format!("edge treatment {op:?} is a {have}, not a {want}");
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        let expression = expression.unwrap_or_else(|| existing.expression.clone());
+        let amount = if !expression.trim().is_empty() {
+            crate::value::eval_length_mm_in_doc(&expression, &self.doc)
+                .unwrap_or_else(|| amount.unwrap_or(existing.amount))
+        } else {
+            amount.unwrap_or(existing.amount)
+        };
+        if !(amount > 0.0) {
+            let e = match kind {
+                VertexTreatmentKind::Chamfer => "Chamfer distance is 0 — nothing changed".to_string(),
+                VertexTreatmentKind::Fillet => "Fillet radius is 0 — nothing changed".to_string(),
+            };
+            self.status = e.clone();
+            return ActionResult::Ok;
+        }
+        let mut candidate = existing.clone();
+        candidate.kind = kind;
+        candidate.amount = amount;
+        candidate.expression = expression;
+        if let Some(edges) = edges {
+            if edges.is_empty() {
+                return ActionResult::Err("No edges to treat".to_string());
+            }
+            let mut treated = Vec::new();
+            for (solid, edge) in edges {
+                let Some(target) = candidate.edges.iter().find(|te| te.solid == solid).map(|te| te.target)
+                    .or_else(|| {
+                        crate::extrude::live_body_for_treatable_solid(&self.doc, solid).and_then(
+                            |body| candidate.targets.iter().position(|&b| b == body),
+                        )
+                    })
+                else {
+                    return ActionResult::Err("No body to treat".to_string());
+                };
+                treated.push(crate::model::TreatedEdge { target, solid, edge });
+            }
+            candidate.edges = treated;
+        }
+        {
+            let mut trial = self.doc.clone();
+            trial.edge_treatment_ops[op] = candidate.clone();
+            for (t, &out) in candidate.outputs.iter().enumerate() {
+                let input = candidate.targets.get(t).copied();
+                if input.is_some_and(|i| crate::extrude::occt_body_shape(&self.doc, i).is_some())
+                    && crate::extrude::occt_body_shape(&trial, out).is_none()
+                {
+                    let (noun, param) = match kind {
+                        VertexTreatmentKind::Chamfer => ("chamfer", "distance"),
+                        VertexTreatmentKind::Fillet => ("fillet", "radius"),
+                    };
+                    let e = format!(
+                        "{noun} of {amount:.1} mm doesn't fit (kernel can't build it) — try a \
+                         smaller {param}"
+                    );
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+            }
+        }
+        self.doc.edge_treatment_ops[op] = candidate;
+        self.refresh_document_health();
+        self.status = match kind {
+            VertexTreatmentKind::Chamfer => format!("Edited chamfer ({amount:.1} mm)"),
+            VertexTreatmentKind::Fillet => format!("Edited fillet ({amount:.1} mm)"),
         };
         ActionResult::Ok
     }
@@ -13432,6 +13572,9 @@ impl AppState {
                 self.status = format!("Editing {noun}");
                 ActionResult::Ok
             }
+            Action::UpdateEdgeTreatmentOp { op, edges, kind, amount, expression } => {
+                self.update_edge_treatment_op(op, edges, kind, amount, expression)
+            }
             Action::EditEdgeTreatmentOp { op } => {
                 let Some(operation) = self.doc.edge_treatment_ops.get(op).cloned() else {
                     return ActionResult::Err("Edge treatment not found".to_string());
@@ -13545,6 +13688,50 @@ impl AppState {
                     crate::value::format_diameter_display_in(
                         r * 2.0,
                         crate::model::effective_length_unit(&self.doc, session.sketch)
+                    )
+                );
+                ActionResult::Ok
+            }
+            Action::EditCircle { circle, r, diameter_expr } => {
+                if r <= 0.0 {
+                    return ActionResult::Err("Circle needs a positive radius".to_string());
+                }
+                let Some(existing) = self.doc.circles.get(circle).cloned() else {
+                    return ActionResult::Err(format!("no circle {}", circle.index()));
+                };
+                let expr = diameter_expr.unwrap_or_else(|| (r * 2.0).to_string());
+                if let Some(id) = crate::constraints::find_distance_constraint(
+                    &self.doc,
+                    crate::model::DistanceTarget::CircleDiameter(circle),
+                ) {
+                    if let Err(e) = crate::constraints::set_constraint_expression(
+                        &mut self.doc,
+                        id,
+                        expr.clone(),
+                    ) {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                } else if let Err(e) = add_distance_constraint(
+                    &mut self.doc,
+                    existing.sketch,
+                    crate::model::DistanceTarget::CircleDiameter(circle),
+                    expr.clone(),
+                ) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if let Some(c) = self.doc.circles.get_mut(circle) {
+                    c.r = r;
+                    c.diameter_locked = true;
+                    c.diameter_expr = Some(expr);
+                }
+                self.refresh_document_health();
+                self.status = format!(
+                    "Edited circle ({})",
+                    crate::value::format_diameter_display_in(
+                        r * 2.0,
+                        crate::model::effective_length_unit(&self.doc, existing.sketch)
                     )
                 );
                 ActionResult::Ok
@@ -14345,6 +14532,24 @@ impl AppState {
                 };
                 self.refresh_document_health();
                 ActionResult::Ok
+            }
+            Action::EditLoft { op, faces, body, bodies } => {
+                let mut sections = Vec::new();
+                for face in faces {
+                    let Some(sketch) = extrude_face_sketch(&self.doc, &face) else {
+                        let e = "loft section face does not exist".to_string();
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    };
+                    sections.push(crate::model::LoftSection { sketch, face });
+                }
+                self.creating_loft = Some(CreatingLoft {
+                    sections,
+                    body_choice: body,
+                    cut_bodies: bodies,
+                    editing: Some(op),
+                });
+                self.apply(Action::CommitLoft)
             }
             Action::CreateDrawing { name } => {
                 let mut drawing = crate::model::Drawing {
@@ -17694,6 +17899,17 @@ op,
                     };
                 self.create_sweep(sketch, faces, path, mode)
             }
+            Action::EditSweep { op, sketch, faces, path, body, bodies } => {
+                let mode =
+                    match self.resolve_sweep_mode(sketch, &faces, &path, body, &bodies) {
+                        Ok(mode) => mode,
+                        Err(e) => {
+                            self.status = e.clone();
+                            return ActionResult::Err(e);
+                        }
+                    };
+                self.edit_sweep(op, sketch, faces, path, mode)
+            }
             Action::SetMoveAngleSnap(degrees) => {
                 self.move_angle_snap_deg = degrees.clamp(0.0, MAX_ANGLE_SNAP_DEG);
                 ActionResult::Ok
@@ -17775,6 +17991,45 @@ op,
                     }
                 };
                 self.create_revolution(
+                    sketch,
+                    faces,
+                    axis,
+                    angle_deg,
+                    angle_expression,
+                    angle_is_revolutions,
+                    pitch_mm,
+                    pitch_expression,
+                    gap_is_offset,
+                    symmetric,
+                    mode,
+                )
+            }
+            Action::EditRevolution {
+                op,
+                sketch,
+                faces,
+                axis,
+                angle_deg,
+                angle_expression,
+                angle_is_revolutions,
+                pitch_mm,
+                pitch_expression,
+                gap_is_offset,
+                symmetric,
+                body,
+                bodies,
+            } => {
+                let mode = match self.resolve_revolve_mode(
+                    sketch, &faces, axis, angle_deg, symmetric, body, &bodies,
+                ) {
+                    Ok(mode) => mode,
+                    Err(e) => {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                };
+                self.edit_revolution(
+                    op,
                     sketch,
                     faces,
                     axis,

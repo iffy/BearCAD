@@ -671,10 +671,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     `{boolean={..}}`) or, for a 3D body's cap/side wall (#126) — including another body
     entirely, not just the extrusion's own sketch — the same `{kind = "extrude_cap" |
     "extrude_side", extrusion, profile, top?/edge?}` shape `begin_sketch` uses.
-    **Semantic push/pull (#114):** `bearcad.edit_extrusion{ extrusion, distance?,
+    **Semantic push/pull (#114):** `bearcad.edit_extrusion{ index|extrusion, distance?,
     by?, to? }` edits a committed extrusion like dragging its gizmo — `by` nudges from the
     current effective depth, `distance` sets an absolute depth (clearing any snap target),
-    `to` (re)snaps.
+    `to` (re)snaps. `index` is an alias of `extrusion`.
   - Implemented: the data model (Extrusion + Body) with `.bearcad` persistence; mesh generation;
     both hierarchy elements; depth-tested flat-shaded rendering; and the interactive **Extrude
     tool** (`E`): click coplanar faces to toggle inclusion (hover-highlighted), drag the normal
@@ -971,7 +971,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     pick rather than once per frame.
   - Scripting: `bearcad.combine{ op = "union"|"cut"|"intersect"|"xor", a = {…},
     b = {…}, keep_b?, name? }` (`difference` means cut, same as 2D) and
-    `bearcad.edit_boolean{ index, … }`;
+    `bearcad.edit_combine{ index, … }`;
     session-command export replays both. `bearcad.begin_combine{ op, a, b, keep_b? }` arms
     the tool with
     picked sides **without** committing, so a script can drive the result preview — the
