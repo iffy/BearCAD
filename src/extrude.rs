@@ -6683,6 +6683,7 @@ pub fn selection_world_bounds(
             SceneElement::Sketch(_)
             | SceneElement::ConstructionPlane(_)
             | SceneElement::Constraint(_)
+            | SceneElement::Parameter(_)
             | SceneElement::FaceEdge(_)
             | SceneElement::Origin
             | SceneElement::GlobalAxis(_)

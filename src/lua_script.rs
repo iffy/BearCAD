@@ -23,7 +23,7 @@ use eframe::egui;
 /// (which compiles `script_json` but not this module) can read them too.
 pub use crate::script::{count_kind, INSPECT_KINDS};
 
-use mlua::{Lua, MultiValue, Table, UserData, UserDataMethods, Value};
+use mlua::{FromLua, IntoLua, Lua, MultiValue, Table, UserData, UserDataMethods, Value};
 use std::path::Path;
 
 /// Per-tick context passed to Lua callbacks via `Lua::set_app_data`.
@@ -93,10 +93,12 @@ impl ScriptTickData {
 const CREATED_TIERS: &[&[&str]] = &[
     &["body"],
     &["shape"],
+    &["edge_treatment_op", "sketch_vertex_treatment_op"],
     &["line", "circle", "sketch_text"],
     &["plane"],
     &["sketch"],
     &["drawing", "cross_section", "component", "joint", "image"],
+    &["constraint", "parameter"],
 ];
 
 /// What a script gets back from a call: the elements it created, or nothing.
@@ -342,6 +344,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Line(_) => "line",
         SceneElement::Circle(_) => "circle",
         SceneElement::Constraint(_) => "constraint",
+        SceneElement::Parameter(_) => "parameter",
         SceneElement::Point(_) => "point",
         SceneElement::Extrusion(_) => "extrusion",
         SceneElement::Body(_) => "body",
@@ -462,6 +465,9 @@ fn element_index(doc: &crate::model::Document, element: SceneElement) -> usize {
         SceneElement::Constraint(key) => {
             doc.constraints.keys().position(|k| k == key).unwrap_or(0)
         }
+        SceneElement::Parameter(key) => {
+            doc.parameters.keys().position(|k| k == key).unwrap_or(0)
+        }
         SceneElement::SketchText(key) => {
             doc.sketch_texts.keys().position(|k| k == key).unwrap_or(0)
         }
@@ -532,6 +538,7 @@ pub fn scene_element_from_kind(
         "line" => Some(SceneElement::Line(doc.lines.keys().nth(index)?)),
         "circle" => Some(SceneElement::Circle(doc.circles.keys().nth(index)?)),
         "constraint" => Some(SceneElement::Constraint(doc.constraints.keys().nth(index)?)),
+        "parameter" => Some(SceneElement::Parameter(doc.parameters.keys().nth(index)?)),
         "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
         "boolean_op" | "boolean" => {
@@ -622,6 +629,8 @@ fn elements_of_kind(doc: &crate::model::Document, kind: &str) -> Vec<SceneElemen
             all!(doc.construction_planes, SceneElement::ConstructionPlane)
         }
         "sketch" => all!(doc.sketches, SceneElement::Sketch),
+        "constraint" => all!(doc.constraints, SceneElement::Constraint),
+        "parameter" => all!(doc.parameters, SceneElement::Parameter),
         "drawing" => all!(doc.drawings, SceneElement::Drawing),
         "cross_section" | "section" => all!(doc.cross_sections, SceneElement::CrossSection),
         "component" => all!(doc.components, SceneElement::Component),
@@ -821,6 +830,40 @@ fn click_mods(opts: Option<Table>) -> mlua::Result<crate::script::ClickMods> {
         }),
         None => Ok(crate::script::ClickMods::default()),
     }
+}
+
+/// The optional body operand of `export_stl`/`export_step`/`export_3mf` (#1863): a handle,
+/// id, name, or ordinal, serialized so the action can look the body up at execute time.
+fn optional_export_body(lua: &Lua, body: Option<Value>) -> mlua::Result<Option<String>> {
+    let Some(value) = body else {
+        return Ok(None);
+    };
+    match value {
+        Value::Nil => Ok(None),
+        Value::String(s) => Ok(Some(s.to_str()?.to_string())),
+        Value::Integer(i) if i >= 0 => Ok(Some(i.to_string())),
+        Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => Ok(Some((n as i64).to_string())),
+        other => {
+            let element = resolve_element(lua, other)?;
+            match element {
+                SceneElement::Body(_) => crate::hierarchy::element_id(&element).ok_or_else(|| {
+                    mlua::Error::external("export expects a body")
+                }).map(Some),
+                other => Err(mlua::Error::external(format!(
+                    "export expects a body, got {}",
+                    element_kind_name(other)
+                ))),
+            }
+        }
+    }
+}
+
+/// An index operand that also takes a handle, id, or name (#1864).
+fn lua_index_arg(lua: &Lua, value: Option<&Value>, what: &str) -> mlua::Result<usize> {
+    let Some(value) = value else {
+        return Err(mlua::Error::external(format!("{what} requires index")));
+    };
+    Ordinal::from_lua(value.clone(), lua).map(|o| o.0)
 }
 
 fn resolve_element(lua: &Lua, value: Value) -> mlua::Result<SceneElement> {
@@ -3130,24 +3173,27 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "export_stl",
-        lua.create_function(|lua, (path, body): (String, Option<String>)| {
+        lua.create_function(|lua, (path, body): (String, Option<Value>)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let body = optional_export_body(lua, body)?;
             unsafe { tick.exec(Instruction::ExportStl { path, body }) }
         })?,
     )?;
 
     api.set(
         "export_3mf",
-        lua.create_function(|lua, (path, body): (String, Option<String>)| {
+        lua.create_function(|lua, (path, body): (String, Option<Value>)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let body = optional_export_body(lua, body)?;
             unsafe { tick.exec(Instruction::Export3mf { path, body }) }
         })?,
     )?;
 
     api.set(
         "export_step",
-        lua.create_function(|lua, (path, body): (String, Option<String>)| {
+        lua.create_function(|lua, (path, body): (String, Option<Value>)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let body = optional_export_body(lua, body)?;
             unsafe { tick.exec(Instruction::ExportStep { path, body }) }
         })?,
     )?;
@@ -3711,7 +3757,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // Components (#423): `bearcad.component{ name = "Frame", parent = 0 }` creates one and
-    // returns its index; `bearcad.move_to_component{ kind = "body", index = 0,
+    // returns a handle; `bearcad.move_to_component{ kind = "body", index = 0,
     // component = 1 }` files an element into it (`component = false` moves it back out).
     // Derived (measured) parameters (#432/#647): `bearcad.derive_parameter{ kind =
     // "line_length"|"point_distance"|"line_distance"|"line_angle"|"body_edge_length"|
@@ -3816,8 +3862,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 None => (None, None),
             };
-            unsafe { tick.exec(Instruction::CreateComponent { name, parent }) }?;
-            Ok(unsafe { tick.state().doc.components.len().saturating_sub(1) })
+            unsafe { tick.exec(Instruction::CreateComponent { name, parent }) }
         })?,
     )?;
 
@@ -3834,13 +3879,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 })?;
             let component = match opts.get::<Value>("component")? {
                 Value::Boolean(false) | Value::Nil => None,
-                Value::Integer(i) => Some(i as usize),
-                Value::Number(n) => Some(n as usize),
-                other => {
-                    return Err(mlua::Error::external(format!(
-                        "component must be an index or false, got {other:?}"
-                    )))
-                }
+                other => Some(Ordinal::from_lua(other, lua)?.0),
             };
             unsafe { tick.exec(Instruction::MoveToComponent { element, component }) }
         })?,
@@ -6283,10 +6322,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                             ))
                         }
                     };
-                    unsafe {
-                        tick.exec(Instruction::AddParameter { name, expression })?;
-                    }
-                    Ok(Value::Nil)
+                    let created =
+                        unsafe { tick.exec(Instruction::AddParameter { name, expression }) }?;
+                    created.into_lua(lua)
                 }
                 // Pure reads (#107): `parameter("get", name)` evaluates the named parameter
                 // to its numeric value in the API's units — mm for lengths, degrees for
@@ -6346,11 +6384,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     Ok(Value::Nil)
                 }
                 "value" | "expression" => {
-                    let index = match args.get(1) {
-                        Some(Value::Integer(i)) => *i as usize,
-                        Some(Value::Number(n)) => n.round() as usize,
-                        _ => return Err(mlua::Error::external("parameter value requires index")),
-                    };
+                    let index = lua_index_arg(lua, args.get(1), "parameter value")?;
                     let expression = match args.get(2) {
                         Some(Value::String(s)) => s.to_str()?.to_string(),
                         _ => {
@@ -6365,11 +6399,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     Ok(Value::Nil)
                 }
                 "name" => {
-                    let index = match args.get(1) {
-                        Some(Value::Integer(i)) => *i as usize,
-                        Some(Value::Number(n)) => n.round() as usize,
-                        _ => return Err(mlua::Error::external("parameter name requires index")),
-                    };
+                    let index = lua_index_arg(lua, args.get(1), "parameter name")?;
                     let name = match args.get(2) {
                         Some(Value::String(s)) => s.to_str()?.to_string(),
                         _ => return Err(mlua::Error::external("parameter name requires name")),
@@ -6380,11 +6410,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     Ok(Value::Nil)
                 }
                 "delete" => {
-                    let index = match args.get(1) {
-                        Some(Value::Integer(i)) => *i as usize,
-                        Some(Value::Number(n)) => n.round() as usize,
-                        _ => return Err(mlua::Error::external("parameter delete requires index")),
-                    };
+                    let index = lua_index_arg(lua, args.get(1), "parameter delete")?;
                     unsafe {
                         tick.exec(Instruction::DeleteParameter { index })?;
                     }
@@ -6392,11 +6418,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 // #1180: Private is the inverse of primary (true = secondary/hidden).
                 "private" => {
-                    let index = match args.get(1) {
-                        Some(Value::Integer(i)) => *i as usize,
-                        Some(Value::Number(n)) => n.round() as usize,
-                        _ => return Err(mlua::Error::external("parameter private requires index")),
-                    };
+                    let index = lua_index_arg(lua, args.get(1), "parameter private")?;
                     let private = match args.get(2) {
                         Some(Value::Boolean(b)) => *b,
                         _ => {
@@ -6421,16 +6443,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         "step" => crate::parameters::ParameterBound::Step,
                         _ => unreachable!(),
                     };
-                    let index = match args.get(1) {
-                        Some(Value::Integer(i)) => *i as usize,
-                        Some(Value::Number(n)) => n.round() as usize,
-                        _ => {
-                            return Err(mlua::Error::external(format!(
-                                "parameter {} requires index",
-                                which.label()
-                            )))
-                        }
-                    };
+                    let index = lua_index_arg(
+                        lua,
+                        args.get(1),
+                        &format!("parameter {}", which.label()),
+                    )?;
                     let expression = match args.get(2) {
                         Some(Value::String(s)) => {
                             let s = s.to_str()?.to_string();
@@ -9256,7 +9273,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // Technical drawings (#180): `bearcad.drawing{ name? }` creates a drawing (and opens its
-    // pane), returning its index; `bearcad.drawing_view{ drawing, body|bodies|component|sketch,
+    // pane), returning a handle; `bearcad.drawing_view{ drawing, body|bodies|component|sketch,
     // orientation? }` adds a projection. Multi-body and whole-component views are #1190/#1191.
     api.set(
         "drawing",
@@ -9266,14 +9283,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 Some(t) => t.get("name")?,
                 None => None,
             };
-            unsafe {
-                tick.exec(Instruction::CreateDrawing { name })?;
-            }
-            Ok(unsafe { tick.state().doc.drawings.len().saturating_sub(1) })
+            unsafe { tick.exec(Instruction::CreateDrawing { name }) }
         })?,
     )?;
-    // Cross-section views (#1671): `bearcad.cross_section{ name? }` adds one and returns its
-    // index. The planes it cuts with are added with the View workbench's plane tool.
+    // Cross-section views (#1671): `bearcad.cross_section{ name? }` adds one and returns a
+    // handle. The planes it cuts with are added with the View workbench's plane tool.
     api.set(
         "cross_section",
         lua.create_function(|lua, opts: Option<Table>| {
@@ -9285,10 +9299,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 None => None,
             };
-            unsafe {
-                tick.exec(Instruction::CreateCrossSection { name })?;
-            }
-            Ok(unsafe { tick.state().doc.cross_sections.len().saturating_sub(1) })
+            unsafe { tick.exec(Instruction::CreateCrossSection { name }) }
         })?,
     )?;
     // #1687/#1769: a cross-section view's cutting planes. `plane` anchors on a construction
@@ -10545,9 +10556,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     points,
                     kind: VertexTreatmentKind::Chamfer,
                     amount: distance,
-                })?;
+                })
             }
-            Ok(())
         })?,
     )?;
 
@@ -10563,9 +10573,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     points,
                     kind: VertexTreatmentKind::Fillet,
                     amount: radius,
-                })?;
+                })
             }
-            Ok(())
         })?,
     )?;
 
@@ -10591,9 +10600,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     kind: VertexTreatmentKind::Chamfer,
                     amount,
                     expression,
-                })?;
+                })
             }
-            Ok(())
         })?,
     )?;
 
@@ -10614,9 +10622,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     kind: VertexTreatmentKind::Fillet,
                     amount,
                     expression,
-                })?;
+                })
             }
-            Ok(())
         })?,
     )?;
 
@@ -13586,6 +13593,102 @@ pub mod tests {
         assert_eq!(state.doc.bodies.len(), 1);
     }
 
+    /// #1864: drawing, component, and cross_section hand back a handle (not a shifting
+    /// ordinal), so `d:kind()` works and the same handle still names the element after
+    /// another of that kind is inserted.
+    #[test]
+    fn lua_drawing_component_and_cross_section_return_handles() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            local d = bearcad.drawing{ name = "Plan" }
+            assert(d:kind() == "drawing", "drawing returns a handle, got " .. tostring(d))
+            assert(d:index() == 0)
+            assert(d:name() == "Plan")
+            local d2 = bearcad.drawing{}
+            assert(d:index() == 0 and d2:index() == 1, "handles keep their drawings")
+
+            local c = bearcad.component{ name = "Frame" }
+            assert(c:kind() == "component", "component returns a handle, got " .. tostring(c))
+            assert(c:name() == "Frame")
+            bearcad.move_to_component{ kind = "drawing", index = d, component = c }
+
+            local v = bearcad.cross_section{ name = "Front half" }
+            assert(v:kind() == "cross_section", "cross_section returns a handle, got " .. tostring(v))
+            assert(v:name() == "Front half")
+            "#,
+        );
+    }
+
+    /// #1864: fillet/chamfer, geometric constraints, and `parameter("add")` hand back
+    /// what they made, so the new op can be named and selected without hunting `count-1`.
+    #[test]
+    fn lua_fillet_constraint_and_parameter_return_handles() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            local p = bearcad.parameter("add", "w", "24")
+            assert(p:kind() == "parameter", "parameter add returns a handle, got " .. tostring(p))
+            assert(p:name() == "w")
+            assert(p:index() == 0)
+            bearcad.parameter("value", p, "30")
+            assert(bearcad.parameter("get", "w") == 30)
+
+            bearcad.rect{ width = 20, height = 10 }
+            local par = bearcad.add_geometric_constraint("parallel",
+                { kind = "line", index = 0 }, { kind = "line", index = 2 })
+            assert(par:kind() == "constraint", "add_geometric_constraint returns a handle")
+
+            local box = bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8 }
+            local fillet = bearcad.fillet_edge{
+                extrusion = 0,
+                edge = { kind = "vertical", face = 0, edge = 0 },
+                radius = 1,
+            }
+            assert(fillet ~= nil, "fillet_edge returns what it made")
+            assert(fillet:exists(), "fillet_edge handle is live")
+            local chamfer = bearcad.chamfer_edge{
+                extrusion = 0,
+                edge = { kind = "vertical", face = 0, edge = 1 },
+                distance = 1,
+            }
+            assert(chamfer ~= nil and chamfer:exists(), "chamfer_edge returns what it made")
+            "#,
+        );
+
+        let state = run_lua_against_a_right_angle_corner(
+            r#"
+            local f = bearcad.fillet_vertex{
+                point = { kind = "line", index = 0, ["end"] = "end" },
+                radius = 3,
+            }
+            assert(f ~= nil, "fillet_vertex returns what it made")
+            if type(f) == "table" then
+                assert(f[1]:exists(), "fillet_vertex list entries are handles")
+            else
+                assert(f:exists(), "fillet_vertex handle is live")
+            end
+            "#,
+        );
+        assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
+
+        let state = run_lua_against_a_right_angle_corner(
+            r#"
+            local c = bearcad.chamfer_vertex{
+                point = { kind = "line", index = 0, ["end"] = "end" },
+                distance = 3,
+            }
+            assert(c ~= nil, "chamfer_vertex returns what it made")
+            if type(c) == "table" then
+                assert(c[1]:exists(), "chamfer_vertex list entries are handles")
+            else
+                assert(c:exists(), "chamfer_vertex handle is live")
+            end
+            "#,
+        );
+        assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
+    }
+
     /// #1801: an operand that names an element by ordinal takes a handle or an id instead —
     /// so a script can chain operations without tracking which ordinal moved where.
     #[test]
@@ -15613,6 +15716,48 @@ pub mod tests {
             let _ = std::fs::remove_file(p);
             assert!(bytes.len() > 100, "3mf too small: {}", bytes.len());
             assert_eq!(&bytes[0..4], b"PK\x03\x04", "3mf must be a ZIP package");
+        }
+    }
+
+    /// #1863: `export_stl`/`export_step`/`export_3mf` take a handle, id, name, or ordinal
+    /// for the optional body — the same contract as every other element operand.
+    #[test]
+    fn lua_export_body_accepts_handle_id_name_and_ordinal() {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let stl_h = dir.join(format!("bearcad_lua_export_h_{pid}.stl"));
+        let stl_i = dir.join(format!("bearcad_lua_export_i_{pid}.stl"));
+        let stl_n = dir.join(format!("bearcad_lua_export_n_{pid}.stl"));
+        let stl_o = dir.join(format!("bearcad_lua_export_o_{pid}.stl"));
+        let step_h = dir.join(format!("bearcad_lua_export_h_{pid}.step"));
+        let mf_h = dir.join(format!("bearcad_lua_export_h_{pid}.3mf"));
+        for p in [&stl_h, &stl_i, &stl_n, &stl_o, &step_h, &mf_h] {
+            let _ = std::fs::remove_file(p);
+        }
+        let esc = |p: &std::path::Path| p.to_string_lossy().replace('\\', "\\\\");
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            local box = bearcad.cuboid{{ width = 10, depth = 8, height = 6 }}
+            bearcad.set_name(box, "Block")
+            bearcad.export_stl("{stl_h}", box)
+            bearcad.export_stl("{stl_i}", box:id())
+            bearcad.export_stl("{stl_n}", "Block")
+            bearcad.export_stl("{stl_o}", 0)
+            bearcad.export_step("{step_h}", box)
+            bearcad.export_3mf("{mf_h}", box)
+            "#,
+            stl_h = esc(&stl_h),
+            stl_i = esc(&stl_i),
+            stl_n = esc(&stl_n),
+            stl_o = esc(&stl_o),
+            step_h = esc(&step_h),
+            mf_h = esc(&mf_h),
+        ));
+        for p in [&stl_h, &stl_i, &stl_n, &stl_o, &step_h, &mf_h] {
+            let bytes = std::fs::read(p).unwrap_or_else(|_| panic!("exported {}", p.display()));
+            let _ = std::fs::remove_file(p);
+            assert!(bytes.len() > 80, "{} too small: {}", p.display(), bytes.len());
         }
     }
 
@@ -19721,7 +19866,8 @@ pub mod tests {
             bearcad.new()
             assert(bearcad.count("cross_section") == 0, "a new document has no views")
             local i = bearcad.cross_section{ name = "Front half" }
-            assert(i == 0, "the first view is 0, got " .. tostring(i))
+            assert(i:kind() == "cross_section", "cross_section returns a handle, got " .. tostring(i))
+            assert(i:index() == 0, "the first view is 0, got " .. tostring(i:index()))
             assert(bearcad.count("cross_section") == 1)
             local v = bearcad.get{ kind = "cross_section", index = 0 }
             assert(v.name == "Front half", "name read back: " .. tostring(v.name))

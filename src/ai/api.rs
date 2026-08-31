@@ -186,7 +186,7 @@ bearcad.save()                     -- or save("other.bearcad")
 bearcad.undo()
 bearcad.import_step("part.step")
 bearcad.import_stl("part.stl")
-bearcad.export_step("out.step")
+bearcad.export_step("out.step")            -- or (path, body) with a handle/id/name/ordinal
 bearcad.export_stl("out.stl")
 bearcad.export_3mf("out.3mf")
 ```

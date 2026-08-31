@@ -17,6 +17,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::Line(_)
         | SceneElement::Circle(_)
         | SceneElement::Constraint(_)
+        | SceneElement::Parameter(_)
         | SceneElement::Extrusion(_)
         | SceneElement::Body(_)
         | SceneElement::Image(_)
@@ -86,6 +87,7 @@ pub fn nameable_elements(doc: &Document) -> Vec<SceneElement> {
     push!(doc.lines, SceneElement::Line);
     push!(doc.circles, SceneElement::Circle);
     push!(doc.constraints, SceneElement::Constraint);
+    push!(doc.parameters, SceneElement::Parameter);
     push!(doc.extrusions, SceneElement::Extrusion);
     push!(doc.unit_instances, SceneElement::UnitInstance);
     push!(doc.joints, SceneElement::Joint);
@@ -161,6 +163,10 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Line(index) => doc.lines.get(index)?.name.as_deref(),
         SceneElement::Circle(index) => doc.circles.get(index)?.name.as_deref(),
         SceneElement::Constraint(index) => doc.constraints.get(index)?.name.as_deref(),
+        SceneElement::Parameter(index) => {
+            let name = doc.parameters.get(index)?.name.as_str();
+            if name.is_empty() { None } else { Some(name) }
+        }
         // A drawing item's name is the page's own (#967) — a view or a note has no stored
         // name of its own to rename.
         SceneElement::DrawingElement { .. } => None,
@@ -280,6 +286,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .get_mut(index)
                 .ok_or_else(|| format!("constraint {} not found", index.index()))?;
             constraint.name = stored;
+        }
+        SceneElement::Parameter(index) => {
+            let param = doc
+                .parameters
+                .get_mut(index)
+                .ok_or_else(|| format!("parameter {} not found", index.index()))?;
+            param.name = stored.unwrap_or_default();
         }
         SceneElement::Extrusion(index) => {
             let extrusion = doc
@@ -852,6 +865,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         }
         SceneElement::Point(_) => "Point".to_string(),
         SceneElement::Constraint(i) => format!("Constraint {}", i.index()),
+        SceneElement::Parameter(i) => format!("Parameter {}", i.index()),
         // The same label the Elements pane gives the row (#967), so the picker and the pane
         // name the thing identically.
         SceneElement::DrawingElement { drawing, element } => {

@@ -2886,6 +2886,11 @@ fn element_script_tokens(
             index: ordinal_or_slot(doc.map(|d| d.constraints.keys().position(|k| k == i)), i.index()),
             point: None,
         },
+        SceneElement::Parameter(i) => ElementScriptTokens {
+            kind: "parameter",
+            index: ordinal_or_slot(doc.map(|d| d.parameters.keys().position(|k| k == i)), i.index()),
+            point: None,
+        },
         SceneElement::Point(point) => ElementScriptTokens {
             kind: "point",
             index: 0,

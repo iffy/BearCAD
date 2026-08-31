@@ -4895,6 +4895,7 @@ impl<'a> SceneMesh<'a> {
                     self.push_segment_hover(a, b, color, cam, viewport, view_proj, &project);
                 }
             }
+            SceneElement::Parameter(_) => {}
             SceneElement::BodyEdge { body, a, b } => {
                 let wa = crate::hierarchy::dequantize_body_point(a);
                 let wb = crate::hierarchy::dequantize_body_point(b);

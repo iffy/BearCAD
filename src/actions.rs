@@ -5328,6 +5328,29 @@ impl MeshExportFormat {
     }
 }
 
+/// The optional body of `export_stl`/`export_step`/`export_3mf` (#1863): a name, a
+/// stable id, or a live ordinal among bodies.
+fn resolve_export_body(doc: &Document, spec: &str) -> Option<crate::model::BodyKey> {
+    if let Some(k) = doc
+        .bodies
+        .iter()
+        .find_map(|(k, b)| (b.name.as_deref() == Some(spec)).then_some(k))
+    {
+        return Some(k);
+    }
+    if let Some(crate::hierarchy::SceneElement::Body(k)) =
+        crate::hierarchy::element_from_id(doc, spec)
+    {
+        return Some(k);
+    }
+    if spec.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(i) = spec.parse::<usize>() {
+            return doc.bodies.keys().nth(i);
+        }
+    }
+    None
+}
+
 impl AppState {
     /// OS windows ⌘` can land on, in cycle order (`bearcad.ui.windows()`, #1477).
     pub fn script_cycle_windows(&self) -> Vec<String> {
@@ -9381,6 +9404,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Line(i) => format!("Line {}", i.index()),
         SceneElement::Circle(i) => format!("Circle {}", i.index()),
         SceneElement::Constraint(i) => format!("Constraint {}", i.index()),
+        SceneElement::Parameter(i) => format!("Parameter {}", i.index()),
         SceneElement::Point(_) => "Point".to_string(),
         SceneElement::Extrusion(i) => format!("Extrusion {}", i.index()),
         SceneElement::Body(i) => format!("Body {}", i.index()),
@@ -10316,15 +10340,19 @@ impl AppState {
             }
             Action::ExportStl { path, body } => {
                 let (name, mesh) = match &body {
-                    Some(name) => {
-                        match self.doc.bodies.iter().find_map(|(k, b)| {
-                            (b.name.as_deref() == Some(name.as_str())).then_some(k)
-                        }) {
+                    Some(spec) => {
+                        match resolve_export_body(&self.doc, spec) {
                             Some(bi) => {
-                                (name.clone(), crate::extrude::body_solid_mesh(&self.doc, bi))
+                                let name = self
+                                    .doc
+                                    .bodies
+                                    .get(bi)
+                                    .and_then(|b| b.name.clone())
+                                    .unwrap_or_else(|| spec.clone());
+                                (name, crate::extrude::body_solid_mesh(&self.doc, bi))
                             }
                             None => {
-                                self.status = format!("Export failed: no body named '{name}'");
+                                self.status = format!("Export failed: no body named '{spec}'");
                                 return ActionResult::Err(self.status.clone());
                             }
                         }
@@ -10339,12 +10367,10 @@ impl AppState {
             Action::Export3mf { path, body } => {
                 // #1294: keep each body as its own colored object (do not fuse into one mesh).
                 let keys: Result<Vec<crate::model::BodyKey>, String> = match &body {
-                    Some(name) => {
-                        match self.doc.bodies.iter().find_map(|(k, b)| {
-                            (b.name.as_deref() == Some(name.as_str())).then_some(k)
-                        }) {
+                    Some(spec) => {
+                        match resolve_export_body(&self.doc, spec) {
                             Some(bi) => Ok(vec![bi]),
-                            None => Err(format!("Export failed: no body named '{name}'")),
+                            None => Err(format!("Export failed: no body named '{spec}'")),
                         }
                     }
                     None => Ok(self
@@ -10430,19 +10456,19 @@ impl AppState {
                 self.write_3mf_collected_file(&path, &collected)
             }
             Action::ExportStep { path, body } => match &body {
-                Some(name) => {
-                    let found = self
-                        .doc
-                        .bodies
-                        .iter()
-                        .find_map(|(k, b)| (b.name.as_deref() == Some(name.as_str())).then_some(k));
-                    match found {
+                Some(spec) => {
+                    match resolve_export_body(&self.doc, spec) {
                         Some(bi) => {
-                            let name = name.clone();
+                            let name = self
+                                .doc
+                                .bodies
+                                .get(bi)
+                                .and_then(|b| b.name.clone())
+                                .unwrap_or_else(|| spec.clone());
                             self.write_step_body_file(&path, &name, bi)
                         }
                         None => {
-                            self.status = format!("Export failed: no body named '{name}'");
+                            self.status = format!("Export failed: no body named '{spec}'");
                             ActionResult::Err(self.status.clone())
                         }
                     }

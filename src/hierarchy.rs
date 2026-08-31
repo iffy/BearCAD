@@ -290,6 +290,9 @@ pub enum SceneElement {
     Circle(crate::model::CircleKey),
     Point(ConstraintPoint),
     Constraint(crate::model::ConstraintKey),
+    /// A document parameter (#1864): not a scene-graph row, but a creation call still
+    /// hands one back so a script can name, select, and edit it.
+    Parameter(crate::model::ParameterKey),
     Extrusion(crate::model::ExtrusionKey),
     Body(crate::model::BodyKey),
     /// A constraint-authoring line that isn't a sketch `Line`: a face's own edge
@@ -962,6 +965,7 @@ impl ElementVisibility {
             SceneElement::Constraint(index) => doc.constraints.get(index).is_some_and(|c| {
                 self.effective_visible(doc, SceneElement::Sketch(c.sketch))
             }),
+            SceneElement::Parameter(_) => true,
             SceneElement::Extrusion(index) => self.is_visible(SceneElement::Extrusion(index)),
             SceneElement::Body(index) => {
                 self.is_visible(SceneElement::Body(index))
@@ -2098,6 +2102,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         SceneElement::Line(i) => HierarchyNode::Line(*i),
         SceneElement::Circle(i) => HierarchyNode::Circle(*i),
         SceneElement::Constraint(i) => HierarchyNode::Constraint(*i),
+        SceneElement::Parameter(_) => return None,
         SceneElement::Extrusion(i) => HierarchyNode::Extrusion(*i),
         SceneElement::Body(i) => HierarchyNode::Body(*i),
         SceneElement::Image(i) => HierarchyNode::Image(*i),
@@ -3315,6 +3320,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .constraints
             .get(index)
             .map(|c| SceneElement::Sketch(c.sketch)),
+        SceneElement::Parameter(_) => None,
         SceneElement::Point(point) => point_parent_element(doc, point),
         // An extrusion depends on (and nests under) the sketch it was built from.
         SceneElement::Extrusion(index) => doc
@@ -3516,6 +3522,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::Line(_)
         | SceneElement::Constraint(_)
+        | SceneElement::Parameter(_)
         | SceneElement::Point(_)
         | SceneElement::Body(_)
         | SceneElement::FaceEdge(_)
@@ -10405,6 +10412,7 @@ label_hidden: false,
             | SceneElement::Circle(_)
             | SceneElement::Point(_)
             | SceneElement::Constraint(_)
+            | SceneElement::Parameter(_)
             | SceneElement::Body(_)
             | SceneElement::FaceEdge(_)
             | SceneElement::BodyEdge { .. }
@@ -10453,6 +10461,7 @@ label_hidden: false,
                 end: LineEnd::Start,
             }),
             SceneElement::Constraint(nkey(0)),
+            SceneElement::Parameter(crate::arena::Key::from_bits(0)),
             SceneElement::Extrusion(xkey(0)),
             SceneElement::Body(bkey(0)),
             SceneElement::ProjectedEdge {
@@ -10669,6 +10678,7 @@ pub fn element_live_index(
         SceneElement::Circle(key) => doc.circles.keys().position(|k| k == *key),
         SceneElement::Sketch(key) => doc.sketches.keys().position(|k| k == *key),
         SceneElement::Constraint(key) => doc.constraints.keys().position(|k| k == *key),
+        SceneElement::Parameter(key) => doc.parameters.keys().position(|k| k == *key),
         SceneElement::SketchText(key) => doc.sketch_texts.keys().position(|k| k == *key),
         SceneElement::Extrusion(key) => doc.extrusions.keys().position(|k| k == *key),
         SceneElement::Component(key) => doc.components.keys().position(|k| k == *key),
@@ -10714,6 +10724,7 @@ fn element_kind_and_key(element: &SceneElement) -> Option<(&'static str, u64)> {
         E::Line(k) => ("line", k.to_bits()),
         E::Circle(k) => ("circle", k.to_bits()),
         E::Constraint(k) => ("constraint", k.to_bits()),
+        E::Parameter(k) => ("parameter", k.to_bits()),
         E::Extrusion(k) => ("extrusion", k.to_bits()),
         E::Body(k) => ("body", k.to_bits()),
         E::Image(k) => ("image", k.to_bits()),
@@ -10754,6 +10765,7 @@ fn element_from_kind_and_key(kind: &str, bits: u64) -> Option<SceneElement> {
         "line" => E::Line(Key::from_bits(bits)),
         "circle" => E::Circle(Key::from_bits(bits)),
         "constraint" => E::Constraint(Key::from_bits(bits)),
+        "parameter" => E::Parameter(Key::from_bits(bits)),
         "extrusion" => E::Extrusion(Key::from_bits(bits)),
         "body" => E::Body(Key::from_bits(bits)),
         "image" => E::Image(Key::from_bits(bits)),
