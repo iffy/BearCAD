@@ -520,6 +520,56 @@ pub fn instruction_from_json(
                 bodies,
             })
         }
+        "edit_revolve" => {
+            let op = req_usize(o, "index", "edit_revolve")?;
+            let faces = if o.get("circle").is_some()
+                || o.get("circles").is_some()
+                || o.get("polygon").is_some()
+            {
+                let faces = collect_profile_faces(doc, o, false)?;
+                if faces.is_empty() {
+                    return Err("edit_revolve `circle`/`circles`/`polygon` must name a face".into());
+                }
+                Some(faces)
+            } else {
+                None
+            };
+            let axis = match o.get("axis") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(revolve_axis_from_value(doc, v)?),
+            };
+            let (angle_deg, angle_is_revolutions) = if let Some(turns) = opt_f32(o, "revolutions")? {
+                (Some(turns * 360.0), Some(true))
+            } else {
+                (opt_f32(o, "angle")?, Some(false).filter(|_| o.get("angle").is_some()))
+            };
+            let pitch_mm = opt_f32(o, "pitch")?
+                .or(opt_f32(o, "offset")?)
+                .or(opt_f32(o, "gap")?);
+            let symmetric = opt_bool(o, "symmetric")?;
+            let bodies = if o.get("bodies").is_some() {
+                Some(usize_list(o, "bodies")?)
+            } else {
+                None
+            };
+            let body = match opt_str(o, "body")? {
+                Some(s) => Some(RevolveBodyChoice::from_script(Some(&s))?),
+                None => None,
+            };
+            Ok(Instruction::EditRevolve {
+                op,
+                faces,
+                axis,
+                angle_deg,
+                angle_expression: None,
+                angle_is_revolutions,
+                pitch_mm,
+                pitch_expression: None,
+                symmetric,
+                body,
+                bodies,
+            })
+        }
         "loft" => {
             let faces = collect_profile_faces(doc, o, true)?;
             if faces.len() < 2 {
@@ -529,12 +579,85 @@ pub fn instruction_from_json(
             let body = RevolveBodyChoice::from_script(opt_str(o, "body")?.as_deref())?;
             Ok(Instruction::Loft { faces, body, bodies })
         }
+        "edit_loft" => {
+            let op = req_usize(o, "index", "edit_loft")?;
+            let faces = if o.get("circle").is_some()
+                || o.get("circles").is_some()
+                || o.get("polygon").is_some()
+                || o.get("polygons").is_some()
+            {
+                let faces = collect_profile_faces(doc, o, true)?;
+                if faces.len() < 2 {
+                    return Err("edit_loft requires at least two sections (`circles`/`polygons`)".into());
+                }
+                Some(faces)
+            } else {
+                None
+            };
+            let bodies = if o.get("bodies").is_some() {
+                Some(usize_list(o, "bodies")?)
+            } else {
+                None
+            };
+            let body = match opt_str(o, "body")? {
+                Some(s) => Some(RevolveBodyChoice::from_script(Some(&s))?),
+                None => None,
+            };
+            Ok(Instruction::EditLoft { op, faces, body, bodies })
+        }
+        "sweep" => {
+            let faces = collect_profile_faces(doc, o, false)?;
+            if faces.is_empty() {
+                return Err("sweep requires a `circle`/`circles`/`polygon` face".into());
+            }
+            let path = line_keys_from_ordinals(doc, usize_list(o, "path")?)?;
+            if path.is_empty() {
+                return Err("sweep requires `path` (a list of line indices)".into());
+            }
+            let bodies = usize_list(o, "bodies")?;
+            let body = RevolveBodyChoice::from_script(opt_str(o, "body")?.as_deref())?;
+            Ok(Instruction::Sweep { faces, path, body, bodies })
+        }
+        "edit_sweep" => {
+            let op = req_usize(o, "index", "edit_sweep")?;
+            let faces = if o.get("circle").is_some()
+                || o.get("circles").is_some()
+                || o.get("polygon").is_some()
+            {
+                let faces = collect_profile_faces(doc, o, false)?;
+                if faces.is_empty() {
+                    return Err("edit_sweep `circle`/`circles`/`polygon` must name a face".into());
+                }
+                Some(faces)
+            } else {
+                None
+            };
+            let path = if o.get("path").is_some() {
+                let path = line_keys_from_ordinals(doc, usize_list(o, "path")?)?;
+                if path.is_empty() {
+                    return Err("edit_sweep `path` must name at least one line".into());
+                }
+                Some(path)
+            } else {
+                None
+            };
+            let bodies = if o.get("bodies").is_some() {
+                Some(usize_list(o, "bodies")?)
+            } else {
+                None
+            };
+            let body = match opt_str(o, "body")? {
+                Some(s) => Some(RevolveBodyChoice::from_script(Some(&s))?),
+                None => None,
+            };
+            Ok(Instruction::EditSweep { op, faces, path, body, bodies })
+        }
         "combine" => {
             let (kind, a, b, keep_b) = boolean_op_args(o)?;
             Ok(Instruction::CreateBooleanOp { kind, a, b, keep_b })
         }
-        "edit_boolean" => {
-            let op = req_usize(o, "index", "edit_boolean")?;
+        "edit_combine" => {
+            let op = req_usize(o, "index", "edit_combine")?;
             let (kind, a, b, keep_b) = boolean_op_args(o)?;
             Ok(Instruction::EditBooleanOp { op, kind, a, b, keep_b })
         }
@@ -769,6 +892,47 @@ pub fn instruction_from_json(
                 kind,
                 amount,
                 expression,
+            })
+        }
+        "edit_chamfer" | "edit_fillet" => {
+            let (kind, amount_key) = if name == "edit_chamfer" {
+                (VertexTreatmentKind::Chamfer, "distance")
+            } else {
+                (VertexTreatmentKind::Fillet, "radius")
+            };
+            let op = req_usize(o, "index", name)?;
+            let edges = if o.get("edge").is_some() || o.get("edges").is_some() {
+                Some(extrusion_edge_set_from_json(o, name)?)
+            } else {
+                None
+            };
+            let (amount, expression) = match opt_f32(o, amount_key)? {
+                Some(v) => (Some(v), Some(req_amount_expr(o, amount_key, name).unwrap_or_else(|_| v.to_string()))),
+                None => (None, None),
+            };
+            Ok(Instruction::EditEdgeTreatment {
+                op,
+                edges,
+                kind,
+                amount,
+                expression,
+            })
+        }
+        "edit_circle" => {
+            let circle = req_usize(o, "index", "edit_circle")?;
+            let (r, diameter_expr) = if let Some((r, e)) = opt_scalar(o, "r")? {
+                (r, e.map(|e| format!("({e}) * 2")))
+            } else if let Some((radius, e)) = opt_scalar(o, "radius")? {
+                (radius, e.map(|e| format!("({e}) * 2")))
+            } else if let Some((d, e)) = opt_scalar(o, "diameter")? {
+                (d * 0.5, e)
+            } else {
+                return Err("edit_circle requires a size: one of `r`, `radius`, or `diameter`".into());
+            };
+            Ok(Instruction::EditCircle {
+                circle,
+                r,
+                diameter_expr,
             })
         }
 
@@ -1227,7 +1391,10 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
             Ok(Instruction::ExtrudeBodyFace { face, distance, body: body_choice(o)?, target })
         }
         "edit_extrusion" => {
-            let extrusion = req_usize(o, "extrusion", "edit_extrusion")?;
+            let extrusion = match opt_usize(o, "index")? {
+                Some(i) => i,
+                None => req_usize(o, "extrusion", "edit_extrusion")?,
+            };
             // `distance` accepts a plain number or a parameter expression string (#402).
             let (mut distance, expression) = match opt_scalar(o, "distance")? {
                 Some((d, e)) => (Some(d), e),
@@ -1670,7 +1837,7 @@ fn collect_profile_faces(
     Ok(faces)
 }
 
-/// `combine`/`edit_boolean` shared arguments: op kind (default "combine"), the A and B body
+/// `combine`/`edit_combine` shared arguments: op kind (default "combine"), the A and B body
 /// lists, and the keep-B flag.
 fn boolean_op_args(o: &Map<String, Value>) -> Result<(BooleanOpKind, Vec<usize>, Vec<usize>, bool), String> {
     let op_name = opt_str(o, "op")?.unwrap_or_else(|| "union".to_string());
@@ -3255,7 +3422,7 @@ mod tests {
         );
         assert_eq!(
             instruction_from_json(&Document::default(), 
-                "edit_boolean",
+                "edit_combine",
                 &json!({ "index": 2, "op": "cut", "a": [0], "b": [1], "keep_b": true })
             ),
             Ok(Instruction::EditBooleanOp {

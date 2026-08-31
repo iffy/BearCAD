@@ -56,4 +56,4 @@ bearcad.loft{ circles = {0, 1}, name = "Horn" }
 ```
 
 `polygons = {{line, ...}, ...}` lofts line loops; each face's sketch is inferred, like
-`bearcad.extrude`.
+`bearcad.extrude`. `bearcad.edit_loft{ index, … }` re-points one.

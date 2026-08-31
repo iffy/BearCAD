@@ -78,7 +78,7 @@ are ordinary bodies, so operations chain.
 bearcad.combine{ op = "cut", a = {0}, b = {1}, name = "Notched block" }
 bearcad.combine{ op = "union", a = {0, 1, 2} }
 bearcad.combine{ op = "intersect", a = {0}, b = {1}, keep_b = true }
-bearcad.edit_boolean{ index = 0, op = "xor", a = {0}, b = {1} }
+bearcad.edit_combine{ index = 0, op = "xor", a = {0}, b = {1} }
 -- `begin_combine` takes the same arguments but leaves the tool armed rather than
 -- committing, so the result preview is on screen for a screenshot.
 bearcad.begin_combine{ op = "cut", a = {0}, b = {1} }

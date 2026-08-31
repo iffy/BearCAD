@@ -75,6 +75,7 @@ Every dimension takes a number or an expression string.
 bearcad.rect{ width, height, x = 0?, y = 0?, name? }
 bearcad.line{ x, y, x1, y1, name?, dimension? }          -- or length + angle (degrees)
 bearcad.circle{ x, y, r | radius | diameter, name? }
+bearcad.edit_circle{ index, r | radius | diameter, name? }
 bearcad.text{ text, x, y, size?, font?, bold?, italic?, underline?, rotation?, wrap?, flip?, name? }
 bearcad.begin_sketch{ kind = "plane", index = i }
 bearcad.begin_sketch{ kind = "extrude_cap"|"extrude_side"|…, … }
@@ -90,12 +91,16 @@ bearcad.project{ body?, bodies?, plane?, planes?, entities? }
 
 ```
 bearcad.extrude{ polygon = {line, …} | circle = i | circles = {i, …} | text = i | boolean = {…}, distance?, to?, body = "new"|"add"|"cut"|"join"?, name?, symmetric?, taper?, taper_mode = "distance"|"angle"? }
-bearcad.edit_extrusion{ extrusion, distance? | by? | to? }
+bearcad.edit_extrusion{ index | extrusion, distance? | by? | to? }
 bearcad.extrude_face{ face = {…}, distance, body? }
 bearcad.revolve{ polygon = {…} | circle = i | circles = {i, …}, axis = "x"|"y"|"z"|{ line = i }, angle? | revolutions?, pitch?, body = "new"|"add"|"cut"?, bodies?, symmetric?, name? }
+bearcad.edit_revolve{ index, angle? | revolutions?, pitch?, axis?, … }
 bearcad.sweep{ polygon = {…} | circle = i | circles = {i, …}, path = {line, …}, body = "add"|"cut"?, bodies? }
+bearcad.edit_sweep{ index, path?, … }
 bearcad.loft{ circles = {i, …}?, polygons = { {line, …}, … }?, body? }
+bearcad.edit_loft{ index, circles?, polygons?, … }
 bearcad.combine{ op = "union"|"cut"|"intersect"|"xor", a = {i, …}, b = {i, …}, keep_b?, bake?, name? }   -- `difference` means cut; bake = true consumes the inputs and leaves one standalone body
+bearcad.edit_combine{ index, op, a, b, keep_b? }
 bearcad.slice{ bodies = {i, …}, cutters = {…}, extend?, name? }
 bearcad.shell{ bodies = {i, …}, faces = {…}?, thickness, name? }
 bearcad.move_bodies{ bodies = {i, …}, x?, y?, z?, rx?, ry?, rz?, name? }
@@ -111,7 +116,9 @@ edge (four calls would make four bodies):
 
 ```
 bearcad.fillet_edge{ extrusion = i | shape = i, edges = { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, r | radius | diameter }
+bearcad.edit_fillet{ index, radius? }
 bearcad.chamfer_edge{ extrusion = i | shape = i, edges = { … }, distance }
+bearcad.edit_chamfer{ index, distance? }
 bearcad.extrude_edges(i)               -- the edge refs fillet/chamfer accept on extrusion i
 bearcad.fillet_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, r | radius | diameter }
 bearcad.chamfer_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, distance }
