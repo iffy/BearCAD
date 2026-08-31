@@ -33,8 +33,12 @@ Select the geometry, then click a constraint button or press its number key:
 | Midpoint | a point + a line | `5` |
 | Parallel to X axis | a line | `6` |
 | Parallel to Y axis | a line | `7` |
+| Tangent | two circles, or a circle + a line | `8` |
 
-The last two are the one-click way to make a line **horizontal** or **vertical** — they
+Tangent makes rims touch: two circles hug at a single point, or a line grazes a circle.
+Circles already nested inside one another hug from the inside.
+
+Parallel to X/Y axis are the one-click way to make a line **horizontal** or **vertical** — they
 constrain the selected line parallel to the sketch's X or Y axis. Their buttons draw in
 the axis's own color — X red, Y green — and the arrow tilts to match the axis's current
 direction on screen, so the button always shows exactly which way the line will snap. In

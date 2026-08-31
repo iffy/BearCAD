@@ -430,7 +430,8 @@ pub fn constraint_label(doc: &Document, index: ConstraintId) -> String {
         | ConstraintKind::Equal { .. }
         | ConstraintKind::Coincident { .. }
         | ConstraintKind::Midpoint { .. }
-        | ConstraintKind::Tangent { .. } => String::new(),
+        | ConstraintKind::Tangent { .. }
+        | ConstraintKind::TangentCircle { .. } => String::new(),
         ConstraintKind::Angle { .. } => constraint_evaluated_angle(doc, index)
             .map(|v| format_angle_display_in(v, effective_angle_unit(doc, constraint.sketch)))
             .unwrap_or_else(|| "?".to_string()),
@@ -442,7 +443,9 @@ pub fn constraint_label(doc: &Document, index: ConstraintId) -> String {
         ConstraintKind::Equal { .. } => "Equal".to_string(),
         ConstraintKind::Coincident { .. } => "Coincident".to_string(),
         ConstraintKind::Midpoint { .. } => "Midpoint".to_string(),
-        ConstraintKind::Tangent { .. } => "Tangent".to_string(),
+        ConstraintKind::Tangent { .. } | ConstraintKind::TangentCircle { .. } => {
+            "Tangent".to_string()
+        }
         ConstraintKind::Angle { .. } => "Angle".to_string(),
     };
     match &constraint.kind {

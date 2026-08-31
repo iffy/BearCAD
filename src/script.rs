@@ -3135,6 +3135,7 @@ fn geometric_constraint_script_name(
         GeometricConstraintType::Midpoint => "midpoint",
         GeometricConstraintType::AlongXAxis => "horizontal",
         GeometricConstraintType::AlongYAxis => "vertical",
+        GeometricConstraintType::Tangent => "tangent",
     }
 }
 

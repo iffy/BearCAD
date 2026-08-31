@@ -883,6 +883,7 @@ fn constraint_kind_tag(k: &ConstraintKind) -> &'static str {
         ConstraintKind::Midpoint { .. } => "midpoint",
         ConstraintKind::Angle { .. } => "angle",
         ConstraintKind::Tangent { .. } => "tangent",
+        ConstraintKind::TangentCircle { .. } => "tangent_circle",
     }
 }
 

@@ -1264,6 +1264,13 @@ pub fn constraint_kind_applicable(doc: &Document, kind: &ConstraintKind) -> bool
         ConstraintKind::Tangent { a, b } => {
             constraint_point_alive(doc, a) && constraint_point_alive(doc, b)
         }
+        ConstraintKind::TangentCircle { circle, other } => {
+            circle_alive(doc, *circle)
+                && match other {
+                    crate::model::TangentTarget::Circle(o) => circle_alive(doc, *o),
+                    crate::model::TangentTarget::Line(line) => constraint_line_alive(doc, line),
+                }
+        }
     }
 }
 

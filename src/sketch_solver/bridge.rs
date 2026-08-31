@@ -31,6 +31,16 @@ fn axis_parallel_pair(
     }
 }
 
+/// Whether two circles currently sit one inside the other (#1857) — the tangency they are
+/// nearest to is the internal one (rims touching from the inside) rather than the external.
+fn circles_nested(doc: &Document, a: crate::model::CircleKey, b: crate::model::CircleKey) -> bool {
+    let (Some(a), Some(b)) = (doc.circles.get(a), doc.circles.get(b)) else {
+        return false;
+    };
+    let d = (a.cx - b.cx).hypot(a.cy - b.cy);
+    d < (a.r - b.r).abs()
+}
+
 /// Solver graph for one sketch, with stable point-variable mapping.
 pub struct SketchBridge {
     pub system: System,
@@ -245,6 +255,42 @@ impl SketchBridge {
             // Tangent joints are app-maintained handle geometry (#473), not solver
             // equations — nothing to add.
             ConstraintKind::Tangent { .. } => {}
+            // #1857: two rims that hug. One equation either way — the rank/DOF analysis only
+            // needs the row; the numeric solve is libslvs's (see `slvs.rs`).
+            ConstraintKind::TangentCircle { circle, other } => {
+                let (c1x, c1y) = self.point_vars(doc, ConstraintPoint::CircleCenter(circle))?;
+                let r1 = self.radius_var(circle)?;
+                match other {
+                    crate::model::TangentTarget::Circle(o) => {
+                        let (c2x, c2y) = self.point_vars(doc, ConstraintPoint::CircleCenter(o))?;
+                        let r2 = self.radius_var(o)?;
+                        self.system.add_equation(Equation::CircleCircleTangent {
+                            c1x,
+                            c1y,
+                            r1,
+                            c2x,
+                            c2y,
+                            r2,
+                            internal: circles_nested(doc, circle, o),
+                            weight: DEFAULT_WEIGHT,
+                        });
+                    }
+                    crate::model::TangentTarget::Line(line) => {
+                        self.hold_line(doc, line.clone(), GAUGE_HOLD_WEIGHT)?;
+                        let ((x0, y0), (x1, y1)) = self.line_vars(doc, line)?;
+                        self.system.add_equation(Equation::LineCircleTangent {
+                            cx: c1x,
+                            cy: c1y,
+                            radius: r1,
+                            x0,
+                            y0,
+                            x1,
+                            y1,
+                            weight: DEFAULT_WEIGHT,
+                        });
+                    }
+                }
+            }
             ConstraintKind::Angle {
                 line_a,
                 line_b,
@@ -632,6 +678,13 @@ impl SketchBridge {
             return Ok(vars);
         }
         Err(format!("Point {point:?} not in solver graph"))
+    }
+
+    fn radius_var(&self, circle: crate::model::CircleKey) -> Result<VarId, String> {
+        self.circle_radius
+            .get(&circle)
+            .copied()
+            .ok_or_else(|| format!("Circle {} not in solver graph", circle.index()))
     }
 
     fn line_vars(

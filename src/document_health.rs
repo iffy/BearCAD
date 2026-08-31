@@ -573,6 +573,17 @@ fn mark_invalid_constraints_and_unstable_geometry(doc: &Document, health: &mut D
                     );
                 }
             }
+            ConstraintKind::TangentCircle { .. } => {
+                if !crate::document_lifecycle::constraint_kind_applicable(doc, &constraint.kind) {
+                    set_element_invalid(
+                        health,
+                        doc,
+                        element,
+                        "Referenced geometry was deleted".to_string(),
+                        None,
+                    );
+                }
+            }
             ConstraintKind::Angle {
             line_a,
             line_b,

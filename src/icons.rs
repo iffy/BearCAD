@@ -35,6 +35,7 @@ pub enum IconId {
     Equal,
     Coincident,
     Midpoint,
+    Tangent,
     Vertical,
     Horizontal,
     Home,
@@ -157,7 +158,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 103] = [
+    pub const ALL: [Self; 104] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -173,6 +174,7 @@ impl IconId {
         Self::Equal,
         Self::Coincident,
         Self::Midpoint,
+        Self::Tangent,
         Self::Vertical,
         Self::Horizontal,
         Self::Home,
@@ -280,6 +282,7 @@ impl IconId {
             Self::Equal => include_str!("assets/icons/equal.svg"),
             Self::Coincident => include_str!("assets/icons/coincident.svg"),
             Self::Midpoint => include_str!("assets/icons/midpoint.svg"),
+            Self::Tangent => include_str!("assets/icons/tangent.svg"),
             Self::Vertical => include_str!("assets/icons/vertical.svg"),
             Self::Horizontal => include_str!("assets/icons/horizontal.svg"),
             Self::Home => include_str!("assets/icons/home.svg"),
@@ -390,6 +393,7 @@ impl IconId {
             Self::Equal => "Equal",
             Self::Coincident => "Coincident",
             Self::Midpoint => "Midpoint",
+            Self::Tangent => "Tangent",
             Self::Vertical => "Vertical",
             Self::Horizontal => "Horizontal",
             Self::Home => "Home",
@@ -544,6 +548,7 @@ pub fn icon_for_constraint(kind: GeometricConstraintType) -> IconId {
         GeometricConstraintType::Midpoint => IconId::Midpoint,
         GeometricConstraintType::AlongXAxis => IconId::Horizontal,
         GeometricConstraintType::AlongYAxis => IconId::Vertical,
+        GeometricConstraintType::Tangent => IconId::Tangent,
     }
 }
 
@@ -570,6 +575,7 @@ pub fn icon_for_constraint_kind(kind: &ConstraintKind) -> IconId {
         ConstraintKind::Midpoint { .. } => IconId::Midpoint,
         ConstraintKind::Angle { .. } => IconId::Constraint,
         ConstraintKind::Tangent { .. } => IconId::Coincident,
+        ConstraintKind::TangentCircle { .. } => IconId::Tangent,
     }
 }
 

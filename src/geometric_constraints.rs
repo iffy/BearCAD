@@ -25,10 +25,13 @@ pub enum GeometricConstraintType {
     AlongXAxis,
     /// One-click "make this line parallel to the sketch **Y axis**" (#583) — the axis-based Vertical.
     AlongYAxis,
+    /// Two rims that hug (#1857): two circles touching at their perimeters, or a circle
+    /// grazing a line.
+    Tangent,
 }
 
 impl GeometricConstraintType {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Parallel,
         Self::Perpendicular,
         Self::Equal,
@@ -36,6 +39,7 @@ impl GeometricConstraintType {
         Self::Midpoint,
         Self::AlongXAxis,
         Self::AlongYAxis,
+        Self::Tangent,
     ];
 
     pub fn label(self) -> &'static str {
@@ -47,10 +51,11 @@ impl GeometricConstraintType {
             Self::Midpoint => "Midpoint",
             Self::AlongXAxis => "Parallel to X axis",
             Self::AlongYAxis => "Parallel to Y axis",
+            Self::Tangent => "Tangent",
         }
     }
 
-    /// Fixed context-pane shortcut (shown left of the constraint button): the digits 1–7 in the
+    /// Fixed context-pane shortcut (shown left of the constraint button): the digits 1–8 in the
     /// pane's display order, only active while the Constraint tool is (#401) — numbers can't collide
     /// with the global tool keys the old mnemonic letters had to dodge.
     pub fn shortcut_label(self) -> &'static str {
@@ -62,6 +67,7 @@ impl GeometricConstraintType {
             Self::Midpoint => "5",
             Self::AlongXAxis => "6",
             Self::AlongYAxis => "7",
+            Self::Tangent => "8",
         }
     }
 
@@ -74,6 +80,7 @@ impl GeometricConstraintType {
             '5' => Some(Self::Midpoint),
             '6' => Some(Self::AlongXAxis),
             '7' => Some(Self::AlongYAxis),
+            '8' => Some(Self::Tangent),
             _ => None,
         }
     }
@@ -140,6 +147,8 @@ fn missing_for_kind(kind: GeometricConstraintType) -> Vec<&'static str> {
         GeometricConstraintType::Coincident => vec!["point", "point, line, or circle"],
         GeometricConstraintType::Midpoint => vec!["point", "line"],
         GeometricConstraintType::AlongXAxis | GeometricConstraintType::AlongYAxis => vec!["line"],
+        // #1857: a circle, plus the circle or line it should hug.
+        GeometricConstraintType::Tangent => vec!["circle", "circle or line"],
     }
 }
 
@@ -203,6 +212,31 @@ fn match_kind(
             ]
         }
         GeometricConstraintType::Midpoint => &[&[ConstraintRole::Point, ConstraintRole::Line][..]],
+        // Tangency (#1857) needs a circle plus one more rim to hug: a second circle, or a
+        // line. Neither role fits `match_pattern`'s line/point vocabulary, so count directly.
+        GeometricConstraintType::Tangent => {
+            let circles = refs
+                .iter()
+                .filter(|r| matches!(r, ConstraintRef::Circle(_)))
+                .count();
+            let lines = refs
+                .iter()
+                .filter(|r| matches!(r, ConstraintRef::Line(_)))
+                .count();
+            let points = refs
+                .iter()
+                .filter(|r| matches!(r, ConstraintRef::Point(_)))
+                .count();
+            if points > 0 {
+                return None;
+            }
+            return match (circles, lines) {
+                (2, 0) | (1, 1) => Some((true, Vec::new())),
+                (1, 0) => Some((false, vec!["circle or line"])),
+                (0, 1) => Some((false, vec!["circle"])),
+                _ => None,
+            };
+        }
         // The axis-parallel buttons act on a single selected line (#583).
         GeometricConstraintType::AlongXAxis | GeometricConstraintType::AlongYAxis => {
             &[&[ConstraintRole::Line][..]]
@@ -510,6 +544,18 @@ fn build_constraint_kind(
             point: points[0].clone(),
             line: lines[0].clone(),
         }),
+        // #1857: the first circle hugs the other rim — a second circle, or a line.
+        GeometricConstraintType::Tangent => match (circles.len(), lines.len()) {
+            (2, 0) => Ok(ConstraintKind::TangentCircle {
+                circle: circles[0],
+                other: crate::model::TangentTarget::Circle(circles[1]),
+            }),
+            (1, 1) => Ok(ConstraintKind::TangentCircle {
+                circle: circles[0],
+                other: crate::model::TangentTarget::Line(lines[0].clone()),
+            }),
+            _ => Err("Tangent requires two circles, or a circle and a line".to_string()),
+        },
     }
 }
 
@@ -544,6 +590,20 @@ fn validate_constraint_kind(
             validate_point_ref(doc, sketch, &point)?;
             validate_line_ref(doc, sketch, &line)?;
             Ok(())
+        }
+        // #1857: both rims must live in this sketch (a circle always does; a line ref is
+        // checked the usual way), and a circle can't hug itself.
+        ConstraintKind::TangentCircle { circle, other } => {
+            validate_entity_ref(doc, sketch, &ConstraintEntity::Circle(circle))?;
+            match other {
+                crate::model::TangentTarget::Circle(o) => {
+                    if o == circle {
+                        return Err("Tangent requires two different circles".to_string());
+                    }
+                    validate_entity_ref(doc, sketch, &ConstraintEntity::Circle(o))
+                }
+                crate::model::TangentTarget::Line(line) => validate_line_ref(doc, sketch, &line),
+            }
         }
         ConstraintKind::Angle {
             line_a,
@@ -1521,6 +1581,133 @@ mod tests {
                 b: ConstraintEntity::Circle(_),
             }
         ));
+    }
+
+    /// #1857: two circles made tangent hug at their perimeters — the gap between their
+    /// centres closes to exactly `r1 + r2`.
+    #[test]
+    fn tangent_makes_two_circles_hug() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.circles
+            .insert(Circle::from_local_center_radius(sketch, 26.0, 0.0, 4.0, 0.0));
+        doc.shape_order.push(ShapeKind::Circle);
+        doc.shape_order.push(ShapeKind::Circle);
+
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Circle(rkey(0)), false);
+        click_scene_selection(&mut sel, SceneElement::Circle(rkey(1)), true);
+
+        let rows = constraint_pane_rows(&sel);
+        assert!(rows
+            .iter()
+            .any(|row| row.kind == GeometricConstraintType::Tangent && row.enabled));
+
+        add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::Tangent,
+            &sel,
+        )
+        .unwrap();
+
+        let (a, b) = (&doc.circles[rkey(0)], &doc.circles[rkey(1)]);
+        let gap = (a.cx - b.cx).hypot(a.cy - b.cy);
+        assert!(
+            (gap - (a.r + b.r)).abs() < EPS,
+            "rims should touch: centres {gap} apart, radii {} + {}",
+            a.r,
+            b.r
+        );
+        assert!(matches!(
+            doc.constraints[nkey(0)].kind,
+            ConstraintKind::TangentCircle {
+                other: crate::model::TangentTarget::Circle(_),
+                ..
+            }
+        ));
+    }
+
+    /// #1857: a circle made tangent to a line grazes it — the line sits exactly `r` from
+    /// the centre.
+    #[test]
+    fn tangent_makes_a_circle_hug_a_line() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        // A horizontal line 16 above the centre — the circle has to come up to meet it.
+        doc.lines
+            .insert(Line::from_local_endpoints(sketch, -20.0, 16.0, 20.0, 16.0));
+        doc.shape_order.push(ShapeKind::Circle);
+        doc.shape_order.push(ShapeKind::Line);
+
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Circle(rkey(0)), false);
+        click_scene_selection(&mut sel, SceneElement::Line(lkey(0)), true);
+
+        add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::Tangent,
+            &sel,
+        )
+        .unwrap();
+
+        let c = &doc.circles[rkey(0)];
+        let l = &doc.lines[lkey(0)];
+        let (dx, dy) = (l.x1 - l.x0, l.y1 - l.y0);
+        let len = dx.hypot(dy);
+        let dist = ((c.cx - l.x0) * dy - (c.cy - l.y0) * dx).abs() / len;
+        assert!(
+            (dist - c.r).abs() < EPS,
+            "the line should graze the rim: {dist} from the centre, r = {}",
+            c.r
+        );
+    }
+
+    /// #1857: a circle already nested inside another hugs it from the inside — the branch
+    /// nearest where the user put them, not a jump out to side-by-side.
+    #[test]
+    fn tangent_keeps_a_nested_circle_inside() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles
+            .insert(Circle::from_local_center_radius(sketch, 0.0, 0.0, 20.0, 0.0));
+        doc.circles
+            .insert(Circle::from_local_center_radius(sketch, 3.0, 0.0, 5.0, 0.0));
+        doc.shape_order.push(ShapeKind::Circle);
+        doc.shape_order.push(ShapeKind::Circle);
+
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Circle(rkey(1)), false);
+        click_scene_selection(&mut sel, SceneElement::Circle(rkey(0)), true);
+        add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::Tangent,
+            &sel,
+        )
+        .unwrap();
+
+        let (a, b) = (&doc.circles[rkey(0)], &doc.circles[rkey(1)]);
+        let gap = (a.cx - b.cx).hypot(a.cy - b.cy);
+        assert!(
+            (gap - (a.r - b.r).abs()).abs() < EPS,
+            "the small circle should hug from inside: centres {gap} apart"
+        );
+    }
+
+    /// #1857: the Tangent row is offered (disabled) with nothing selected, and says what
+    /// it needs.""
+    #[test]
+    fn tangent_row_asks_for_a_circle() {
+        let rows = constraint_pane_rows(&SceneSelection::default());
+        let row = rows
+            .iter()
+            .find(|row| row.kind == GeometricConstraintType::Tangent)
+            .expect("a Tangent row");
+        assert!(!row.enabled);
+        assert_eq!(row.missing, vec!["circle", "circle or line"]);
     }
 
     #[test]

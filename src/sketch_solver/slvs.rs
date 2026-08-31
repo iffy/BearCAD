@@ -55,8 +55,13 @@ const SLVS_C_PARALLEL: i32 = 100025;
 const SLVS_C_PERPENDICULAR: i32 = 100026;
 
 const SLVS_RESULT_OKAY: i32 = 0;
-/// Handle offset for the second slvs constraint of a two-equation document constraint.
+/// Handle stride for the extra slvs constraints of a document constraint that expands to
+/// more than one equation: slot `n`'s handle is `n * SECONDARY_HANDLE_BASE + index + 1`,
+/// so every slot maps back to the same document constraint.
 const SECONDARY_HANDLE_BASE: u32 = 1_000_000;
+/// Handles at or above this belong to the solver's own drag helpers, not to any document
+/// constraint, so a failure there is never blamed on the user's geometry.
+const DRAG_HANDLE_BASE: u32 = SECONDARY_HANDLE_BASE * 8;
 const SLVS_RESULT_REDUNDANT_OKAY: i32 = 4;
 
 #[repr(C)]
@@ -342,6 +347,8 @@ struct Builder<'a> {
     origin_point: Option<u32>,
     lines: HashMap<ConstraintLine, u32>,
     circles: HashMap<crate::model::CircleKey, (u32, u32)>, // key -> (entity, radius param)
+    /// Fixed circles for round body faces (#1858): face -> circle entity.
+    face_circles: HashMap<FaceId, u32>,
 }
 
 impl<'a> Builder<'a> {
@@ -360,6 +367,7 @@ impl<'a> Builder<'a> {
             origin_point: None,
             lines: HashMap::new(),
             circles: HashMap::new(),
+            face_circles: HashMap::new(),
         };
         // The workplane: sketch-local (u, v) coordinates live directly in it, so it is
         // simply the XY plane at the origin. Everything about it is fixed (group 1).
@@ -591,6 +599,39 @@ impl<'a> Builder<'a> {
         Ok(e)
     }
 
+    /// A fixed slvs circle for a **round body face**'s rim (#1858): centre and radius come
+    /// from the face's analytic circle, projected into the sketch's own frame, and both are
+    /// group 1 — the body drives them, never the sketch solver.
+    fn ensure_face_circle(&mut self, face: &FaceId) -> Result<u32, String> {
+        if let Some(e) = self.face_circles.get(face) {
+            return Ok(*e);
+        }
+        let center = ConstraintPoint::FaceCircleCenter { face: face.clone() };
+        let (u, v) = point_uv(self.doc, self.sketch, center)?;
+        let (_, radius) = crate::extrude::face_circle_world(self.doc, face)
+            .ok_or_else(|| "Face circle not available".to_string())?;
+        let (center_e, _, _) = self.point2d(GROUP_FIXED, u as f64, v as f64);
+        let r = self.param(GROUP_FIXED, radius as f64);
+        let dist = self.entity(SlvsEntity {
+            group: GROUP_FIXED,
+            type_: SLVS_E_DISTANCE,
+            wrkpl: self.workplane,
+            param: [r, 0, 0, 0],
+            ..Default::default()
+        });
+        let e = self.entity(SlvsEntity {
+            group: GROUP_FIXED,
+            type_: SLVS_E_CIRCLE,
+            wrkpl: self.workplane,
+            point: [center_e, 0, 0, 0],
+            normal: self.wp_normal,
+            distance: dist,
+            ..Default::default()
+        });
+        self.face_circles.insert(face.clone(), e);
+        Ok(e)
+    }
+
     fn constraint(&mut self, doc_index: usize, mut c: SlvsConstraint) {
         // Handle = document constraint index + 1, so a failed handle maps straight back.
         c.h = doc_index as u32 + 1;
@@ -601,8 +642,14 @@ impl<'a> Builder<'a> {
 
     /// Second slvs constraint for a document constraint that expands to two equations;
     /// handles live `SECONDARY_HANDLE_BASE` above the primary range.
-    fn secondary_constraint(&mut self, doc_index: usize, mut c: SlvsConstraint) {
-        c.h = SECONDARY_HANDLE_BASE + doc_index as u32 + 1;
+    fn secondary_constraint(&mut self, doc_index: usize, c: SlvsConstraint) {
+        self.extra_constraint(doc_index, 1, c);
+    }
+
+    /// The `slot`-th extra slvs constraint of one document constraint (slot 0 is
+    /// [`Self::constraint`]'s primary). Slots stay below [`DRAG_HANDLE_BASE`].
+    fn extra_constraint(&mut self, doc_index: usize, slot: u32, mut c: SlvsConstraint) {
+        c.h = slot * SECONDARY_HANDLE_BASE + doc_index as u32 + 1;
         c.group = GROUP_SOLVE;
         c.wrkpl = self.workplane;
         self.constraints.push(c);
@@ -683,6 +730,9 @@ impl<'a> Builder<'a> {
             // Tangent joints are app-maintained handle geometry (#473), not solver
             // equations — nothing to add.
             ConstraintKind::Tangent { .. } => {}
+            ConstraintKind::TangentCircle { circle, other } => {
+                self.add_tangent(doc_index, *circle, other)?
+            }
             ConstraintKind::Angle {
                 line_a,
                 line_b,
@@ -824,6 +874,131 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
+    /// Two rims that hug (#1857). libslvs has no tangency constraint for *whole* circles
+    /// (its arc/curve tangents want arc endpoints), so this states the geometry directly:
+    /// a helper point at the touch spot, sitting on both rims — or on the rim and the line
+    /// — plus the collinearity/perpendicularity that makes the touch a graze rather than a
+    /// crossing. Three equations against the helper's two free coordinates leaves exactly
+    /// the one degree of freedom tangency should remove.
+    fn add_tangent(
+        &mut self,
+        doc_index: usize,
+        circle: crate::model::CircleKey,
+        other: &crate::model::TangentTarget,
+    ) -> Result<(), String> {
+        let c = self
+            .doc
+            .circles
+            .get(circle)
+            .ok_or_else(|| format!("Circle {} not found", circle.index()))?;
+        let (cx, cy, r) = (c.cx, c.cy, c.r);
+        let circle_e = self.ensure_circle(circle)?;
+        let center_e = self.ensure_point(&ConstraintPoint::CircleCenter(circle))?;
+        match other {
+            crate::model::TangentTarget::Circle(o) => {
+                let oc = self
+                    .doc
+                    .circles
+                    .get(*o)
+                    .ok_or_else(|| format!("Circle {} not found", o.index()))?;
+                let (ox, oy, or) = (oc.cx, oc.cy, oc.r);
+                let other_e = self.ensure_circle(*o)?;
+                let other_center = self.ensure_point(&ConstraintPoint::CircleCenter(*o))?;
+                // Seed the touch point on this circle's rim, on whichever side already sits
+                // nearer the other rim — that is what picks external vs. nested tangency.
+                let (dx, dy) = (ox - cx, oy - cy);
+                let d = dx.hypot(dy);
+                let (ux, uy) = if d > 1e-6 { (dx / d, dy / d) } else { (1.0, 0.0) };
+                let gap = |sx: f32, sy: f32| ((sx - ox).hypot(sy - oy) - or).abs();
+                let (px, py) = if gap(cx + r * ux, cy + r * uy) <= gap(cx - r * ux, cy - r * uy) {
+                    (cx + r * ux, cy + r * uy)
+                } else {
+                    (cx - r * ux, cy - r * uy)
+                };
+                let (p, _, _) = self.point2d(GROUP_SOLVE, px as f64, py as f64);
+                let axis = self.entity(SlvsEntity {
+                    group: GROUP_SOLVE,
+                    type_: SLVS_E_LINE_SEGMENT,
+                    wrkpl: self.workplane,
+                    point: [center_e, other_center, 0, 0],
+                    ..Default::default()
+                });
+                self.constraint(doc_index, SlvsConstraint {
+                    type_: SLVS_C_PT_ON_CIRCLE,
+                    pt_a: p,
+                    entity_a: circle_e,
+                    ..Default::default()
+                });
+                self.extra_constraint(doc_index, 1, SlvsConstraint {
+                    type_: SLVS_C_PT_ON_CIRCLE,
+                    pt_a: p,
+                    entity_a: other_e,
+                    ..Default::default()
+                });
+                // The touch point is on the line of centres — the only place two rims can
+                // meet without crossing.
+                self.extra_constraint(doc_index, 2, SlvsConstraint {
+                    type_: SLVS_C_PT_LINE_DISTANCE,
+                    pt_a: p,
+                    entity_a: axis,
+                    val_a: 0.0,
+                    ..Default::default()
+                });
+            }
+            crate::model::TangentTarget::Line(line) => {
+                let line_e = self.ensure_line(line)?;
+                let ((x0, y0), (x1, y1)) = line_endpoints_uv(self.doc, self.sketch, line)
+                    .ok_or_else(|| "Tangent line no longer resolves".to_string())?;
+                // Seed the touch point where the rim faces the line: the foot of the
+                // perpendicular from the centre, pulled back onto the rim.
+                let (dx, dy) = (x1 - x0, y1 - y0);
+                let len = dx.hypot(dy);
+                if len < 1e-9 {
+                    return Ok(());
+                }
+                let t = ((cx - x0) * dx + (cy - y0) * dy) / (len * len);
+                let (fx, fy) = (x0 + dx * t, y0 + dy * t);
+                let (mut nx, mut ny) = (fx - cx, fy - cy);
+                if nx.hypot(ny) < 1e-6 {
+                    // Centre already on the line: step off along its normal.
+                    nx = -dy / len;
+                    ny = dx / len;
+                }
+                let n = nx.hypot(ny);
+                let (px, py) = (cx + r * nx / n, cy + r * ny / n);
+                let (p, _, _) = self.point2d(GROUP_SOLVE, px as f64, py as f64);
+                let radial = self.entity(SlvsEntity {
+                    group: GROUP_SOLVE,
+                    type_: SLVS_E_LINE_SEGMENT,
+                    wrkpl: self.workplane,
+                    point: [center_e, p, 0, 0],
+                    ..Default::default()
+                });
+                self.constraint(doc_index, SlvsConstraint {
+                    type_: SLVS_C_PT_ON_CIRCLE,
+                    pt_a: p,
+                    entity_a: circle_e,
+                    ..Default::default()
+                });
+                self.extra_constraint(doc_index, 1, SlvsConstraint {
+                    type_: SLVS_C_PT_LINE_DISTANCE,
+                    pt_a: p,
+                    entity_a: line_e,
+                    val_a: 0.0,
+                    ..Default::default()
+                });
+                // A radius meeting the line at a right angle is exactly a graze.
+                self.extra_constraint(doc_index, 2, SlvsConstraint {
+                    type_: SLVS_C_PERPENDICULAR,
+                    entity_a: radial,
+                    entity_b: line_e,
+                    ..Default::default()
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn add_coincident(
         &mut self,
         doc_index: usize,
@@ -905,6 +1080,18 @@ impl<'a> Builder<'a> {
                         self.secondary_constraint(doc_index, c);
                     }
                 }
+            }
+            // A point on a circular body face's rim (#1858): the face's centre and radius
+            // are fixed by the body, so only the sketch point moves.
+            (E::Point(p), E::FaceCircle { face }) | (E::FaceCircle { face }, E::Point(p)) => {
+                let ep = self.ensure_point(p)?;
+                let ec = self.ensure_face_circle(face)?;
+                self.constraint(doc_index, SlvsConstraint {
+                    type_: SLVS_C_PT_ON_CIRCLE,
+                    pt_a: ep,
+                    entity_a: ec,
+                    ..Default::default()
+                });
             }
             // circle–circle coincidence isn't produced by the UI; skip.
             _ => {}
@@ -1155,6 +1342,8 @@ pub fn solve_sketch(
                 }
             }
             ConstraintKind::Tangent { .. } => {}
+            // #1857: the rims move to meet each other; nothing extra is held.
+            ConstraintKind::TangentCircle { .. } => {}
             ConstraintKind::Midpoint { point, line } => {
                 if should_hold_pair(line, point_pinned(point)) {
                     hold_line(&b, line, &mut dragged, &mut hold_point)
@@ -1200,7 +1389,7 @@ pub fn solve_sketch(
             continue;
         }
         if let Some((e, _, _)) = b.points.get(&center).copied() {
-            let h = SECONDARY_HANDLE_BASE * 2 + c.index() + 1;
+            let h = DRAG_HANDLE_BASE + c.index() + 1;
             b.constraints.push(SlvsConstraint {
                 h,
                 group: GROUP_SOLVE,
@@ -1232,15 +1421,8 @@ pub fn solve_sketch(
             .failed
             .iter()
             .filter(|&&h| h > 0)
-            .filter(|&&h| h <= SECONDARY_HANDLE_BASE * 2)
-            .filter_map(|&h| {
-                let h = if h > SECONDARY_HANDLE_BASE {
-                    h - SECONDARY_HANDLE_BASE
-                } else {
-                    h
-                };
-                handle_keys.get(h as usize - 1).copied()
-            })
+            .filter(|&&h| h < DRAG_HANDLE_BASE)
+            .filter_map(|&h| handle_keys.get(((h - 1) % SECONDARY_HANDLE_BASE) as usize).copied())
             .collect();
         indices.sort_unstable();
         indices.dedup();

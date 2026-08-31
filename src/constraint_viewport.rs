@@ -160,6 +160,29 @@ fn build_graphic(doc: &Document, index: crate::model::ConstraintKey) -> Option<C
         }
         // Tangent joints show through the handle rendering itself (#473), not a badge.
         ConstraintKind::Tangent { .. } => None,
+        // #1857: the badge sits between the two rims it holds together.
+        ConstraintKind::TangentCircle { circle, other } => {
+            let pa = entity_world_position(doc, ConstraintEntity::Circle(circle), sketch)?;
+            let pb = match other {
+                crate::model::TangentTarget::Circle(o) => {
+                    entity_world_position(doc, ConstraintEntity::Circle(o), sketch)?
+                }
+                crate::model::TangentTarget::Line(line) => {
+                    let (a, b) = constraint_line_world_endpoints(doc, sketch, line)?;
+                    midpoint(a, b)
+                }
+            };
+            Some(ConstraintViewportGraphic {
+                constraint_index: index,
+                connectors: vec![ConstraintConnector { a: pa, b: pb }],
+                icons: vec![ConstraintIconPlacement {
+                    constraint_index: index,
+                    world: midpoint(pa, pb),
+                    icon,
+                    offset_toward: None,
+                }],
+            })
+        }
         ConstraintKind::Angle {
             line_a,
             line_b,

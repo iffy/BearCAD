@@ -129,6 +129,30 @@ pub enum Equation {
         radius: VarId,
         weight: f64,
     },
+    /// Two circles tangent at their rims (#1857): `|c1 - c2| - (r1 + r2) = 0` when they
+    /// touch from outside, `|c1 - c2| - |r1 - r2| = 0` when one is nested in the other.
+    CircleCircleTangent {
+        c1x: VarId,
+        c1y: VarId,
+        r1: VarId,
+        c2x: VarId,
+        c2y: VarId,
+        r2: VarId,
+        /// One circle inside the other, rather than side by side.
+        internal: bool,
+        weight: f64,
+    },
+    /// A circle tangent to a line (#1857): the centre sits exactly `radius` from the line.
+    LineCircleTangent {
+        cx: VarId,
+        cy: VarId,
+        radius: VarId,
+        x0: VarId,
+        y0: VarId,
+        x1: VarId,
+        y1: VarId,
+        weight: f64,
+    },
     Pin {
         var: VarId,
         weight: f64,
@@ -438,6 +462,94 @@ impl Equation {
                 push(accum, *py, nv, *weight);
                 push(accum, *cx, -nu, *weight);
                 push(accum, *cy, -nv, *weight);
+                push(accum, *radius, -1.0, *weight);
+            }
+            Equation::CircleCircleTangent {
+                c1x,
+                c1y,
+                r1,
+                c2x,
+                c2y,
+                r2,
+                internal,
+                weight,
+            } => {
+                let du = v(*c1x) - v(*c2x);
+                let dv = v(*c1y) - v(*c2y);
+                let len = du.hypot(dv);
+                let (nu, nv) = if len < 1e-12 {
+                    (1.0, 0.0)
+                } else {
+                    (du / len, dv / len)
+                };
+                push(accum, *c1x, nu, *weight);
+                push(accum, *c1y, nv, *weight);
+                push(accum, *c2x, -nu, *weight);
+                push(accum, *c2y, -nv, *weight);
+                // d/dr of -(r1 + r2) externally; of -|r1 - r2| when nested.
+                let (d1, d2) = if *internal {
+                    let sign = if v(*r1) >= v(*r2) { 1.0 } else { -1.0 };
+                    (-sign, sign)
+                } else {
+                    (-1.0, -1.0)
+                };
+                push(accum, *r1, d1, *weight);
+                push(accum, *r2, d2, *weight);
+            }
+            Equation::LineCircleTangent {
+                cx,
+                cy,
+                radius,
+                x0,
+                y0,
+                x1,
+                y1,
+                weight,
+            } => {
+                // Same perpendicular-distance derivatives as `PointLineDistance`, with the
+                // radius entering at -1 (the distance must *equal* it, not vanish).
+                let pxv = v(*cx);
+                let pyv = v(*cy);
+                let lx0 = v(*x0);
+                let ly0 = v(*y0);
+                let dx = v(*x1) - lx0;
+                let dy = v(*y1) - ly0;
+                let len = dx.hypot(dy);
+                if len < 1e-12 {
+                    return;
+                }
+                let perp_u = -dy / len;
+                let perp_v = dx / len;
+                push(accum, *cx, perp_u, *weight);
+                push(accum, *cy, perp_v, *weight);
+                let dperp_u_dx = dy * dy / (len * len * len);
+                let dperp_u_dy = -dx * dy / (len * len * len);
+                let dperp_v_dx = -dx * dx / (len * len * len);
+                let dperp_v_dy = dx * dy / (len * len * len);
+                push(
+                    accum,
+                    *x0,
+                    -perp_u + (pxv - lx0) * dperp_u_dx + (pyv - ly0) * dperp_v_dx,
+                    *weight,
+                );
+                push(
+                    accum,
+                    *y0,
+                    -perp_v + (pxv - lx0) * dperp_u_dy + (pyv - ly0) * dperp_v_dy,
+                    *weight,
+                );
+                push(
+                    accum,
+                    *x1,
+                    (pxv - lx0) * (-dperp_u_dx) + (pyv - ly0) * (-dperp_v_dx),
+                    *weight,
+                );
+                push(
+                    accum,
+                    *y1,
+                    (pxv - lx0) * (-dperp_u_dy) + (pyv - ly0) * (-dperp_v_dy),
+                    *weight,
+                );
                 push(accum, *radius, -1.0, *weight);
             }
             Equation::Pin { var, weight } => {

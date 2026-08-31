@@ -1723,6 +1723,13 @@ pub fn constraint_related_nodes(kind: &ConstraintKind) -> Vec<HierarchyNode> {
             push(constraint_point_node(a));
             push(constraint_point_node(b));
         }
+        ConstraintKind::TangentCircle { circle, other } => {
+            push(Some(HierarchyNode::Circle(*circle)));
+            match other {
+                crate::model::TangentTarget::Circle(o) => push(Some(HierarchyNode::Circle(*o))),
+                crate::model::TangentTarget::Line(line) => push(constraint_line_node(line)),
+            }
+        }
     }
     out
 }
@@ -3811,6 +3818,17 @@ fn constraint_kind_touches_element(kind: &ConstraintKind, element: &SceneElement
         ConstraintKind::Tangent { a, b } => {
             constraint_point_touches_element(a, element)
                 || constraint_point_touches_element(b, element)
+        }
+        ConstraintKind::TangentCircle { circle, other } => {
+            *element == SceneElement::Circle(*circle)
+                || match other {
+                    crate::model::TangentTarget::Circle(o) => {
+                        *element == SceneElement::Circle(*o)
+                    }
+                    crate::model::TangentTarget::Line(line) => {
+                        constraint_line_touches_element(line, element)
+                    }
+                }
         }
     }
 }

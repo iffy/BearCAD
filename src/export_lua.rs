@@ -1458,6 +1458,13 @@ fn constraint_refs(
             point(a, &mut lines, &mut circles);
             point(b, &mut lines, &mut circles);
         }
+        ConstraintKind::TangentCircle { circle, other } => {
+            circles.push(*circle);
+            match other {
+                crate::model::TangentTarget::Circle(o) => circles.push(*o),
+                crate::model::TangentTarget::Line(line) => line_ref(line, &mut lines),
+            }
+        }
     }
     (lines, circles)
 }
@@ -1772,6 +1779,13 @@ fn rect_export_xywh(doc: &Document, rect: &RectGroup) -> (f32, f32, f32, f32) {
 }
 
 fn emit_constraint(doc: &Document, c: &crate::model::Constraint, out: &mut String) {
+    // Every geometric arm below authors its constraint by *selecting* the geometry first, and
+    // a plain `select` of something already selected toggles it back off. Two constraints in a
+    // row that share a piece of geometry would then replay against the wrong selection, so
+    // start each one from empty.
+    let before = out.len();
+    out.push_str("bearcad.clear_selection()\n");
+    let cleared = out.len();
     match &c.kind {
         ConstraintKind::Distance { target } => match target {
             DistanceTarget::LineLength(i) => {
@@ -1889,6 +1903,32 @@ fn emit_constraint(doc: &Document, c: &crate::model::Constraint, out: &mut Strin
             ));
             out.push_str("bearcad.add_geometric_constraint(\"tangent\")\n");
         }
+        // #1857: select the circle, then the rim it hugs, then apply Tangent.
+        ConstraintKind::TangentCircle { circle, other } => {
+            let ord = doc.circles.keys().position(|k| k == *circle).unwrap_or(0);
+            out.push_str(&format!(
+                "bearcad.select({{ kind = \"circle\", index = {ord} }})\n"
+            ));
+            match other {
+                crate::model::TangentTarget::Circle(o) => {
+                    let ord = doc.circles.keys().position(|k| k == *o).unwrap_or(0);
+                    out.push_str(&format!(
+                        "bearcad.select({{ kind = \"circle\", index = {ord} }}, true)\n"
+                    ));
+                }
+                crate::model::TangentTarget::Line(line) => {
+                    out.push_str(&format!(
+                        "bearcad.select({}, true)\n",
+                        constraint_line_table(doc, line)
+                    ));
+                }
+            }
+            out.push_str("bearcad.add_geometric_constraint(\"tangent\")\n");
+        }
+    }
+    // Nothing was emitted (an entity with no script spelling): drop the stray clear.
+    if out.len() == cleared {
+        out.truncate(before);
     }
 }
 
@@ -2743,6 +2783,41 @@ mod tests {
             diffs.is_empty(),
             "round-trip diffs: {diffs:?}\n--- script ---\n{script}"
         );
+    }
+
+    /// #1857: a tangency exports as "select both rims, apply Tangent", and replaying the
+    /// export rebuilds the same two tangencies.
+    #[test]
+    fn tangent_circles_round_trip() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 20 }
+            bearcad.circle{ x = 70, y = 0, r = 10 }
+            bearcad.line{ x = -60, y = 50, x1 = 60, y1 = 50 }
+            bearcad.select{ kind = "circle", index = 0 }
+            bearcad.select({ kind = "circle", index = 1 }, true)
+            bearcad.add_geometric_constraint("tangent")
+            bearcad.clear_selection()
+            bearcad.select{ kind = "circle", index = 0 }
+            bearcad.select({ kind = "line", index = 0 }, true)
+            bearcad.add_geometric_constraint("tangent")
+            "#,
+        );
+        let script = document_to_lua(&state.doc);
+        assert!(!script.contains("bearcad.ui."));
+        let rebuilt = run_lua(&script);
+        let kinds = |doc: &Document| -> Vec<crate::model::ConstraintKind> {
+            doc.constraints
+                .values()
+                .filter(|c| matches!(c.kind, ConstraintKind::TangentCircle { .. }))
+                .map(|c| c.kind.clone())
+                .collect()
+        };
+        // The document is under-constrained (two tangencies leave the pair free to slide),
+        // so replaying lands on some valid pose — what must survive is the tangencies.
+        assert_eq!(kinds(&state.doc).len(), 2, "two tangencies:\n{script}");
+        assert_eq!(kinds(&rebuilt.doc), kinds(&state.doc), "\n{script}");
     }
 
     #[test]

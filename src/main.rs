@@ -7729,7 +7729,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             }
 
             if self.state.tool == Tool::Constraint {
-                // Digit shortcuts 1–7 for the constraint pane rows (#401, see
+                // Digit shortcuts 1–8 for the constraint pane rows (#401, see
                 // GeometricConstraintType::shortcut_label) — Constraint tool only.
                 for (key, egui_key) in [
                     ('1', egui::Key::Num1),
@@ -7739,6 +7739,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     ('5', egui::Key::Num5),
                     ('6', egui::Key::Num6),
                     ('7', egui::Key::Num7),
+                    ('8', egui::Key::Num8),
                 ] {
                     if ctx.input(|i| i.key_pressed(egui_key)) {
                         self.state.apply(Action::ApplyConstraintShortcut(key));

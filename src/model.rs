@@ -1330,6 +1330,22 @@ pub enum ConstraintKind {
         a: ConstraintPoint,
         b: ConstraintPoint,
     },
+    /// Two rims that touch (#1857): `circle` hugs `other` at a single point — two circles
+    /// meeting at their perimeters (outside each other, or one nested inside the other),
+    /// or a circle grazing a line. Unlike [`Self::Tangent`], which is app-maintained bezier
+    /// handle geometry, this is a solved constraint.
+    TangentCircle {
+        circle: CircleKey,
+        other: TangentTarget,
+    },
+}
+
+/// What a circle is tangent to (#1857): another circle's perimeter, or a line.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TangentTarget {
+    Circle(CircleKey),
+    Line(ConstraintLine),
 }
 
 /// Deserialize-only mirror of [`ConstraintKind`] that still understands the legacy `horizontal`/
@@ -1353,6 +1369,7 @@ enum ConstraintKindWire {
         rotation_sign: ConstraintSign,
     },
     Tangent { a: ConstraintPoint, b: ConstraintPoint },
+    TangentCircle { circle: CircleKey, other: TangentTarget },
 }
 
 impl From<ConstraintKindWire> for ConstraintKind {
@@ -1378,6 +1395,7 @@ impl From<ConstraintKindWire> for ConstraintKind {
                 ConstraintKind::Angle { line_a, line_b, rotation_sign }
             }
             W::Tangent { a, b } => ConstraintKind::Tangent { a, b },
+            W::TangentCircle { circle, other } => ConstraintKind::TangentCircle { circle, other },
         }
     }
 }
