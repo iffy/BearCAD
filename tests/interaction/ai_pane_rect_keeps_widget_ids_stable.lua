@@ -9,7 +9,7 @@ bearcad.ui.wait(5)
 bearcad.rect{ width = 80, height = 50 }
 bearcad.ui.wait(5)
 
-local w = bearcad.ui.widget_id_warnings()
+local w = bearcad.debug.widget_id_warnings()
 assert(w == 0,
   "AI pane + rect must not change widget ids between passes, got " .. tostring(w))
 

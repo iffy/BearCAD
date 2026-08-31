@@ -4392,6 +4392,41 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1886: live `count` vs the last Save, without exposing SQL.
+    api.set(
+        "count_saved",
+        lua.create_function(|lua, kind: String| {
+            let table = crate::script::saved_table_for_kind(&kind).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "unknown count kind '{kind}' (valid kinds: {})",
+                    INSPECT_KINDS.join(", ")
+                ))
+            })?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let path = state.path.as_deref().ok_or_else(|| {
+                    mlua::Error::external("count_saved: document has no path")
+                })?;
+                let conn = rusqlite::Connection::open(path)
+                    .map_err(|e| mlua::Error::external(e.to_string()))?;
+                let sql = format!("SELECT COUNT(*) FROM {table}");
+                let n: i64 = conn
+                    .query_row(&sql, [], |row| row.get(0))
+                    .map_err(|e| mlua::Error::external(e.to_string()))?;
+                Ok(n)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = (lua, table, state);
+                Err(mlua::Error::external(
+                    "count_saved is not available in the browser",
+                ))
+            }
+        })?,
+    )?;
+
     api.set(
         "get",
         lua.create_function(|lua, opts: Table| {
@@ -5510,8 +5545,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // The per-tool behaviour table (#1508): every row the runtime reads, so a script can
-    // assert the policy rather than reverse-engineer it. `bearcad.tool_table()` is the whole
-    // table; `bearcad.tool_row()` is the active tool's row in the space the app is in.
+    // assert the policy rather than reverse-engineer it. `bearcad.debug.tool_table()` is
+    // the whole table; `bearcad.debug.tool_row()` is the active tool's row in the space
+    // the app is in.
     fn push_tool_row(
         lua: &Lua,
         row: &crate::tooltable::ToolRow,
@@ -5834,27 +5870,29 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // First-person mode (#91). `fps()` toggles (or `fps(true|false)` forces);
-    // `fps_look(dx, dy)` turns the head in degrees (positive dx right, dy up);
-    // `fps_move{ forward?, strafe? }` walks along the ground in mm;
-    // `fps_jump()` presses the jump key; `fps_fly(on?)` toggles/sets flying;
-    // `fps_advance(seconds)` runs physics with no keys held (lands a jump).
+    // First-person mode (#91/#1892). `first_person()` toggles (or
+    // `first_person(true|false)` forces); `first_person_look(dx, dy)` turns the
+    // head in degrees (positive dx right, dy up);
+    // `first_person_move{ forward?, strafe? }` walks along the ground in mm;
+    // `first_person_jump()` presses the jump key; `first_person_fly(on?)`
+    // toggles/sets flying; `first_person_advance(seconds)` runs physics with no
+    // keys held (lands a jump).
     api.set(
-        "fps",
+        "first_person",
         lua.create_function(|lua, on: Option<bool>| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::FpsMode { on }) }
         })?,
     )?;
     api.set(
-        "fps_look",
+        "first_person_look",
         lua.create_function(|lua, (dx, dy): (f32, f32)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::FpsLook { dx, dy }) }
         })?,
     )?;
     api.set(
-        "fps_move",
+        "first_person_move",
         lua.create_function(|lua, opts: Table| {
             let forward: f32 = opts.get::<Option<f32>>("forward")?.unwrap_or(0.0);
             let strafe: f32 = opts.get::<Option<f32>>("strafe")?.unwrap_or(0.0);
@@ -5863,28 +5901,28 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     api.set(
-        "fps_jump",
+        "first_person_jump",
         lua.create_function(|lua, ()| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::FpsJump) }
         })?,
     )?;
     api.set(
-        "fps_fly",
+        "first_person_fly",
         lua.create_function(|lua, on: Option<bool>| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::FpsFly { on }) }
         })?,
     )?;
     api.set(
-        "fps_advance",
+        "first_person_advance",
         lua.create_function(|lua, seconds: f32| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::FpsAdvance { seconds }) }
         })?,
     )?;
     api.set(
-        "fps_scale",
+        "first_person_scale",
         lua.create_function(|lua, scale: f32| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::FpsScale { scale }) }
@@ -10785,13 +10823,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
-        "import",
+        "globals",
         lua.create_function(|lua, ()| {
             let globals = lua.globals();
             let bearcad: Table = globals.get("bearcad")?;
             for pair in bearcad.pairs::<String, Value>() {
                 let (name, value) = pair?;
-                if name.starts_with('_') || name == "import" {
+                if name.starts_with('_') || name == "globals" {
                     continue;
                 }
                 if let Value::Function(func) = value {
@@ -10812,13 +10850,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         local ui_funcs = {
             "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "context_row_rect", "menu_items", "menu_item_rect", "drawing_view_rect", "drawing_loupe_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
             "add_geometric_constraint",
-            "widget_id_warnings", "headless", "_deferred", "palette", "settings",
+            "headless", "_deferred", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window", "viewport",
             "new_tab", "close_tab", "tab", "tab_count", "window_count", "tabs", "reorder_tab", "detach_tab",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
-            "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
+            "first_person", "first_person_look", "first_person_move", "first_person_jump", "first_person_fly", "first_person_advance", "first_person_scale",
             "camera", "elements_view", "elements_graph", "workbench", "auto_zoom", "animate_joints", "animate_zoom_to_fit",
             "update_channel",
             "snapping", "picker_focus", "angle_snap",
@@ -10841,6 +10879,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         }
         for _, name in ipairs(ui_funcs) do
             bearcad.ui[name] = bearcad[name]
+            bearcad[name] = nil
+        end
+        -- Persistence and runtime probes (#1886): not modeling, so they stay out of
+        -- the top-level namespace and out of `bearcad.globals()`.
+        bearcad.debug = {}
+        local debug_funcs = {
+            "sqlite_scalar", "session_writes", "mesh_cache",
+            "tool_table", "tool_row", "widget_id_warnings",
+        }
+        for _, name in ipairs(debug_funcs) do
+            bearcad.debug[name] = bearcad[name]
             bearcad[name] = nil
         end
         -- Sketch-local (not viewport) manipulation, so it stays in the modeling namespace
@@ -11580,7 +11629,7 @@ pub mod tests {
             bearcad.import_image({path:?})
             bearcad.begin_sketch{{ kind = "image", index = 0 }}
             assert(bearcad.count("sketch") == 1)
-            local row = bearcad.tool_row()
+            local row = bearcad.debug.tool_row()
             assert(row.space == "sketch", "space=" .. tostring(row.space))
             local ok, err = pcall(function()
                 bearcad.begin_sketch{{ kind = "image", index = 9 }}
@@ -13488,20 +13537,20 @@ pub mod tests {
             bearcad.rect{{ width = 20, height = 10 }}
             bearcad.cuboid{{ width = 8, depth = 8, height = 8 }}
             bearcad.save("{path_s}")
-            local bodies0 = bearcad.sqlite_scalar("SELECT COUNT(*) FROM bodies")
-            local lines0 = bearcad.sqlite_scalar("SELECT COUNT(*) FROM lines")
+            local bodies0 = bearcad.count_saved("body")
+            local lines0 = bearcad.count_saved("line")
             assert(bodies0 == 1, "one body after first save")
             bearcad.cuboid{{ width = 4, depth = 4, height = 4, at = {{20, 0, 0}} }}
-            local w = bearcad.session_writes()
+            local w = bearcad.debug.session_writes()
             assert(w.bodies and w.bodies.inserts == 1, "bodies table grew by one insert")
             assert(not w.lines, "existing lines were not deleted/reinserted")
             assert(
-                bearcad.sqlite_scalar("SELECT COUNT(*) FROM bodies") == bodies0,
+                bearcad.count_saved("body") == bodies0,
                 "another connection still sees the last save"
             )
             bearcad.save()
-            assert(bearcad.sqlite_scalar("SELECT COUNT(*) FROM bodies") == bodies0 + 1)
-            assert(bearcad.sqlite_scalar("SELECT COUNT(*) FROM lines") == lines0)
+            assert(bearcad.count_saved("body") == bodies0 + 1)
+            assert(bearcad.count_saved("line") == lines0)
         "#
         ));
         let _ = std::fs::remove_file(&path);
@@ -13526,21 +13575,21 @@ pub mod tests {
             -- Force a committed mesh so Save writes geometry_cache.
             assert(bearcad.body_stats(2).triangles > 0, "boolean result must mesh")
             bearcad.save("{path_s}")
-            assert(bearcad.sqlite_scalar("SELECT COUNT(*) FROM geometry_cache") >= 1,
+            assert(bearcad.debug.sqlite_scalar("SELECT COUNT(*) FROM geometry_cache") >= 1,
                 "saved file must hold a cache row")
             bearcad.new()
             bearcad.open("{path_s}")
-            local s = bearcad.mesh_cache()
+            local s = bearcad.debug.mesh_cache()
             assert(s.warmed >= 1, "open must warm meshes from geometry_cache")
             local misses = s.misses
             assert(bearcad.body_stats(2).triangles > 0)
-            local s2 = bearcad.mesh_cache()
+            local s2 = bearcad.debug.mesh_cache()
             assert(s2.misses == misses, "first-frame boolean mesh must come from cache")
             bearcad.rebuild_geometry()
             -- discard is in the open txn; another connection still sees the last save
-            assert(bearcad.sqlite_scalar("SELECT COUNT(*) FROM geometry_cache") >= 1)
+            assert(bearcad.debug.sqlite_scalar("SELECT COUNT(*) FROM geometry_cache") >= 1)
             bearcad.save()
-            assert(bearcad.sqlite_scalar("SELECT COUNT(*) FROM geometry_cache") == 0,
+            assert(bearcad.debug.sqlite_scalar("SELECT COUNT(*) FROM geometry_cache") == 0,
                 "Save after rebuild publishes the discarded table")
         "#
         ));
@@ -13572,25 +13621,25 @@ pub mod tests {
             bearcad.save("{host_s}")
             bearcad.import_unit{{ path = "{source_s}", link = "static", name = "part" }}
             bearcad.save()
-            assert(bearcad.sqlite_scalar("SELECT typeof(document) FROM units") == "blob",
+            assert(bearcad.debug.sqlite_scalar("SELECT typeof(document) FROM units") == "blob",
                 "units.document must be a blob")
-            assert(bearcad.sqlite_scalar("SELECT CAST(substr(document, 1, 15) AS TEXT) FROM units")
+            assert(bearcad.debug.sqlite_scalar("SELECT CAST(substr(document, 1, 15) AS TEXT) FROM units")
                 == "SQLite format 3", "nested blob must be a .bearcad")
             bearcad.open("{source_s}")
             bearcad.set_parameter("width", "99")
             bearcad.save()
             bearcad.open("{host_s}")
             bearcad.sync_unit(0)
-            local w = bearcad.session_writes()
+            local w = bearcad.debug.session_writes()
             assert(w.units and w.units.updates == 1, "sync replaces the one unit blob")
             assert(not w.unit_instances, "instances stay rows of their own")
             assert(
-                bearcad.sqlite_scalar("SELECT CAST(substr(document, 1, 15) AS TEXT) FROM units")
+                bearcad.debug.sqlite_scalar("SELECT CAST(substr(document, 1, 15) AS TEXT) FROM units")
                     == "SQLite format 3",
                 "committed file still has the last save's blob"
             )
             bearcad.save()
-            assert(bearcad.sqlite_scalar("SELECT typeof(document) FROM units") == "blob")
+            assert(bearcad.debug.sqlite_scalar("SELECT typeof(document) FROM units") == "blob")
         "#
         ));
         let _ = std::fs::remove_file(&source);
@@ -13634,8 +13683,27 @@ pub mod tests {
                                     "export_step", "export_preview",
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
                                     "fillet_vertex", "chamfer_edge", "fillet_edge", "project",
-                                    "tool_table", "tool_row", "version" }) do
+                                    "globals", "count_saved", "version" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
+            end
+            assert(bearcad.debug ~= nil, "bearcad.debug table missing")
+            for _, name in ipairs({ "sqlite_scalar", "session_writes", "mesh_cache",
+                                    "tool_table", "tool_row", "widget_id_warnings" }) do
+                assert(type(bearcad.debug[name]) == "function",
+                  "bearcad.debug." .. name .. " missing")
+                assert(bearcad[name] == nil, "bearcad." .. name .. " should move to bearcad.debug")
+            end
+            assert(bearcad.ui.widget_id_warnings == nil,
+              "widget_id_warnings should not live under ui")
+            for _, name in ipairs({ "first_person", "first_person_look", "first_person_move",
+                                    "first_person_jump", "first_person_fly",
+                                    "first_person_advance", "first_person_scale" }) do
+                assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")
+                assert(bearcad[name] == nil, "bearcad." .. name .. " should move to bearcad.ui")
+            end
+            for _, name in ipairs({ "fps", "fps_look", "fps_move", "fps_jump", "fps_fly",
+                                    "fps_advance", "fps_scale" }) do
+                assert(bearcad.ui[name] == nil, "dropped fps name still present: " .. name)
             end
             -- #1616: there is no AI namespace at all, and no flat spelling of one.
             assert(bearcad.ai == nil, "bearcad.ai should not exist")
@@ -17856,24 +17924,44 @@ pub mod tests {
         }
     }
 
+    /// #1870: `bearcad.globals()` copies modeling functions into `_G`. File imports keep
+    /// `import_*`. Debug probes stay under `bearcad.debug` and are not copied.
     #[test]
-    fn lua_import_exposes_globals() {
-        let mut runner = ScriptRunner::from_lua_source(
+    fn lua_globals_copies_modeling_not_debug() {
+        run_lua_expect_ok(
             r#"
-            bearcad.import()
+            assert(type(bearcad.globals) == "function")
+            assert(type(bearcad.import) == "nil", "import() stole the file-import name")
+            assert(type(bearcad.import_stl) == "function")
+            assert(type(bearcad.import_step) == "function")
+            assert(type(bearcad.import_lua) == "function")
+            assert(type(bearcad.import_image) == "function")
+            assert(type(bearcad.import_unit) == "function")
+            bearcad.globals()
             new()
-            tool("select")
+            rect{ width = 20, height = 10 }
+            assert(count("line") == 4)
+            assert(type(sqlite_scalar) == "nil")
+            assert(type(mesh_cache) == "nil")
+            assert(type(session_writes) == "nil")
+            assert(type(tool_table) == "nil")
+            assert(type(tool_row) == "nil")
+            assert(type(widget_id_warnings) == "nil")
+            assert(type(debug) == "nil")
+            assert(bearcad.sqlite_scalar == nil)
+            assert(bearcad.mesh_cache == nil)
+            assert(bearcad.session_writes == nil)
+            assert(bearcad.tool_table == nil)
+            assert(bearcad.tool_row == nil)
+            assert(bearcad.ui.widget_id_warnings == nil)
+            assert(type(bearcad.debug.sqlite_scalar) == "function")
+            assert(type(bearcad.debug.mesh_cache) == "function")
+            assert(type(bearcad.debug.session_writes) == "function")
+            assert(type(bearcad.debug.tool_table) == "function")
+            assert(type(bearcad.debug.tool_row) == "function")
+            assert(type(bearcad.debug.widget_id_warnings) == "function")
         "#,
-        )
-        .unwrap();
-        runner.verbose = false;
-        let mut state = AppState::default();
-        let mut synthetic = SyntheticInput::default();
-        let ctx = egui::Context::default();
-        while !runner.done {
-            runner.tick(&mut state, &mut synthetic, None, &ctx);
-        }
-        assert_eq!(state.tool, Tool::Select);
+        );
     }
 
     /// #107: `bearcad.count(kind)` counts only non-deleted entities of that kind.
@@ -19133,7 +19221,7 @@ pub mod tests {
     fn lua_tool_table_walks_every_tool_and_picker_focus_errors() {
         run_lua_expect_ok(
             r#"
-            local table = bearcad.tool_table()
+            local table = bearcad.debug.tool_table()
             assert(#table > 0, "the tool table is empty")
             local tools = {}
             local shape
@@ -19170,7 +19258,7 @@ pub mod tests {
               "3D toolbar lists Extrude/Rectangle (#1506)")
 
             bearcad.ui.tool("revolve")
-            local row = bearcad.tool_row()
+            local row = bearcad.debug.tool_row()
             assert(row.tool == "revolve")
             assert(row.space == "solid")
             local has_axis = false
@@ -20130,8 +20218,8 @@ pub mod tests {
     fn lua_widget_id_warnings_is_readable() {
         run_lua_expect_ok(
             r#"
-            assert(type(bearcad.ui.widget_id_warnings) == "function")
-            local n = bearcad.ui.widget_id_warnings()
+            assert(type(bearcad.debug.widget_id_warnings) == "function")
+            local n = bearcad.debug.widget_id_warnings()
             assert(type(n) == "number", "count should be a number, got " .. type(n))
             assert(n >= 0, "count should not be negative")
         "#,
@@ -22594,13 +22682,13 @@ pub mod tests {
         let err = runner.error.expect("unknown plane index should error");
         assert!(err.contains("Unknown construction plane 9"), "unexpected error: {err}");
     }
-    /// #91/#135: `bearcad.ui.fps()` toggles first-person mode; entering keeps the camera
+    /// #91/#135: `bearcad.ui.first_person()` toggles first-person mode; entering keeps the camera
     /// exactly where it was (the player's eye starts at the camera eye, so the view doesn't
     /// move), exiting leaves the mode.
     #[test]
     fn lua_fps_mode_toggles_and_keeps_the_camera_view() {
         let before = crate::camera::Camera::default();
-        let state = run_lua("bearcad.ui.fps()");
+        let state = run_lua("bearcad.ui.first_person()");
         let player = state.fps.as_ref().expect("fps mode should be active");
         assert!(
             (player.eye - before.eye()).length() < 1e-2,
@@ -22619,9 +22707,9 @@ pub mod tests {
             "entering FPS must not change the look direction"
         );
 
-        let state = run_lua("bearcad.ui.fps() bearcad.ui.fps()");
+        let state = run_lua("bearcad.ui.first_person() bearcad.ui.first_person()");
         assert!(state.fps.is_none(), "second toggle should leave FPS mode");
-        let state = run_lua("bearcad.ui.fps(true) bearcad.ui.fps(true)");
+        let state = run_lua("bearcad.ui.first_person(true) bearcad.ui.first_person(true)");
         assert!(state.fps.is_some(), "fps(true) is idempotent");
     }
 
@@ -22629,7 +22717,7 @@ pub mod tests {
     /// shrinks the player (#120) to keep the view in place instead of popping it up.
     #[test]
     fn lua_fps_enter_below_eye_height_shrinks_the_player() {
-        let state = run_lua("bearcad.ui.fps()");
+        let state = run_lua("bearcad.ui.first_person()");
         let player = state.fps.as_ref().unwrap();
         assert!(player.scale < 1.0, "player should shrink, scale={}", player.scale);
         assert!(
@@ -22644,10 +22732,10 @@ pub mod tests {
     fn lua_fps_move_and_look_drive_the_camera() {
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_scale(1)
-            bearcad.ui.fps_look(90, 0)
-            bearcad.ui.fps_move{ forward = 1000, strafe = 500 }
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_scale(1)
+            bearcad.ui.first_person_look(90, 0)
+            bearcad.ui.first_person_move{ forward = 1000, strafe = 500 }
         "#,
         );
         let player = state.fps.as_ref().unwrap();
@@ -22666,10 +22754,10 @@ pub mod tests {
     fn lua_fps_jump_and_fly_physics() {
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_scale(1)
-            bearcad.ui.fps_jump()
-            bearcad.ui.fps_advance(0.2)
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_scale(1)
+            bearcad.ui.first_person_jump()
+            bearcad.ui.first_person_advance(0.2)
         "#,
         );
         let z = state.fps.as_ref().unwrap().eye.z;
@@ -22677,10 +22765,10 @@ pub mod tests {
 
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_scale(1)
-            bearcad.ui.fps_jump()
-            bearcad.ui.fps_advance(3)
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_scale(1)
+            bearcad.ui.first_person_jump()
+            bearcad.ui.first_person_advance(3)
         "#,
         );
         let z = state.fps.as_ref().unwrap().eye.z;
@@ -22688,11 +22776,11 @@ pub mod tests {
 
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_scale(1)
-            bearcad.ui.fps_fly(true)
-            bearcad.ui.fps_jump()
-            bearcad.ui.fps_advance(3)
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_scale(1)
+            bearcad.ui.first_person_fly(true)
+            bearcad.ui.first_person_jump()
+            bearcad.ui.first_person_advance(3)
         "#,
         );
         let player = state.fps.as_ref().unwrap();
@@ -22710,11 +22798,11 @@ pub mod tests {
     fn lua_fps_reenter_resumes_flying_altitude() {
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_scale(1)
-            bearcad.ui.fps_jump()
-            bearcad.ui.fps_advance(0.2)
-            bearcad.ui.fps_fly(true)
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_scale(1)
+            bearcad.ui.first_person_jump()
+            bearcad.ui.first_person_advance(0.2)
+            bearcad.ui.first_person_fly(true)
         "#,
         );
         let player = state.fps.as_ref().unwrap();
@@ -22724,13 +22812,13 @@ pub mod tests {
 
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_scale(1)
-            bearcad.ui.fps_jump()
-            bearcad.ui.fps_advance(0.2)
-            bearcad.ui.fps_fly(true)
-            bearcad.ui.fps(false)
-            bearcad.ui.fps(true)
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_scale(1)
+            bearcad.ui.first_person_jump()
+            bearcad.ui.first_person_advance(0.2)
+            bearcad.ui.first_person_fly(true)
+            bearcad.ui.first_person(false)
+            bearcad.ui.first_person(true)
         "#,
         );
         let player = state.fps.as_ref().expect("should be back in fps mode");
@@ -22748,29 +22836,29 @@ pub mod tests {
         run_lua_expect_ok(
             r#"
             for _, f in ipairs({
-                function() bearcad.ui.fps_jump() end,
-                function() bearcad.ui.fps_look(10, 0) end,
-                function() bearcad.ui.fps_move{ forward = 100 } end,
-                function() bearcad.ui.fps_fly() end,
-                function() bearcad.ui.fps_advance(1) end,
-                function() bearcad.ui.fps_scale(0.5) end,
+                function() bearcad.ui.first_person_jump() end,
+                function() bearcad.ui.first_person_look(10, 0) end,
+                function() bearcad.ui.first_person_move{ forward = 100 } end,
+                function() bearcad.ui.first_person_fly() end,
+                function() bearcad.ui.first_person_advance(1) end,
+                function() bearcad.ui.first_person_scale(0.5) end,
             }) do
                 local ok, err = pcall(f)
-                assert(not ok, "fps command should raise outside FPS mode")
-                assert(tostring(err):find("FPS"), "unexpected error: " .. tostring(err))
+                assert(not ok, "first-person command should raise outside first-person mode")
+                assert(tostring(err):find("first%-person"), "unexpected error: " .. tostring(err))
             end
         "#,
         );
     }
 
-    /// #120: `bearcad.ui.fps_scale(value)` shrinks/grows the player, scaling eye height and
+    /// #120: `bearcad.ui.first_person_scale(value)` shrinks/grows the player, scaling eye height and
     /// movement/jump speed together so mm-detail and building-scale work are both usable.
     #[test]
     fn lua_fps_scale_resizes_the_player_and_their_movement() {
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_scale(0.1)
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_scale(0.1)
         "#,
         );
         let player = state.fps.as_ref().unwrap();
@@ -22787,17 +22875,17 @@ pub mod tests {
 
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_scale(0.1)
-            bearcad.ui.fps_move{ forward = 100 }
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_scale(0.1)
+            bearcad.ui.first_person_move{ forward = 100 }
         "#,
         );
         let small_x = state.fps.as_ref().unwrap().eye.x;
 
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_move{ forward = 100 }
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_move{ forward = 100 }
         "#,
         );
         let normal_x = state.fps.as_ref().unwrap().eye.x;
@@ -22812,16 +22900,16 @@ pub mod tests {
     fn lua_fps_scale_is_clamped_to_the_documented_range() {
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_scale(1e9)
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_scale(1e9)
         "#,
         );
         assert_eq!(state.fps.as_ref().unwrap().scale, crate::fps::MAX_SCALE);
 
         let state = run_lua(
             r#"
-            bearcad.ui.fps()
-            bearcad.ui.fps_scale(-5)
+            bearcad.ui.first_person()
+            bearcad.ui.first_person_scale(-5)
         "#,
         );
         assert_eq!(state.fps.as_ref().unwrap().scale, crate::fps::MIN_SCALE);

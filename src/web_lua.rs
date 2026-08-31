@@ -987,8 +987,8 @@ fn parse_visible(v: Option<&Value>) -> Option<bool> {
 }
 
 /// Verbs that only make sense in the desktop app: synthetic GUI input (which needs the native
-/// frame-by-frame runner to sequence across frames), the frame-pump/screenshot verbs, the
-/// semantic-gizmo drags, and path-based import (#209).
+/// frame-by-frame runner to sequence across frames), the frame-pump/screenshot verbs, and the
+/// semantic-gizmo drags.
 fn is_native_only_verb(name: &str) -> bool {
     matches!(
         name,
@@ -1009,7 +1009,6 @@ fn is_native_only_verb(name: &str) -> bool {
             | "screenshot"
             | "drag_vertex"
             | "drag_line"
-            | "import"
     )
 }
 

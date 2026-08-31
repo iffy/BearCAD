@@ -18,7 +18,7 @@ assert(card, "the aligned child has a card on the page")
 bearcad.ui.click(card.x + card.w / 2 - vp.x, card.y + card.h / 2 - vp.y)
 bearcad.ui.wait(10)
 
-local w = bearcad.ui.widget_id_warnings()
+local w = bearcad.debug.widget_id_warnings()
 assert(w == 0,
   "an aligned view's context section must keep its widget ids stable, got " .. tostring(w))
 
@@ -31,7 +31,7 @@ for _ = 1, 3 do
   bearcad.ui.move(card.x + card.w / 2 - vp.x, card.y + card.h / 2 - vp.y)
   bearcad.ui.wait(3)
 end
-w = bearcad.ui.widget_id_warnings()
+w = bearcad.debug.widget_id_warnings()
 assert(w == 0, "hovering a card's remove button must not either, got " .. tostring(w))
 
 -- Every row the pane draws for a view, driven by name (#1828): hovering each one, and
@@ -58,7 +58,7 @@ for _, view in ipairs({ 0, 1 }) do
   bearcad.ui.key("Escape")
   bearcad.ui.wait(4)
 end
-w = bearcad.ui.widget_id_warnings()
+w = bearcad.debug.widget_id_warnings()
 assert(w == 0, "walking every row and the Style popup must not either, got " .. tostring(w))
 
 print("ok: the drawing context section keeps its widget ids stable")

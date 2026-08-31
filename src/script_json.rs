@@ -248,11 +248,12 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
         "pane" => &["pane", "visible"],
         "scroll_pane" => &["pane", "dy"],
         "ai_sections" => &["how"],
-        "orbit" | "pan" | "fps_look" => &["dx", "dy"],
+        "orbit" | "pan" | "first_person_look" => &["dx", "dy"],
         "wheel" => &["scroll"],
-        "fps" | "fps_fly" => &["on"],
-        "fps_advance" => &["seconds"],
-        "fps_scale" => &["scale"],
+        "first_person" | "first_person_fly" => &["on"],
+        "first_person_advance" => &["seconds"],
+        "first_person_scale" => &["scale"],
+        "count_saved" => &["kind"],
         "set_dim" => &["axis", "value"],
         "focus_dim" | "edit_dim" => &["axis"],
         "set_dim_label_offset" => &["axis", "offset"],
@@ -863,20 +864,24 @@ pub fn instruction_from_json(
             Some(other) => Err(format!("unknown palette action '{other}'")),
         },
 
-        // ----- First-person mode (#91). -----
-        "fps" => Ok(Instruction::FpsMode { on: opt_bool(o, "on")? }),
-        "fps_look" => Ok(Instruction::FpsLook {
-            dx: req_f32(o, "dx", "fps_look")?,
-            dy: req_f32(o, "dy", "fps_look")?,
+        // ----- First-person mode (#91/#1892). -----
+        "first_person" => Ok(Instruction::FpsMode { on: opt_bool(o, "on")? }),
+        "first_person_look" => Ok(Instruction::FpsLook {
+            dx: req_f32(o, "dx", "first_person_look")?,
+            dy: req_f32(o, "dy", "first_person_look")?,
         }),
-        "fps_move" => Ok(Instruction::FpsMove {
+        "first_person_move" => Ok(Instruction::FpsMove {
             forward: opt_f32(o, "forward")?.unwrap_or(0.0),
             strafe: opt_f32(o, "strafe")?.unwrap_or(0.0),
         }),
-        "fps_jump" => Ok(Instruction::FpsJump),
-        "fps_fly" => Ok(Instruction::FpsFly { on: opt_bool(o, "on")? }),
-        "fps_advance" => Ok(Instruction::FpsAdvance { seconds: req_f32(o, "seconds", "fps_advance")? }),
-        "fps_scale" => Ok(Instruction::FpsScale { scale: req_f32(o, "scale", "fps_scale")? }),
+        "first_person_jump" => Ok(Instruction::FpsJump),
+        "first_person_fly" => Ok(Instruction::FpsFly { on: opt_bool(o, "on")? }),
+        "first_person_advance" => Ok(Instruction::FpsAdvance {
+            seconds: req_f32(o, "seconds", "first_person_advance")?,
+        }),
+        "first_person_scale" => Ok(Instruction::FpsScale {
+            scale: req_f32(o, "scale", "first_person_scale")?,
+        }),
 
         // ----- Technical drawings (#180). `drawing` returns the new index on the desktop,
         // but the Instruction it builds is a pure `CreateDrawing`; the handle return, like
@@ -3896,21 +3901,29 @@ mod tests {
             instruction_from_json(&Document::default(), "palette", &json!({ "action": "show" })),
             Ok(Instruction::SetCommandPalette { open: Some(true) })
         );
-        // fps family.
+        // first-person family.
         assert_eq!(
-            instruction_from_json(&Document::default(), "fps", &json!({ "on": true })),
+            instruction_from_json(&Document::default(), "first_person", &json!({ "on": true })),
             Ok(Instruction::FpsMode { on: Some(true) })
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), "fps", &json!({})),
+            instruction_from_json(&Document::default(), "first_person", &json!({})),
             Ok(Instruction::FpsMode { on: None })
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), "fps_move", &json!({ "forward": 100 })),
+            instruction_from_json(
+                &Document::default(),
+                "first_person_move",
+                &json!({ "forward": 100 })
+            ),
             Ok(Instruction::FpsMove { forward: 100.0, strafe: 0.0 })
         );
         assert_eq!(
-            instruction_from_json(&Document::default(), "fps_advance", &json!({ "seconds": 0.5 })),
+            instruction_from_json(
+                &Document::default(),
+                "first_person_advance",
+                &json!({ "seconds": 0.5 })
+            ),
             Ok(Instruction::FpsAdvance { seconds: 0.5 })
         );
     }

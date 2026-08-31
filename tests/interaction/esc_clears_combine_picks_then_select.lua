@@ -31,13 +31,13 @@ assert(bodies and #bodies.items >= 1, "Combine should hold the body")
 
 bearcad.ui.key("escape")
 bearcad.ui.wait(5)
-assert(bearcad.tool_row().tool == "combine", "first Esc keeps Combine")
+assert(bearcad.debug.tool_row().tool == "combine", "first Esc keeps Combine")
 bodies = picker("Bodies") or picker("Side A")
 assert(bodies and #bodies.items == 0, "first Esc empties the picks")
 
 bearcad.ui.key("escape")
 bearcad.ui.wait(5)
-assert(bearcad.tool_row().tool == "select", "second Esc returns to Select")
+assert(bearcad.debug.tool_row().tool == "select", "second Esc returns to Select")
 
 print("ok: Esc clears Combine picks then returns to Select")
 bearcad.quit()

@@ -508,8 +508,8 @@ bearcad.new()
 bearcad.open("path/to/file.bearcad")
 bearcad.save()                 -- Save
 bearcad.save("other.bearcad")  -- Save As
-bearcad.sqlite_scalar("SELECT COUNT(*) FROM bodies")  -- last committed file
-bearcad.session_writes()       -- last incremental flush: { bodies = { inserts = 1, ... } }
+bearcad.count("body")          -- live
+bearcad.count_saved("body")    -- last committed file
 bearcad.clear()
 bearcad.undo()
 bearcad.quit()                 -- close the app when the script ends
