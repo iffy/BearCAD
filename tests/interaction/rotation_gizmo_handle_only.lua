@@ -29,9 +29,7 @@ end
 assert(rot.move_rx and rot.move_rz, "Free Move should show rotation gizmos")
 
 local function gizmo(name)
-  for _, g in ipairs(bearcad.gizmos()) do
-    if g.name == name then return g end
-  end
+  return bearcad.gizmo(name)
 end
 
 -- A point on the Z ring at ~45°, away from every handle, must not start a turn.

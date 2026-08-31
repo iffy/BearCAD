@@ -14,28 +14,21 @@ bearcad.ui.wait(5)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(5)
 
-local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
-    if p.name == name then return p end
-  end
-  return nil
-end
-
 bearcad.ui.tool("chamfer")
 bearcad.ui.wait(5)
-assert(picker("Edges"), "the Chamfer tool should show an Edges picker")
-assert(#picker("Edges").items == 0, "starting empty")
+assert(bearcad.picker("Edges"), "the Chamfer tool should show an Edges picker")
+assert(#bearcad.picker("Edges").items == 0, "starting empty")
 
 -- Top cap: a face click fills the picker with that face's edges (#960).
 bearcad.ui.click_ground(20, 15)
 bearcad.ui.wait(5)
-local first = #picker("Edges").items
+local first = #bearcad.picker("Edges").items
 assert(first >= 3, "a face click should fill the picker, got " .. first)
 
 -- Same face again: toggle removes those edges.
 bearcad.ui.click_ground(20, 15)
 bearcad.ui.wait(5)
-local second = #picker("Edges").items
+local second = #bearcad.picker("Edges").items
 assert(second == 0,
   "re-clicking the face should toggle its edges out, got " .. second)
 

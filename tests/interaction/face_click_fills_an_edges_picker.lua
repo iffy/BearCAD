@@ -19,16 +19,9 @@ bearcad.ui.wait(5)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(5)
 
-local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
-    if p.name == name then return p end
-  end
-  return nil
-end
-
 bearcad.ui.tool("chamfer")
 bearcad.ui.wait(5)
-local edges = picker("Edges")
+local edges = bearcad.picker("Edges")
 assert(edges, "the Chamfer tool should show an Edges picker")
 assert(#edges.items == 0, "starting empty, got " .. #edges.items)
 assert(edges.accepts[1] == "edge", "it takes edges, got " .. tostring(edges.accepts[1]))
@@ -36,7 +29,7 @@ assert(edges.accepts[1] == "edge", "it takes edges, got " .. tostring(edges.acce
 -- Click the body's top cap. It's a face, which the picker can't hold — so its edges go in.
 bearcad.ui.click_ground(20, 15)
 bearcad.ui.wait(5)
-local picked = #picker("Edges").items
+local picked = #bearcad.picker("Edges").items
 assert(picked >= 3,
   "a face click should fill the picker with that face's edges, got " .. picked)
 

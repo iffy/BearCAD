@@ -14,18 +14,11 @@ bearcad.ui.wait(5)
 bearcad.ui.tool("revolve")
 bearcad.ui.wait(5)
 
-local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
-    if p.name == name then return p end
-  end
-  return nil
-end
-
-assert(picker("Profile") and picker("Profile").focused, "Profile starts armed")
+assert(bearcad.picker("Profile") and bearcad.picker("Profile").focused, "Profile starts armed")
 bearcad.ui.picker_focus("Axis")
 bearcad.ui.wait(5)
-assert(picker("Axis") and picker("Axis").focused, "picker_focus should arm Axis")
-assert(not picker("Profile").focused, "and Profile should lose the ring")
+assert(bearcad.picker("Axis") and bearcad.picker("Axis").focused, "picker_focus should arm Axis")
+assert(not bearcad.picker("Profile").focused, "and Profile should lose the ring")
 
 local ok, err = pcall(bearcad.ui.picker_focus, "nope")
 assert(not ok, "unknown picker must error")

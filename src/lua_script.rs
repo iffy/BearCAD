@@ -194,6 +194,15 @@ impl UserData for LuaElement {
             })
         });
         methods.add_method("exists", |lua, this, ()| Ok(this.live_index(lua).is_some()));
+        // #1878: delete this element without requiring or replacing the scene selection.
+        methods.add_method("delete", |lua, this, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                tick.exec(Instruction::DeleteElements {
+                    elements: vec![this.element.clone()],
+                })
+            }
+        });
         // #1866: a line handle names its endpoints without the reserved-word `end` key.
         methods.add_method("start", |lua, this, ()| line_endpoint_handle(lua, this, LineEnd::Start));
         methods.add_method("endpoint", |lua, this, which: String| {
@@ -869,6 +878,36 @@ fn lua_index_arg(lua: &Lua, value: Option<&Value>, what: &str) -> mlua::Result<u
         return Err(mlua::Error::external(format!("{what} requires index")));
     };
     Ordinal::from_lua(value.clone(), lua).map(|o| o.0)
+}
+
+/// One element, or a list of them (#1878). An options-style `{ kind, index }` / `{ name }`
+/// table is one element; an array is a list.
+fn resolve_elements(lua: &Lua, value: Value) -> mlua::Result<Vec<SceneElement>> {
+    match value {
+        Value::Table(table) => {
+            if table.contains_key("kind")?
+                || table.contains_key("type")?
+                || table.contains_key("name")?
+            {
+                return Ok(vec![parse_element_table(lua, table)?]);
+            }
+            let n = table.raw_len();
+            if n == 0 {
+                if table.pairs::<Value, Value>().next().transpose()?.is_none() {
+                    return Ok(Vec::new());
+                }
+                return Err(mlua::Error::external(
+                    "delete expected an element or a list of elements",
+                ));
+            }
+            let mut out = Vec::with_capacity(n as usize);
+            for i in 1..=n {
+                out.push(resolve_element(lua, table.get(i)?)?);
+            }
+            Ok(out)
+        }
+        other => Ok(vec![resolve_element(lua, other)?]),
+    }
 }
 
 fn resolve_element(lua: &Lua, value: Value) -> mlua::Result<SceneElement> {
@@ -3573,6 +3612,39 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     // Gizmo introspection/control (#214): enumerate the viewport gizmos the current tool state
     // exposes, and drive their scalar the way a drag would — so gizmo tools are scriptable.
+    fn push_gizmo_row(
+        lua: &Lua,
+        g: crate::actions::GizmoInfo,
+        state: &crate::actions::AppState,
+        viewport: Option<egui::Rect>,
+    ) -> mlua::Result<Table> {
+        let entry = lua.create_table()?;
+        entry.set("kind", g.kind)?;
+        entry.set("name", g.name)?;
+        // A rotate gizmo's value is radians in the model, degrees over the API (#1657).
+        entry.set(
+            "value",
+            if g.kind == "rotate" { g.value.to_degrees() } else { g.value },
+        )?;
+        if let Some(p) = g.position {
+            let pos = lua.create_table()?;
+            pos.set("x", p.x)?;
+            pos.set("y", p.y)?;
+            pos.set("z", p.z)?;
+            entry.set("position", pos)?;
+            if let Some(viewport) = viewport {
+                let vp = state.cam.view_proj(viewport);
+                if let Some(sp) = state.cam.project(p, viewport, &vp) {
+                    let screen = lua.create_table()?;
+                    screen.set("x", sp.x)?;
+                    screen.set("y", sp.y)?;
+                    entry.set("screen", screen)?;
+                }
+            }
+        }
+        Ok(entry)
+    }
+
     api.set(
         "gizmos",
         lua.create_function(|lua, ()| {
@@ -3580,33 +3652,22 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let state = unsafe { tick.state() };
             let arr = lua.create_table()?;
             for (i, g) in crate::actions::available_gizmos(state).into_iter().enumerate() {
-                let entry = lua.create_table()?;
-                entry.set("kind", g.kind)?;
-                entry.set("name", g.name)?;
-                // A rotate gizmo's value is radians in the model, degrees over the API (#1657).
-                entry.set(
-                    "value",
-                    if g.kind == "rotate" { g.value.to_degrees() } else { g.value },
-                )?;
-                if let Some(p) = g.position {
-                    let pos = lua.create_table()?;
-                    pos.set("x", p.x)?;
-                    pos.set("y", p.y)?;
-                    pos.set("z", p.z)?;
-                    entry.set("position", pos)?;
-                    if let Some(viewport) = tick.viewport {
-                        let vp = state.cam.view_proj(viewport);
-                        if let Some(sp) = state.cam.project(p, viewport, &vp) {
-                            let screen = lua.create_table()?;
-                            screen.set("x", sp.x)?;
-                            screen.set("y", sp.y)?;
-                            entry.set("screen", screen)?;
-                        }
-                    }
-                }
-                arr.set(i + 1, entry)?;
+                arr.set(i + 1, push_gizmo_row(lua, g, state, tick.viewport)?)?;
             }
             Ok(arr)
+        })?,
+    )?;
+    api.set(
+        "gizmo",
+        lua.create_function(|lua, name: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            for g in crate::actions::available_gizmos(state) {
+                if g.name == name {
+                    return Ok(Some(push_gizmo_row(lua, g, state, tick.viewport)?));
+                }
+            }
+            Ok(None)
         })?,
     )?;
     api.set(
@@ -3964,6 +4025,24 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, ()| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::ClearSceneSelection) }
+        })?,
+    )?;
+
+    // #1878: delete by handle/list without requiring or replacing the scene selection.
+    // `delete_selection` stays the GUI-equivalent (whatever is selected).
+    api.set(
+        "delete",
+        lua.create_function(|lua, args: MultiValue| {
+            let args = args.into_vec();
+            let Some(value) = args.first().cloned() else {
+                return Err(mlua::Error::external("delete requires an element"));
+            };
+            let elements = resolve_elements(lua, value)?;
+            if elements.is_empty() {
+                return Err(mlua::Error::external("delete requires an element"));
+            }
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::DeleteElements { elements }) }
         })?,
     )?;
 
@@ -5270,6 +5349,34 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    fn push_picker_row(
+        lua: &Lua,
+        view: &crate::context::ToolPickerView,
+        doc: &crate::model::Document,
+    ) -> mlua::Result<Table> {
+        let entry = lua.create_table()?;
+        entry.set("name", view.heading)?;
+        entry.set("focused", view.picker.is_focused())?;
+        match view.picker.limit() {
+            crate::element_picker::PickLimit::Finite(n) => entry.set("limit", n)?,
+            crate::element_picker::PickLimit::Infinite => {}
+        }
+        let kinds = lua.create_table()?;
+        for (k, kind) in view.picker.filter().accepted_kinds().iter().enumerate() {
+            kinds.set(k + 1, kind.label())?;
+        }
+        entry.set("accepts", kinds)?;
+        let items = lua.create_table()?;
+        for (n, element) in view.picker.picked().iter().enumerate() {
+            let item = lua.create_table()?;
+            item.set("kind", element_kind_name(element.clone()))?;
+            item.set("index", element_index(doc, element.clone()))?;
+            items.set(n + 1, item)?;
+        }
+        entry.set("items", items)?;
+        Ok(entry)
+    }
+
     api.set(
         "pickers",
         lua.create_function(|lua, ()| {
@@ -5279,29 +5386,24 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let state = unsafe { tick.state() };
             let out = lua.create_table()?;
             for (i, view) in state.tool_pickers.iter().enumerate() {
-                let entry = lua.create_table()?;
-                entry.set("name", view.heading)?;
-                entry.set("focused", view.picker.is_focused())?;
-                match view.picker.limit() {
-                    crate::element_picker::PickLimit::Finite(n) => entry.set("limit", n)?,
-                    crate::element_picker::PickLimit::Infinite => {}
-                }
-                let kinds = lua.create_table()?;
-                for (k, kind) in view.picker.filter().accepted_kinds().iter().enumerate() {
-                    kinds.set(k + 1, kind.label())?;
-                }
-                entry.set("accepts", kinds)?;
-                let items = lua.create_table()?;
-                for (n, element) in view.picker.picked().iter().enumerate() {
-                    let item = lua.create_table()?;
-                    item.set("kind", element_kind_name(element.clone()))?;
-                    item.set("index", element_index(&state.doc, element.clone()))?;
-                    items.set(n + 1, item)?;
-                }
-                entry.set("items", items)?;
-                out.set(i + 1, entry)?;
+                out.set(i + 1, push_picker_row(lua, view, &state.doc)?)?;
             }
             Ok(out)
+        })?,
+    )?;
+    api.set(
+        "picker",
+        lua.create_function(|lua, name: String| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            for view in &state.tool_pickers {
+                if view.heading == name {
+                    return Ok(Some(push_picker_row(lua, view, &state.doc)?));
+                }
+            }
+            Ok(None)
         })?,
     )?;
 
@@ -15348,6 +15450,83 @@ pub mod tests {
         "#,
         );
         assert_eq!(state.doc.bodies.len(), 1);
+    }
+
+    /// #1878: `bearcad.delete(element)` removes that element without requiring or replacing
+    /// the scene selection. `delete_selection` stays the GUI-equivalent.
+    #[test]
+    fn lua_delete_does_not_clobber_selection() {
+        let state = run_lua(
+            r#"
+            local keep = bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            local gone = bearcad.cuboid{ at = {50, 0, 0}, width = 5, depth = 5, height = 5 }
+            bearcad.select(keep)
+            local sel = bearcad.selection()
+            assert(#sel == 1 and sel[1].kind == "body" and sel[1].index == keep:index(),
+              "select the body we mean to keep")
+            bearcad.delete(gone)
+            assert(not gone:exists(), "the targeted body is gone")
+            assert(keep:exists(), "the selected body is untouched")
+            sel = bearcad.selection()
+            assert(#sel == 1 and sel[1].kind == "body" and sel[1].index == keep:index(),
+              "delete must not replace the scene selection")
+            -- `{ kind, index }` form, and the handle method, take the same path.
+            local extra = bearcad.cuboid{ at = {80, 0, 0}, width = 3, depth = 3, height = 3 }
+            bearcad.delete{ kind = "body", index = extra:index() }
+            assert(not extra:exists())
+            local last = bearcad.cuboid{ at = {110, 0, 0}, width = 2, depth = 2, height = 2 }
+            last:delete()
+            assert(not last:exists())
+            sel = bearcad.selection()
+            assert(#sel == 1 and sel[1].kind == "body" and sel[1].index == keep:index(),
+              "later deletes still leave the original selection")
+            -- A list deletes every named element in one go.
+            local a = bearcad.cuboid{ at = {0, 50, 0}, width = 2, depth = 2, height = 2 }
+            local b = bearcad.cuboid{ at = {20, 50, 0}, width = 2, depth = 2, height = 2 }
+            bearcad.delete{ a, b }
+            assert(not a:exists() and not b:exists())
+            assert(keep:exists())
+            -- Dependent deletes are still refused, without selecting first.
+            local sides = bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            local box = bearcad.extrude{ polygon = sides, distance = 5 }
+            local ok, err = pcall(bearcad.delete, { kind = "sketch", index = 0 })
+            assert(not ok, "deleting a sketch a feature uses must be refused")
+            assert(tostring(err):find("extrusion"), "unexpected error: " .. tostring(err))
+            assert(box:exists(), "the extrusion's body survives")
+            local empty_ok, empty_err = pcall(bearcad.delete, {})
+            assert(not empty_ok, "an empty list is nothing to delete")
+            assert(tostring(empty_err):find("delete"), "unexpected error: " .. tostring(empty_err))
+        "#,
+        );
+        assert!(state.doc.bodies.len() >= 1);
+    }
+
+    /// #1879: `bearcad.picker(name)` / `bearcad.gizmo(name)` return the named row, or nil.
+    #[test]
+    fn lua_picker_and_gizmo_lookup_by_name() {
+        run_lua_expect_ok(
+            r#"
+            assert(type(bearcad.picker) == "function")
+            assert(type(bearcad.gizmo) == "function")
+            assert(bearcad.picker("nope") == nil, "an unknown picker is nil, not an error")
+            assert(bearcad.gizmo("nope") == nil, "an unknown gizmo is nil, not an error")
+
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.begin_move{ bodies = {0} }
+            bearcad.ui.tool_mode("free")
+            local rz = bearcad.gizmo("move_rz")
+            assert(rz and rz.name == "move_rz", "gizmo looks up by name")
+            assert(rz.kind == "rotate")
+            local listed
+            for _, g in ipairs(bearcad.gizmos()) do
+                if g.name == "move_rz" then listed = g end
+            end
+            assert(listed and listed.value == rz.value, "the named row matches gizmos()")
+            bearcad.set_gizmo{ name = "move_rz", value = 45 }
+            assert(math.abs(bearcad.gizmo("move_rz").value - 45) < 1e-3)
+        "#,
+        );
     }
 
     /// #77: `bearcad.chamfer_edge`/`fillet_edge` chamfer/fillet an analytic edge of an

@@ -19,20 +19,13 @@ bearcad.ui.tool("select")
 bearcad.ui.tool("move")
 bearcad.ui.wait(8)
 
-local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
-    if p.name == name then return p end
-  end
-end
-local bodies = picker("Bodies")
+local bodies = bearcad.picker("Bodies")
 assert(bodies and #bodies.items == 1 and bodies.items[1].kind == "image",
   "the Move tool should hold the one tracing image")
 assert(bearcad.ui.tool_mode() == "free", "an image-only move lands in Free (#1587)")
 
 local function gizmo(name)
-  for _, g in ipairs(bearcad.gizmos()) do
-    if g.name == name then return g end
-  end
+  return bearcad.gizmo(name)
 end
 
 -- The image sits on the ground (XY) plane, so Z is the axis that isn't in it.

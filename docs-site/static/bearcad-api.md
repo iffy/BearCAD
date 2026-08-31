@@ -130,6 +130,8 @@ bearcad.drawing_views(i)           -- a drawing's page: orientation, style, dime
 bearcad.body_edges(i)
 bearcad.body_cylinders(i)
 bearcad.selection()
+bearcad.pickers()                  -- active tool pickers; bearcad.picker("Targets") for one
+bearcad.gizmos()                   -- live gizmo rows; bearcad.gizmo("move_rz") for one
 bearcad.visible(el)                -- effective visibility, component chain included
 bearcad.sketch_dof()
 bearcad.sketch_conflicts()
@@ -145,7 +147,9 @@ A creation call hands back what it made: one element, or a list of them.
 ```
 local sides = bearcad.rect{ x = 0, y = 0, width = 20, height = 10 }   -- four lines
 local box   = bearcad.extrude{ polygon = sides, distance = 5 }        -- the new body
-box:kind()  box:index()  box:id()  box:name()  box:exists()  tostring(box)
+box:kind()  box:index()  box:id()  box:name()  box:exists()  box:delete()  tostring(box)
+bearcad.delete(box)                -- or a list; does not replace the scene selection
+bearcad.delete_selection()         -- whatever is selected (the GUI Delete)
 ```
 
 Ordinals shift when elements are deleted, and a solid op consumes the body it acts on.
@@ -232,6 +236,7 @@ bearcad.count(kind)
 bearcad.cross_section{ name }
 bearcad.cuboid{ width, depth, height, at?, normal?, u_axis?, name? }
 bearcad.cylinder{ radius, height, at?, normal?, u_axis?, name? }
+bearcad.delete(element_or_list)
 bearcad.delete_drawing_loupe{ drawing, view, index }
 bearcad.delete_section_plane{ view, cut }
 bearcad.delete_selection()
@@ -301,6 +306,7 @@ bearcad.fillet_edge{ edges, edge, extrusion, primitive, radius }
 bearcad.fillet_vertex{ points, point, radius }
 bearcad.find(name)
 bearcad.get{ kind, index }
+bearcad.gizmo(name)
 bearcad.gizmos()
 bearcad.hovered()
 bearcad.id(element)   -- the element's stable, never-reused id
@@ -329,6 +335,7 @@ bearcad.open(path)
 bearcad.open_sketch(sketch)
 bearcad.parameter(…)
 bearcad.paste{ linked, x, y, z }?
+bearcad.picker(name)
 bearcad.pickers()
 bearcad.plane{ offset, from, origin, normal, name }
 bearcad.project{ entities, body, bodies, plane, planes, kind, index, name, type }?

@@ -276,6 +276,29 @@ fn run_command(
             return Ok(Value::Null);
         }
     }
+    if name == "delete" {
+        let v = args.get("element").ok_or("delete requires an element")?;
+        let elements = match v {
+            Value::Array(arr) => arr
+                .iter()
+                .map(|item| resolve_element(item, &state.doc))
+                .collect::<Result<Vec<_>, _>>()?,
+            other => vec![resolve_element(other, &state.doc)?],
+        };
+        if elements.is_empty() {
+            return Err("delete requires an element".into());
+        }
+        exec(
+            runner,
+            Instruction::DeleteElements { elements },
+            state,
+            synthetic,
+            viewport,
+            ctx,
+        )?;
+        return Ok(Value::Null);
+    }
+
     if matches!(name, "select" | "set_name" | "set_visible" | "set_construction") {
         let element = resolve_element(
             args.get("element").ok_or_else(|| format!("{name} requires an `element`"))?,

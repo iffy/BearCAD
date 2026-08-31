@@ -3976,6 +3976,7 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   automatable/testable without a mouse. `bearcad.gizmos()` returns the gizmos available in the
   current tool/creation state (`{ kind, name, value }` per handle; `kind` is `"push_pull"`,
   `"rotate"`, or `"offset"`; push/pull and offset in mm, rotate in degrees — #1657).
+  `bearcad.gizmo(name)` (#1879) returns that row or nil.
   `bearcad.set_gizmo{ name, value }` sets the scalar; `bearcad.drag_gizmo{ name, by }`
   nudges it by a delta. The value is applied the same way a drag does (the semantic path). Current coverage: the extrude
   push/pull depth (`"extrude"`), the chamfer/fillet amount (2D sketch-vertex and 3D body-edge,
@@ -4032,9 +4033,10 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   and `image`); `bearcad.body_stats(i)` (mesh
   volume/triangles/bbox); `bearcad.status()`; `bearcad.version()` (Help → About
   identity: release tag, or crate version + SHA); `bearcad.selection()`;
-  `bearcad.parameter("get"|"get_expression", name)`; and **`bearcad.pickers()`** (#968), the
-  active tool's element pickers — per picker its `name`, whether it's `focused`, its `limit`
-  (absent when unlimited), the element-kind names it `accepts`, and the `items` it holds. This
+  `bearcad.parameter("get"|"get_expression", name)`; **`bearcad.pickers()`** (#968) and
+  **`bearcad.picker(name)`** (#1879), the active tool's element pickers — per picker its `name`,
+  whether it's `focused`, its `limit` (absent when unlimited), the element-kind names it
+  `accepts`, and the `items` it holds. `picker(name)` returns that row or nil. This
   is the only way to tell an **accepted** pick from a **rejected** one: a body-set tool consumes
   the click either way, so `selection()` reads the same whether or not the pick landed. A test
   asserting a `PickRule` (#953) needs it. **`bearcad.hovered()`** (#968) reports what the

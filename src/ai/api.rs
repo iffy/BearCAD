@@ -156,6 +156,8 @@ bearcad.drawing_views(i)           -- a drawing's page: orientation, style, dime
 bearcad.body_edges(i)
 bearcad.body_cylinders(i)
 bearcad.selection()
+bearcad.pickers()                  -- active tool pickers; bearcad.picker("Targets") for one
+bearcad.gizmos()                   -- live gizmo rows; bearcad.gizmo("move_rz") for one
 bearcad.visible(el)                -- effective visibility, component chain included
 bearcad.sketch_dof()
 bearcad.sketch_conflicts()
@@ -171,7 +173,9 @@ A creation call hands back what it made: one element, or a list of them.
 ```
 local sides = bearcad.rect{ x = 0, y = 0, width = 20, height = 10 }   -- four lines
 local box   = bearcad.extrude{ polygon = sides, distance = 5 }        -- the new body
-box:kind()  box:index()  box:id()  box:name()  box:exists()  tostring(box)
+box:kind()  box:index()  box:id()  box:name()  box:exists()  box:delete()  tostring(box)
+bearcad.delete(box)                -- or a list; does not replace the scene selection
+bearcad.delete_selection()         -- whatever is selected (the GUI Delete)
 ```
 
 Ordinals shift when elements are deleted, and a solid op consumes the body it acts on.

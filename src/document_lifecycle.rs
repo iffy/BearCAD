@@ -186,17 +186,24 @@ fn point_owner_element(point: &crate::model::ConstraintPoint) -> Option<SceneEle
     })
 }
 
-/// Unique delete targets from the current selection (deduped).
-pub fn delete_targets_from_selection(selection: &SceneSelection) -> Vec<SceneElement> {
+/// Unique delete targets from the given elements (deduped).
+pub fn delete_targets_from_elements(
+    elements: impl IntoIterator<Item = SceneElement>,
+) -> Vec<SceneElement> {
     let mut seen = HashSet::new();
     let mut targets = Vec::new();
-    for element in selection.iter() {
+    for element in elements {
         let target = delete_target_for_element(element);
         if seen.insert(target.clone()) {
             targets.push(target);
         }
     }
     targets
+}
+
+/// Unique delete targets from the current selection (deduped).
+pub fn delete_targets_from_selection(selection: &SceneSelection) -> Vec<SceneElement> {
+    delete_targets_from_elements(selection.iter())
 }
 
 /// Delete one element and any owned children. Returns true if anything changed.

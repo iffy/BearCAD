@@ -1081,6 +1081,8 @@ pub enum Instruction {
     DetachTab { index: Option<usize> },
     DeleteParameter { index: usize },
     DeleteSelection,
+    /// Delete these elements without requiring or replacing the scene selection (#1878).
+    DeleteElements { elements: Vec<SceneElement> },
     /// Show/hide the command palette. `None` toggles.
     SetCommandPalette { open: Option<bool> },
     /// Run the best-matching palette command for a query, with the argument a command that
@@ -2534,6 +2536,18 @@ impl Instruction {
                 format!("bearcad.parameter(\"delete\", {index})")
             }
             Instruction::DeleteSelection => "bearcad.delete_selection()".to_string(),
+            Instruction::DeleteElements { elements } => {
+                if elements.len() == 1 {
+                    format!("bearcad.delete({})", element_lua_ref(&elements[0], doc))
+                } else {
+                    let list = elements
+                        .iter()
+                        .map(|e| element_lua_ref(e, doc))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("bearcad.delete({{ {list} }})")
+                }
+            }
             Instruction::SetCommandPalette { open } => {
                 let verb = match open {
                     Some(true) => "show",
@@ -3936,6 +3950,12 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             index: parameter_ordinal(doc, *index)?,
         }),
         Action::DeleteSelection => Some(Instruction::DeleteSelection),
+        Action::DeleteElement { element } => Some(Instruction::DeleteElements {
+            elements: vec![element.clone()],
+        }),
+        Action::DeleteElements { elements } => Some(Instruction::DeleteElements {
+            elements: elements.clone(),
+        }),
         Action::SetCommandPaletteOpen { open } => Some(Instruction::SetCommandPalette {
             open: Some(*open),
         }),
@@ -9037,6 +9057,11 @@ impl ScriptRunner {
             }
             Instruction::DeleteSelection => {
                 let result = state.apply(Action::DeleteSelection);
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::DeleteElements { elements } => {
+                let result = state.apply(Action::DeleteElements { elements });
                 self.record_action_error(result);
                 StepResult::Continue
             }

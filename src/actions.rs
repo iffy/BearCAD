@@ -29,7 +29,9 @@ use crate::document_health::{
     require_parameter_editable,
     selection_frozen_summary, DocumentHealth,
 };
-use crate::document_lifecycle::{delete_targets_from_selection, delete_elements};
+use crate::document_lifecycle::{
+    delete_elements, delete_targets_from_elements, delete_targets_from_selection,
+};
 use crate::selection::{click_scene_selection, SceneSelection};
 use crate::model::SketchId;
 use crate::view_cube::{self, CubeCornerId, CubeEdgeId};
@@ -3062,6 +3064,8 @@ pub enum Action {
     /// Delete one specific element (right-click → Delete in the Elements pane, #253), independent
     /// of the current selection.
     DeleteElement { element: SceneElement },
+    /// Delete these elements without requiring or replacing the scene selection (#1878).
+    DeleteElements { elements: Vec<SceneElement> },
     SetCommandPaletteOpen { open: bool },
     ToggleCommandPalette,
     ClickSceneElement {
@@ -12692,6 +12696,34 @@ impl AppState {
                 let _ = recompute_document_geometry(&mut self.doc);
                 self.refresh_document_health();
                 self.status = "Deleted element".to_string();
+                ActionResult::Ok
+            }
+            Action::DeleteElements { elements } => {
+                if elements.is_empty() {
+                    self.status = "Nothing to delete".to_string();
+                    return ActionResult::Err("delete requires an element".into());
+                }
+                let targets = delete_targets_from_elements(elements);
+                // #1796: refuse deletes that would silently break dependent features.
+                for target in &targets {
+                    if let Some(e) =
+                        crate::document_lifecycle::deletion_dependents(&self.doc, target)
+                    {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
+                let count = delete_elements(&mut self.doc, &targets);
+                if let Some(session) = self.sketch_session {
+                    if !crate::document_lifecycle::sketch_alive(&self.doc, session.sketch) {
+                        self.exit_sketch_session();
+                    }
+                }
+                self.scene_selection
+                    .retain(|e| crate::document_lifecycle::element_alive(&self.doc, e.clone()));
+                let _ = recompute_document_geometry(&mut self.doc);
+                self.refresh_document_health();
+                self.status = format!("Deleted {count} element(s)");
                 ActionResult::Ok
             }
             Action::DeleteSelection => {
@@ -33267,6 +33299,22 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         // Undoable.
         state.apply(Action::UndoLast);
         assert!(state.doc.bodies.contains(bkey(0)), "delete undoes");
+    }
+
+    /// #1878: DeleteElements removes the named elements and leaves the rest of the
+    /// selection alone — scripts must not have to select first.
+    #[test]
+    fn delete_elements_does_not_clear_selection() {
+        let mut state = two_box_state(false);
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(bkey(1)), additive: false });
+        assert!(state.scene_selection.is_selected(SceneElement::Body(bkey(1))));
+        state.apply(Action::DeleteElements { elements: vec![SceneElement::Body(bkey(0))] });
+        assert!(!state.doc.bodies.contains(bkey(0)), "the targeted body is gone");
+        assert!(state.doc.bodies.contains(bkey(1)), "other bodies are untouched");
+        assert!(
+            state.scene_selection.is_selected(SceneElement::Body(bkey(1))),
+            "delete must not replace the scene selection"
+        );
     }
 
     /// #241: an origin axis is a selectable element — clicking it lands in the scene selection,

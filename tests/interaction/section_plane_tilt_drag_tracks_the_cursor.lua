@@ -37,9 +37,7 @@ assert(bearcad.ui.camera().projection == "orthographic",
   "the sweep needs an orthographic top view, got " .. bearcad.ui.camera().projection)
 
 local function gizmo(name)
-  for _, g in ipairs(bearcad.gizmos()) do
-    if g.name == name then return g end
-  end
+  return bearcad.gizmo(name)
 end
 
 -- Value gizmos are click-to-stick: a click grabs (or releases), and while latched the

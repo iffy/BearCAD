@@ -19,15 +19,8 @@ bearcad.ui.wait(5)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(5)
 
-local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
-    if p.name == name then return p end
-  end
-  return nil
-end
-
 local function side_a()
-  return picker("Bodies") or picker("Side A")
+  return bearcad.picker("Bodies") or bearcad.picker("Side A")
 end
 
 local function ensure_combine_empty()
@@ -45,14 +38,14 @@ for _, mode in ipairs({ "cut", "intersect", "xor" }) do
   ensure_combine_empty()
   bearcad.ui.tool_mode(mode)
   bearcad.ui.wait(5)
-  assert(picker("Side A").focused, mode .. ": Side A starts focused")
-  assert(not picker("Side B").focused, mode .. ": Side B starts unarmed")
+  assert(bearcad.picker("Side A").focused, mode .. ": Side A starts focused")
+  assert(not bearcad.picker("Side B").focused, mode .. ": Side B starts unarmed")
 
   -- First body → Side B arms.
   bearcad.select{ kind = "body", index = 0 }
   bearcad.ui.wait(5)
-  local pa = picker("Side A")
-  local pb = picker("Side B")
+  local pa = bearcad.picker("Side A")
+  local pb = bearcad.picker("Side B")
   assert(pa and #pa.items == 1, mode .. ": first body in Side A")
   assert(pb.focused, mode .. ": first Side A pick arms Side B")
   assert(not pa.focused, mode .. ": Side A must not keep focus")
@@ -60,11 +53,11 @@ for _, mode in ipairs({ "cut", "intersect", "xor" }) do
   -- Re-arm Side A and add a second body — stay on Side A.
   bearcad.ui.picker_focus("Side A")
   bearcad.ui.wait(5)
-  assert(picker("Side A").focused, mode .. ": Side A re-armed")
+  assert(bearcad.picker("Side A").focused, mode .. ": Side A re-armed")
   bearcad.select{ kind = "body", index = 1 }
   bearcad.ui.wait(5)
-  pa = picker("Side A")
-  pb = picker("Side B")
+  pa = bearcad.picker("Side A")
+  pb = bearcad.picker("Side B")
   assert(#pa.items == 2, mode .. ": second body in Side A")
   assert(pa.focused, mode .. ": a non-first Side A pick must keep focus on Side A")
   assert(not pb.focused, mode .. ": Side B stays unarmed")
@@ -78,7 +71,7 @@ bearcad.select{ kind = "body", index = 0 }
 bearcad.ui.wait(5)
 assert(#side_a().items == 1, "first body in Bodies")
 assert(side_a().focused, "union first pick stays on Bodies")
-assert(not picker("Side B"), "union has no Side B picker")
+assert(not bearcad.picker("Side B"), "union has no Side B picker")
 
 print("ok: first Combine Side A pick arms Side B; further picks keep Side A")
 bearcad.quit()

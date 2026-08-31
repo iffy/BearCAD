@@ -25,9 +25,7 @@ bearcad.ui.click_ground(30, 30)
 bearcad.ui.wait(5)
 
 local function gizmo(name)
-  for _, g in ipairs(bearcad.gizmos()) do
-    if g.name == name then return g end
-  end
+  return bearcad.gizmo(name)
 end
 
 local tilt = gizmo("tilt_u")

@@ -25,13 +25,7 @@ bearcad.begin_move{
 bearcad.ui.tool_mode("free")
 bearcad.ui.wait(5)
 
-local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
-    if p.name == name then return p end
-  end
-end
-
-local bodies = picker("Bodies")
+local bodies = bearcad.picker("Bodies")
 assert(bodies and #bodies.items == 1 and bodies.items[1].kind == "body",
   "Free Move starts with the one body")
 
@@ -51,7 +45,7 @@ assert(not h,
 
 bearcad.ui.click_ground(80, 80)
 bearcad.ui.wait(8)
-bodies = picker("Bodies")
+bodies = bearcad.picker("Bodies")
 assert(#bodies.items == 1 and bodies.items[1].kind == "body",
   "clicking the plane must not add it to the move set, got "
     .. #bodies.items .. " item(s), first=" .. tostring(bodies.items[1] and bodies.items[1].kind))
@@ -66,9 +60,9 @@ assert(not h,
 
 bearcad.ui.click_ground(5, 5)
 bearcad.ui.wait(8)
-assert(#picker("Bodies").items == 1,
+assert(#bearcad.picker("Bodies").items == 1,
   "clicking the body must not drop it from the move set, got "
-    .. #picker("Bodies").items)
+    .. #bearcad.picker("Bodies").items)
 
 print("ok: free move hover and click stay on the gizmos")
 bearcad.quit()

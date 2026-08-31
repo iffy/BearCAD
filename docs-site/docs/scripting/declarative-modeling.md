@@ -53,7 +53,10 @@ box:index()     -- its ordinal right now; an error once it's gone
 box:id()        -- "body#3v0" — unique in the document, never reused
 box:name()      -- its name, or nil
 box:exists()    -- false once deleted
+box:delete()    -- or `bearcad.delete(box)` / `bearcad.delete{ box, other }`
 ```
+
+`bearcad.delete` does not require or replace the scene selection. `bearcad.delete_selection()` is the GUI-equivalent (whatever is selected).
 
 A line handle names its vertices: `line:start()` or `line:endpoint("end")`.
 

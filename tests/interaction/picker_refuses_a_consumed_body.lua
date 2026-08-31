@@ -25,14 +25,7 @@ bearcad.combine{ op = "union", a = {0, 1} }
 bearcad.ui.tool("move")
 bearcad.ui.wait(5)
 
-local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
-    if p.name == name then return p end
-  end
-  return nil
-end
-
-local bodies = picker("Bodies")
+local bodies = bearcad.picker("Bodies")
 assert(bodies, "the Move tool should show a Bodies picker")
 assert(bodies.focused, "it should be the focused picker with nothing picked yet")
 assert(#bodies.items == 0, "and start empty, got " .. #bodies.items)
@@ -46,13 +39,13 @@ assert(takes_bodies,
 -- A body another operation has consumed is not a valid pick.
 bearcad.select{ kind = "body", index = 0 }
 bearcad.ui.wait(5)
-assert(#picker("Bodies").items == 0,
-  "a consumed body should not enter the picker, got " .. #picker("Bodies").items)
+assert(#bearcad.picker("Bodies").items == 0,
+  "a consumed body should not enter the picker, got " .. #bearcad.picker("Bodies").items)
 
 -- The live output body does enter it.
 bearcad.select{ kind = "body", index = 2 }
 bearcad.ui.wait(5)
-local items = picker("Bodies").items
+local items = bearcad.picker("Bodies").items
 assert(#items == 1 and items[1].kind == "body" and items[1].index == 2,
   "the live body should enter the picker, got " .. #items)
 

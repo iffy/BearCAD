@@ -262,6 +262,7 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
         "view" => &["view", "id"],
         "palette" => &["action", "query"],
         "select" => &["element", "additive"],
+        "delete" => &["element"],
         "set_name" => &["element", "name"],
         "set_visible" => &["element", "visible"],
         "set_construction" => &["element", "construction"],
@@ -703,6 +704,14 @@ pub fn instruction_from_json(
         "toggle_visibility" => Ok(Instruction::ToggleSelectionVisibility),
         "clear_selection" => Ok(Instruction::ClearSceneSelection),
         "delete_selection" => Ok(Instruction::DeleteSelection),
+        "delete" => {
+            let v = o.get("element").ok_or("delete requires an element")?;
+            let elements = json_elements_list(doc, v)?;
+            if elements.is_empty() {
+                return Err("delete requires an element".into());
+            }
+            Ok(Instruction::DeleteElements { elements })
+        },
 
         // ----- Chamfer/fillet a sketch vertex (#37/#38) or an extrusion's 3D edge (#77). -----
         "chamfer_vertex" | "fillet_vertex" => {
@@ -2625,6 +2634,14 @@ fn parse_project_elements(
     Ok(elements)
 }
 
+/// One element or a list of them — the same values `bearcad.delete` takes (#1878).
+fn json_elements_list(doc: &Document, v: &Value) -> Result<Vec<SceneElement>, String> {
+    match v {
+        Value::Array(arr) => arr.iter().map(|item| json_scene_element(doc, item)).collect(),
+        other => Ok(vec![json_scene_element(doc, other)?]),
+    }
+}
+
 /// A name string or `{ kind, index }` / `{ name }` table — the same values `select` takes.
 fn json_scene_element(doc: &Document, v: &Value) -> Result<SceneElement, String> {
     match v {
@@ -3493,6 +3510,23 @@ mod tests {
         assert_eq!(
             instruction_from_json(&Document::default(), "delete_selection", &json!({})),
             Ok(Instruction::DeleteSelection)
+        );
+        let mut doc = Document::default();
+        let body = doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(xkey(0)),
+            name: None,
+            material: None,
+            shadow: false,
+        });
+        assert_eq!(
+            instruction_from_json(
+                &doc,
+                "delete",
+                &json!({ "element": { "kind": "body", "index": 0 } }),
+            ),
+            Ok(Instruction::DeleteElements {
+                elements: vec![SceneElement::Body(body)]
+            })
         );
     }
 
