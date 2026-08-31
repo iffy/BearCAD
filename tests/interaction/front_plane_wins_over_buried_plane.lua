@@ -29,7 +29,7 @@ bearcad.ui.wait(8)
 
 local h = bearcad.hovered()
 assert(h, "hovering the XY floor should highlight a plane")
-assert(h.kind == "construction_plane" or h.kind == "plane",
+assert(h.kind == "plane",
   "expected a construction plane, got " .. tostring(h.kind))
 assert(h.index == 0,
   "front XY plane (index 0) must win over the big XZ behind it, got index "

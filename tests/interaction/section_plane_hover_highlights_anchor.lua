@@ -34,7 +34,7 @@ bearcad.ui.move_ground(0, 0)
 bearcad.ui.wait(5)
 local h = bearcad.hovered()
 assert(h, "hovering a pickable anchor should highlight it, got nothing")
-assert(h.kind == "face" or h.kind == "construction_plane" or h.kind == "profile",
+assert(h.kind == "face" or h.kind == "plane" or h.kind == "profile",
   "the cutting plane should hover a face or plane, got " .. tostring(h.kind))
 
 print("ok: the cutting plane tool hover-highlights its Anchor options")

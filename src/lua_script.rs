@@ -351,7 +351,7 @@ fn hierarchy_node_kind_name(node: crate::hierarchy::HierarchyNode) -> &'static s
 
 fn element_kind_name(element: SceneElement) -> &'static str {
     match element {
-        SceneElement::ConstructionPlane(_) => "construction_plane",
+        SceneElement::ConstructionPlane(_) => "plane",
         SceneElement::CrossSection(_) => "cross_section",
         SceneElement::SectionPlane { .. } => "section_plane",
         SceneElement::Sketch(_) => "sketch",
@@ -1396,7 +1396,10 @@ fn parse_face_id_table(lua: &Lua, table: Table) -> mlua::Result<FaceId> {
         // live shapes; `face` names which side (`"top"`/`"bottom"`/`"side"` + `edge`, or the
         // cylinder caps / the serde snake_case tags).
         "primitive_face" => {
-            let ordinal: usize = table.ordinal_req("primitive")?;
+            let ordinal: usize = match table.ordinal_opt("shape")? {
+                Some(i) => i,
+                None => table.ordinal_req("primitive")?,
+            };
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -1696,6 +1699,48 @@ fn lua_amount_expr(opts: &Table, key: &str) -> mlua::Result<String> {
     }
 }
 
+/// Radius expression from `r` / `radius` / `diameter` (#1883). Empty when none are set.
+fn radial_radius_expr(lua: &Lua, opts: &Table) -> mlua::Result<String> {
+    if let Some((v, e)) = scalar_arg(lua, opts, "r")? {
+        return Ok(e.unwrap_or_else(|| format!("{v}")));
+    }
+    if let Some((v, e)) = scalar_arg(lua, opts, "radius")? {
+        return Ok(e.unwrap_or_else(|| format!("{v}")));
+    }
+    if let Some((v, e)) = scalar_arg(lua, opts, "diameter")? {
+        return Ok(e.map(|e| format!("({e}) / 2")).unwrap_or_else(|| format!("{}", v * 0.5)));
+    }
+    Ok(String::new())
+}
+
+/// Fillet radius from `r` / `radius` / `diameter` (#1883).
+fn radial_amount_expr(opts: &Table) -> mlua::Result<String> {
+    for key in ["r", "radius"] {
+        match opts.get::<mlua::Value>(key)? {
+            mlua::Value::Nil => continue,
+            mlua::Value::String(s) => return Ok(s.to_str()?.to_string()),
+            mlua::Value::Integer(i) => return Ok(i.to_string()),
+            mlua::Value::Number(n) => return Ok(n.to_string()),
+            _ => {
+                return Err(mlua::Error::external(format!(
+                    "`{key}` must be a number or an expression string"
+                )))
+            }
+        }
+    }
+    match opts.get::<mlua::Value>("diameter")? {
+        mlua::Value::Nil => Err(mlua::Error::external(
+            "fillet requires `r`, `radius`, or `diameter`",
+        )),
+        mlua::Value::String(s) => Ok(format!("({}) / 2", s.to_str()?)),
+        mlua::Value::Integer(i) => Ok(format!("{}", (i as f64) / 2.0)),
+        mlua::Value::Number(n) => Ok(format!("{}", n / 2.0)),
+        _ => Err(mlua::Error::external(
+            "`diameter` must be a number or an expression string",
+        )),
+    }
+}
+
 /// `"start"` / `"end"` (or `"0"` / `"1"`) as a line endpoint.
 fn parse_line_end_name(name: &str) -> mlua::Result<LineEnd> {
     match name.to_ascii_lowercase().as_str() {
@@ -1897,7 +1942,7 @@ fn parse_extrusion_edge_set(
                 };
                 let host = host.or(default_host).ok_or_else(|| {
                     mlua::Error::external(
-                        "each `edges` entry needs an `extrusion` or `primitive`",
+                        "each `edges` entry needs an `extrusion` or `shape`",
                     )
                 })?;
                 Ok((host, parse_extrusion_edge_table(edge_table)?))
@@ -1905,7 +1950,7 @@ fn parse_extrusion_edge_set(
             .collect();
     }
     let host = default_host.ok_or_else(|| {
-        mlua::Error::external("chamfer_edge/fillet_edge requires an `extrusion` or `primitive`")
+        mlua::Error::external("chamfer_edge/fillet_edge requires an `extrusion` or `shape`")
     })?;
     let edge_table: Table = opts.get("edge")?;
     Ok(vec![(host, parse_extrusion_edge_table(edge_table)?)])
@@ -1913,12 +1958,18 @@ fn parse_extrusion_edge_set(
 
 fn parse_treatable_solid_ref(opts: &Table) -> mlua::Result<Option<TreatableSolidRef>> {
     let extrusion: Option<usize> = opts.ordinal_opt("extrusion")?;
-    let primitive: Option<usize> = opts.ordinal_opt("primitive")?;
-    match (extrusion, primitive) {
+    let shape: Option<usize> = match (opts.ordinal_opt("shape")?, opts.ordinal_opt("primitive")?) {
+        (Some(_), Some(_)) => {
+            return Err(mlua::Error::external("give `shape` or `primitive`, not both"))
+        }
+        (Some(i), None) | (None, Some(i)) => Some(i),
+        (None, None) => None,
+    };
+    match (extrusion, shape) {
         (Some(i), None) => Ok(Some(TreatableSolidRef::Extrusion(i))),
         (None, Some(i)) => Ok(Some(TreatableSolidRef::Primitive(i))),
         (Some(_), Some(_)) => Err(mlua::Error::external(
-            "give `extrusion` or `primitive`, not both",
+            "give `extrusion` or `shape`, not both",
         )),
         (None, None) => Ok(None),
     }
@@ -2381,14 +2432,14 @@ fn parse_mate(lua: &Lua, opts: &Table) -> mlua::Result<crate::model::MoveOperati
     Ok(placement)
 }
 
-/// Keys every shape call accepts (#909).
+/// Keys every shape call accepts (#909/#1883).
 fn check_shape_keys(opts: &Table, call: &str) -> mlua::Result<()> {
     check_keys(
         opts,
         call,
         &[
-            "index", "shape", "at", "normal", "u_axis", "width", "depth", "height",
-            "radius", "name",
+            "index", "shape", "at", "normal", "u_axis", "width", "depth", "height", "size",
+            "r", "radius", "diameter", "name",
         ],
     )
 }
@@ -2464,10 +2515,25 @@ fn parse_shape_args(
             None => String::new(),
         })
     };
+    let size = expression("size")?;
+    if !size.is_empty() && kind != crate::model::PrimitiveKind::Cuboid {
+        return Err(mlua::Error::external(format!(
+            "{call}: `size` is only for cuboid/cube/box"
+        )));
+    }
     shape.width = expression("width")?;
     shape.depth = expression("depth")?;
     shape.height = expression("height")?;
-    shape.radius = expression("radius")?;
+    if shape.width.is_empty() {
+        shape.width = size.clone();
+    }
+    if shape.depth.is_empty() {
+        shape.depth = size.clone();
+    }
+    if shape.height.is_empty() {
+        shape.height = size;
+    }
+    shape.radius = radial_radius_expr(lua, opts)?;
     Ok(shape)
 }
 
@@ -2513,16 +2579,7 @@ fn parse_repeat_op_args(
             }
         })
     };
-    // `gap` is what the Repeat pane calls the field; accept it as an alias of `spacing` (#403).
-    let spacing = match (expr("spacing")?, expr("gap")?) {
-        (s, g) if !s.is_empty() && !g.is_empty() => {
-            return Err(mlua::Error::external(
-                "repeat takes `spacing` or its alias `gap`, not both",
-            ))
-        }
-        (s, g) if s.is_empty() => g,
-        (s, _) => s,
-    };
+    let spacing = expr("spacing")?;
     // `to = {...}` picks a face/plane/vertex the fill length is measured to (#645), the same
     // table shape the Extrude tool's "up to" takes.
     let length_target = match opts.get::<Value>("to")? {
@@ -2639,16 +2696,7 @@ fn parse_sketch_repeat_op_args(
             }
         })
     };
-    // `gap` is the pane's name for the field; alias of `spacing` (#403).
-    let spacing = match (expr("spacing")?, expr("gap")?) {
-        (s, g) if !s.is_empty() && !g.is_empty() => {
-            return Err(mlua::Error::external(
-                "repeat takes `spacing` or its alias `gap`, not both",
-            ))
-        }
-        (s, g) if s.is_empty() => g,
-        (s, _) => s,
-    };
+    let spacing = expr("spacing")?;
     Ok((
         sketch,
         lines,
@@ -2829,7 +2877,7 @@ fn parse_mirror_plane(lua: &Lua, opts: &Table) -> mlua::Result<FaceId> {
         Value::Table(t) => parse_face_id_table(lua, t),
         _ => Err(mlua::Error::external(
             "`plane` must be a construction-plane ordinal or a face spec table, \
-             e.g. {kind=\"construction_plane\", index=0}",
+             e.g. {kind=\"plane\", index=0}",
         )),
     }
 }
@@ -2971,7 +3019,7 @@ fn face_kind_name(face: &FaceId) -> &'static str {
     match face {
         FaceId::Circle(_) => "circle",
         FaceId::Polygon(_) => "polygon",
-        FaceId::ConstructionPlane(_) => "construction_plane",
+        FaceId::ConstructionPlane(_) => "plane",
         FaceId::ExtrudeCap { .. } => "extrude_cap",
         FaceId::ExtrudeSide { .. } => "extrude_side",
         FaceId::RevolveCap { .. } => "revolve_cap",
@@ -3522,28 +3570,28 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // #728: override one unit instance's parameter (omit `value` to clear back to the
-    // unit's own). `bearcad.unit_override{ instance = 0, name = "width", value = "20" }`.
-    // Registered under both names (#736 spells it `set_unit_parameter`; `unit_override`
-    // is what session export writes).
-    for hook in ["unit_override", "set_unit_parameter"] {
-        api.set(
-            hook,
-            lua.create_function(|lua, opts: Table| {
-                check_keys(&opts, "unit_override", &["instance", "name", "value", "expression"])?;
-                let instance: usize = opts.get("instance")?;
-                let name: String = opts.get("name")?;
-                let expression: Option<String> = match opts.get::<Option<String>>("value")? {
-                    Some(v) => Some(v),
-                    None => opts.get("expression")?,
-                };
-                let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-                unsafe {
-                    tick.exec(Instruction::SetUnitParameterOverride { instance, name, expression })
-                }
-            })?,
-        )?;
-    }
+    // #728/#1894: override one unit instance's parameter (omit `value` to clear back to
+    // the unit's own). `bearcad.set_unit_parameter{ instance = 0, name = "width", value = "20" }`.
+    api.set(
+        "set_unit_parameter",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(
+                &opts,
+                "set_unit_parameter",
+                &["instance", "name", "value", "expression"],
+            )?;
+            let instance: usize = opts.get("instance")?;
+            let name: String = opts.get("name")?;
+            let expression: Option<String> = match opts.get::<Option<String>>("value")? {
+                Some(v) => Some(v),
+                None => opts.get("expression")?,
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                tick.exec(Instruction::SetUnitParameterOverride { instance, name, expression })
+            }
+        })?,
+    )?;
 
     // #734: switch a unit's link mode: `bearcad.unit_link(0, "static"|"dynamic")`.
     api.set(
@@ -4543,6 +4591,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("x", circle.cx)?;
                     t.set("y", circle.cy)?;
                     t.set("r", circle.r)?;
+                    t.set("radius", circle.r)?;
                     t.set("diameter", circle.diameter())?;
                     t.set("construction", circle.construction)?;
                     if let Some(name) = &circle.name {
@@ -8431,7 +8480,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "repeat_bodies",
-                &["bodies", "axis", "around", "flip", "mode", "count", "spacing", "gap", "length", "to", "name"],
+                &["bodies", "axis", "around", "flip", "mode", "count", "spacing", "length", "to", "name"],
             )?;
             let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(lua, &opts)?;
@@ -8468,7 +8517,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_repeat",
-                &["index", "bodies", "axis", "around", "flip", "mode", "count", "spacing", "gap", "length", "to"],
+                &["index", "bodies", "axis", "around", "flip", "mode", "count", "spacing", "length", "to"],
             )?;
             let op: usize = opts.ordinal_req("index")?;
             let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
@@ -8503,7 +8552,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "repeat_sketch",
-                &["sketch", "lines", "circles", "angle", "dir", "mode", "count", "spacing", "gap", "length"],
+                &["sketch", "lines", "circles", "angle", "dir", "mode", "count", "spacing", "length"],
             )?;
             let (sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
                 parse_sketch_repeat_op_args(&opts)?;
@@ -8540,7 +8589,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_sketch_repeat",
-                &["index", "sketch", "lines", "circles", "angle", "dir", "mode", "count", "spacing", "gap", "length"],
+                &["index", "sketch", "lines", "circles", "angle", "dir", "mode", "count", "spacing", "length"],
             )?;
             let op: usize = opts.ordinal_req("index")?;
             let (_sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
@@ -8730,7 +8779,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &opts,
                 "repeat_cut",
                 &[
-                    "cuts", "axis", "around", "flip", "mode", "count", "spacing", "gap",
+                    "cuts", "axis", "around", "flip", "mode", "count", "spacing",
                     "length", "to",
                 ],
             )?;
@@ -8781,7 +8830,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 &opts,
                 "repeat_sketches",
                 &[
-                    "sketches", "axis", "around", "flip", "mode", "count", "spacing", "gap",
+                    "sketches", "axis", "around", "flip", "mode", "count", "spacing",
                     "length", "to",
                 ],
             )?;
@@ -9340,14 +9389,25 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 } else {
                     (360.0, String::new(), false)
                 };
-            // Helical pitch (mm per full turn): `pitch` / `offset` preferred; `gap` as alias.
-            let pitch_arg = match scalar_arg(lua, &opts, "pitch")? {
-                Some(v) => Some(v),
-                None => match scalar_arg(lua, &opts, "offset")? {
-                    Some(v) => Some(v),
-                    None => scalar_arg(lua, &opts, "gap")?,
-                },
-            };
+            check_keys(
+                &opts,
+                "revolve",
+                &[
+                    "circle",
+                    "circles",
+                    "polygon",
+                    "axis",
+                    "symmetric",
+                    "bodies",
+                    "body",
+                    "revolutions",
+                    "angle",
+                    "pitch",
+                    "name",
+                ],
+            )?;
+            // Helical pitch (mm per full turn) is `pitch` only (#1894).
+            let pitch_arg = scalar_arg(lua, &opts, "pitch")?;
             let (pitch_mm, pitch_expression) = if let Some((v, e)) = pitch_arg {
                 let expr = e.unwrap_or_default();
                 let v = if expr.is_empty() {
@@ -9387,13 +9447,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Primitive shapes (#909): `bearcad.cuboid{ at = {x,y,z}?, normal = {..}?, u_axis = {..}?,
-    // width =, depth =, height =, name = }`, `bearcad.cylinder{ radius =, height = }`,
-    // `bearcad.sphere{ radius = }`. Every dimension takes a number or an expression string;
-    // `at` defaults to the origin and `normal` to +Z (the ground), so the simplest call is
-    // just the sizes. `bearcad.edit_shape{ index =, shape = "cuboid", ... }` re-points one.
+    // Primitive shapes (#909/#1883): `bearcad.cuboid{ … }`, aliases `cube`/`box`
+    // (`cube{ size = 10 }` for equal sides), `bearcad.cylinder{ r|radius|diameter, height }`,
+    // `bearcad.sphere{ r|radius|diameter }`. Every dimension takes a number or an expression
+    // string; `at` defaults to the origin and `normal` to +Z (the ground).
+    // `bearcad.edit_shape{ index =, shape = "cuboid", ... }` re-points one.
     for (call, kind) in [
         ("cuboid", crate::model::PrimitiveKind::Cuboid),
+        ("cube", crate::model::PrimitiveKind::Cuboid),
+        ("box", crate::model::PrimitiveKind::Cuboid),
         ("cylinder", crate::model::PrimitiveKind::Cylinder),
         ("sphere", crate::model::PrimitiveKind::Sphere),
     ] {
@@ -9442,10 +9504,22 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let mut shape = parse_shape_args(lua, &opts, kind, "edit_shape")?;
             // Unmentioned dimensions keep what the shape already had.
             if let Some(old) = existing {
-                if !opts.contains_key("width")? { shape.width = old.width.clone(); }
-                if !opts.contains_key("depth")? { shape.depth = old.depth.clone(); }
-                if !opts.contains_key("height")? { shape.height = old.height.clone(); }
-                if !opts.contains_key("radius")? { shape.radius = old.radius.clone(); }
+                let size_set = opts.contains_key("size")?;
+                if !opts.contains_key("width")? && !size_set {
+                    shape.width = old.width.clone();
+                }
+                if !opts.contains_key("depth")? && !size_set {
+                    shape.depth = old.depth.clone();
+                }
+                if !opts.contains_key("height")? && !size_set {
+                    shape.height = old.height.clone();
+                }
+                if !opts.contains_key("radius")?
+                    && !opts.contains_key("r")?
+                    && !opts.contains_key("diameter")?
+                {
+                    shape.radius = old.radius.clone();
+                }
                 if !opts.contains_key("at")? { shape.origin = old.origin; }
                 if !opts.contains_key("normal")? { shape.normal = old.normal; }
                 if !opts.contains_key("u_axis")? { shape.u_axis = old.u_axis; }
@@ -10846,9 +10920,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "fillet_vertex",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "fillet_vertex",
+                &["points", "point", "r", "radius", "diameter"],
+            )?;
             let points = parse_vertex_treatment_points(lua, &opts)?;
-            // Number or expression string, so `radius = "r"` ties the fillet to a parameter.
-            let radius = lua_amount_expr(&opts, "radius")?;
+            // Number or expression string; `r`/`radius`/`diameter` (#1883).
+            let radius = radial_amount_expr(&opts)?;
             unsafe {
                 tick.exec(Instruction::VertexTreatment {
                     points,
@@ -10890,8 +10969,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "fillet_edge",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "fillet_edge",
+                &[
+                    "edges", "edge", "extrusion", "shape", "primitive", "r", "radius",
+                    "diameter",
+                ],
+            )?;
             let edges = parse_extrusion_edge_set(&opts)?;
-            let expression = lua_amount_expr(&opts, "radius")?;
+            let expression = radial_amount_expr(&opts)?;
             let amount = crate::value::eval_length_mm_in_doc(
                 &expression,
                 unsafe { &tick.state().doc },
@@ -17418,7 +17505,7 @@ pub mod tests {
                 r#"
             bearcad.new()
             bearcad.cuboid{ width = 40, depth = 40, height = 20 }
-            bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 3, gap = 10 }
+            bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 3, spacing = 10 }
             "#,
                 |s| matches!(s, crate::model::BodySource::Repeated { .. }),
             ),
@@ -18130,7 +18217,7 @@ pub mod tests {
             local ok, err = pcall(bearcad.count, "widget")
             assert(not ok, "unknown kind should error")
             err = tostring(err)
-            assert(err:find("construction_plane") and err:find("parameter"),
+            assert(err:find("plane") and err:find("parameter"),
                    "error should name the valid kinds: " .. err)
         "#,
         );
@@ -18158,8 +18245,8 @@ pub mod tests {
             assert(math.abs(c.r - 12) < 1e-4 and math.abs(c.diameter - 24) < 1e-4)
             assert(c.construction == false and c.name == nil)
             local s = bearcad.get{ kind = "sketch", index = 0 }
-            assert(s.face == "construction_plane")
-            local p = bearcad.get{ kind = "construction_plane", index = 0 }
+            assert(s.face == "plane")
+            local p = bearcad.get{ kind = "plane", index = 0 }
             assert(p.origin[3] == 0 and p.normal[3] == 1)
             assert(bearcad.get{ kind = "line", index = 99 } == nil)
             assert(bearcad.get{ kind = "body", index = 0 } == nil)
@@ -18446,9 +18533,9 @@ pub mod tests {
         );
     }
 
-    /// #403: unknown table keys are an error naming the accepted keys, `gap` works as
-    /// the Repeat pane's alias for `spacing`, `count("image")` is a valid kind, and
-    /// `drawing_view{ sketch = i }` projects a sketch.
+    /// #403/#1894: unknown table keys are an error naming the accepted keys, repeat
+    /// takes `spacing`, `count("image")` is a valid kind, and `drawing_view{ sketch = i }`
+    /// projects a sketch.
     #[test]
     fn lua_api_polish_key_checks_aliases_and_sketch_views() {
         let state = run_lua(
@@ -18468,8 +18555,7 @@ pub mod tests {
             end)
             assert(not ok2 and tostring(err2):find("witdh"), tostring(err2))
 
-            -- `gap` = the Repeat pane's name for `spacing`.
-            bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 3, gap = 5 }
+            bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 3, spacing = 5 }
 
             -- Images count (zero here, but the kind is valid).
             assert(bearcad.count("image") == 0)
@@ -19860,7 +19946,7 @@ pub mod tests {
                 r#"
                 bearcad.rect{{ width = 10, height = 10 }}
                 bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
-                bearcad.repeat_bodies{{ bodies = {{0}}, axis = "x", count = 3, gap = 5{flip} }}
+                bearcad.repeat_bodies{{ bodies = {{0}}, axis = "x", count = 3, spacing = 5{flip} }}
                 "#
             ));
             let op = &state.doc.repeat_ops.values().nth(0).unwrap();
@@ -19949,7 +20035,7 @@ pub mod tests {
             err = tostring(err)
             assert(not err:find("converting Lua integer to table", 1, true), err)
             assert(not err:find("converting Lua string to table", 1, true), err)
-            assert(err:find("plane", 1, true) and err:find("construction_plane", 1, true), err)
+            assert(err:find("plane", 1, true), err)
             "#,
         );
     }
@@ -19997,7 +20083,7 @@ pub mod tests {
             bearcad.repeat_bodies{
                 bodies = {0},
                 axis = { body = 0, from = {0, 0, 0}, to = {20, 0, 0} },
-                count = 3, gap = 5,
+                count = 3, spacing = 5,
             }
             "#,
         );
@@ -20023,7 +20109,7 @@ pub mod tests {
             r#"
             bearcad.rect{{ width = 20, height = 20 }}
             bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
-            bearcad.repeat_bodies{{ bodies = {{0}}, axis = {rendered}, count = 3, gap = 5 }}
+            bearcad.repeat_bodies{{ bodies = {{0}}, axis = {rendered}, count = 3, spacing = 5 }}
             "#
         ));
         assert_eq!(round_tripped.doc.repeat_ops.values().nth(0).unwrap().axis, op.axis);
@@ -20337,6 +20423,100 @@ pub mod tests {
             err = tostring(err)
             assert(err:find("radius") and err:find("diameter"),
                    "error should name the accepted keys: " .. err)
+        "#,
+        );
+    }
+
+    /// #1883: `cube`/`box` alias cuboid (`cube{ size = 10 }` is equal sides); `r` /
+    /// `radius` / `diameter` work on every radial size; circle `get` includes `radius`;
+    /// kind names are the create-verb shorts (`plane`, `shape`, `revolution`).
+    #[test]
+    fn lua_cube_radius_and_canonical_kinds() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cube{ size = 10, name = "Block" }
+            local s = bearcad.get{ kind = "shape", index = 0 }
+            assert(s.kind == "cuboid")
+            assert(math.abs(s.width - 10) < 1e-4 and math.abs(s.depth - 10) < 1e-4
+                   and math.abs(s.height - 10) < 1e-4)
+
+            bearcad.new()
+            bearcad.box{ width = 4, depth = 5, height = 6 }
+            local b = bearcad.get{ kind = "shape", index = 0 }
+            assert(math.abs(b.width - 4) < 1e-4 and math.abs(b.depth - 5) < 1e-4
+                   and math.abs(b.height - 6) < 1e-4)
+
+            bearcad.new()
+            bearcad.cylinder{ r = 5, height = 10 }
+            local cyl = bearcad.get{ kind = "shape", index = 0 }
+            assert(math.abs(cyl.radius - 5) < 1e-4)
+            bearcad.sphere{ diameter = 8 }
+            local sp = bearcad.get{ kind = "shape", index = 1 }
+            assert(math.abs(sp.radius - 4) < 1e-4)
+
+            bearcad.new()
+            bearcad.circle{ r = 12 }
+            local circ = bearcad.get{ kind = "circle", index = 0 }
+            assert(math.abs(circ.r - 12) < 1e-4)
+            assert(math.abs(circ.radius - 12) < 1e-4, "get must include radius, not only r")
+            assert(math.abs(circ.diameter - 24) < 1e-4)
+
+            local p = bearcad.plane{ offset = 5 }
+            assert(p:kind() == "plane", "plane, got " .. p:kind())
+            assert(bearcad.count("plane") >= 4)
+            bearcad.begin_sketch{ kind = "plane", index = 0 }
+            bearcad.circle{ x = 0, y = 0, r = 2 }
+
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 20 }
+            bearcad.extrude{ circle = 0, distance = 5 }
+            bearcad.fillet_edge{ extrusion = 0,
+                edge = { kind = "top", face = 0, edge = 0 }, r = 2 }
+            assert(bearcad.count("edge_treatment") == 1)
+
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.fillet_vertex{
+                point = { kind = "line", index = 0, endpoint = "end" },
+                diameter = 6,
+            }
+            assert(bearcad.count("sketch_chamfer") == 1)
+        "#,
+        );
+    }
+
+    /// #1894: one name per concept. `set_unit_parameter` (not `unit_override`),
+    /// repeat `spacing` (not `gap`), revolve helix `pitch` (not `offset`/`gap`).
+    #[test]
+    fn lua_one_name_per_script_key() {
+        run_lua_expect_ok(
+            r#"
+            assert(type(bearcad.set_unit_parameter) == "function")
+            assert(bearcad.unit_override == nil, "unit_override is gone")
+
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            local ok, err = pcall(function()
+                bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 3, gap = 5 }
+            end)
+            assert(not ok, "repeat gap should error")
+            err = tostring(err)
+            assert(err:find("gap") and err:find("spacing"), err)
+            bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 3, spacing = 5 }
+
+            bearcad.new()
+            bearcad.rect{ x = 10, y = 0, width = 5, height = 4 }
+            bearcad.exit_sketch()
+            local ok2, err2 = pcall(function()
+                bearcad.revolve{ polygon = {0,1,2,3}, axis = "y", gap = 10 }
+            end)
+            assert(not ok2, "revolve gap should error")
+            err2 = tostring(err2)
+            assert(err2:find("gap") and err2:find("pitch"), err2)
+            bearcad.revolve{ polygon = {0,1,2,3}, axis = "y", pitch = 10 }
+            local rev = bearcad.get{ kind = "revolution", index = 0 }
+            assert(math.abs(rev.pitch - 10) < 1e-4)
         "#,
         );
     }

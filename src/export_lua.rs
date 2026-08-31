@@ -518,7 +518,7 @@ impl<'a> EmitCtx<'a> {
                         .position(|k| k == key)
                         .unwrap_or(0);
                     out.push_str(&format!(
-                        "bearcad.set_name({{ kind = \"construction_plane\", index = {ord} }}, {name:?})\n"
+                        "bearcad.set_name({{ kind = \"plane\", index = {ord} }}, {name:?})\n"
                     ));
                 }
             }
@@ -2175,7 +2175,7 @@ fn component_member_ref(
         };
     }
     match member {
-        M::ConstructionPlane(k) => ord!(construction_planes, k, "construction_plane"),
+        M::ConstructionPlane(k) => ord!(construction_planes, k, "plane"),
         M::Extrusion(k) => ord!(extrusions, k, "extrusion"),
         M::Body(k) => ord!(bodies, k, "body"),
         M::Loft(k) => ord!(lofts, k, "loft"),

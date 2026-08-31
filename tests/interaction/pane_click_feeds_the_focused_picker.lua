@@ -38,7 +38,7 @@ assert(picker("Cutters").focused,
 bearcad.select{ kind = "plane", index = 0 }
 bearcad.ui.wait(5)
 local cutters = picker("Cutters").items
-assert(#cutters == 1 and cutters[1].kind == "construction_plane",
+assert(#cutters == 1 and cutters[1].kind == "plane",
   "the plane should enter Cutters, got " .. #cutters)
 assert(#picker("Targets").items == 1, "and Targets is untouched")
 

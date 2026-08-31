@@ -122,7 +122,7 @@ To sketch on a specific plane — `0`, `1` and `2` are the default ground/front/
 planes; planes you create start at `3`:
 
 ```lua
-bearcad.begin_sketch("construction_plane", 3)
+bearcad.begin_sketch{ kind = "plane", index = 3 }
 bearcad.rect{ width = 80, height = 50, name = "Main box" }
 ```
 
@@ -249,7 +249,7 @@ bearcad.fillet_vertex{ points = {
 ```
 
 On a solid, `chamfer_edge`/`fillet_edge` take an analytic edge of an extrusion or a
-Shape-tool cuboid (`primitive = 0` instead of `extrusion = 0`) — a vertical
+Shape-tool cuboid (`shape = 0` instead of `extrusion = 0`) — a vertical
 edge between two side walls, or a cap edge where a side wall meets the top or base
 (`kind = "cap"` with `top = true`/`false`, or the shorthand `kind = "top"` / `"bottom"`).
 On a circle-profile extrusion the whole rim is one edge — `{ kind = "top", face = 0, edge = 0 }`:
@@ -349,13 +349,13 @@ bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
 
 assert(bearcad.count("line") == 4)             -- non-deleted entities per kind
 -- kinds (`count` and `get` take the same set): line, circle, sketch, constraint,
---        construction_plane, extrusion, shape, body, drawing, cross_section,
+--        plane, extrusion, shape, body, drawing, cross_section,
 --        section_plane, parameter, sketch_text, component, image, joint
 local l = bearcad.get{ kind = "line", index = 0 }
 assert(l.x0 == 0 and math.abs(l.length - 40) < 1e-3)
 
 -- A construction plane reports its drawn rectangle in its own u/v axes.
-local e = bearcad.get{ kind = "construction_plane", index = 0 }.extent
+local e = bearcad.get{ kind = "plane", index = 0 }.extent
 assert(e.u_min == 5 and e.u_max == 105)
 
 local s = bearcad.body_stats(0)                -- volume / triangles / bbox of a body's mesh

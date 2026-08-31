@@ -51,7 +51,7 @@ A path runs both ways, and picking one doesn't say which you meant. Tick **Flip*
 round a turn, or from the far end of a curve.
 
 ```lua
-bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 4, gap = 5, flip = true }
+bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 4, spacing = 5, flip = true }
 ```
 
 ## Around the path

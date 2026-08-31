@@ -60,10 +60,10 @@ Edit or delete it later just like the 3D version.
 ```lua
 -- 3D: reflect bodies across a plane (`plane = 0` is construction-plane ordinal 0)
 bearcad.mirror_bodies{ plane = 0, bodies = { 0, 1 } }
-bearcad.edit_mirror{ index = 0, plane = { kind = "construction_plane", index = 0 }, bodies = { 0 } }
+bearcad.edit_mirror{ index = 0, plane = { kind = "plane", index = 0 }, bodies = { 0 } }
 
 -- output = "new" (the default), "add", or "cut"
-bearcad.mirror_bodies{ plane = { kind = "construction_plane", index = 0 },
+bearcad.mirror_bodies{ plane = { kind = "plane", index = 0 },
                        bodies = { 0 }, output = "add" }
 
 -- In a sketch: reflect lines/circles across a straight line, or `"x"`/`"y"` for

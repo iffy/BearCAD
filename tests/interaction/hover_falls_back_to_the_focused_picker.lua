@@ -34,7 +34,7 @@ bearcad.ui.move_ground(20, 15)
 bearcad.ui.wait(5)
 h = bearcad.hovered()
 assert(h, "the Mirror tool should hover something its pickers can take, got nothing")
-assert(h.kind == "body" or h.kind == "construction_plane" or h.kind == "face",
+assert(h.kind == "body" or h.kind == "plane" or h.kind == "face",
   "and it should be a plane, face or body — got " .. h.kind)
 
 -- The Joint tool renders its Parts picker in place among its own controls, but it is

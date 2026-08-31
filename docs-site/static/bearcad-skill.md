@@ -67,7 +67,7 @@ bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0 }            -- explicit endpoints
 bearcad.line{ length = 80, angle = 45 }                  -- length + angle
 bearcad.text{ text = "Hello", x = 10, y = 10, size = 12 }
 
-bearcad.begin_sketch("construction_plane", 0)   -- sketch on a specific plane
+bearcad.begin_sketch{ kind = "plane", index = 0 }   -- sketch on a specific plane
 bearcad.open_sketch(0)                          -- re-enter sketch 0
 bearcad.exit_sketch()
 ```
