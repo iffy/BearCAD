@@ -155,7 +155,7 @@ pub const SIGNATURES: &[(&str, &str)] = &[
     ("bearcad.paste"                       , "bearcad.paste{ linked, x, y, z }?"),
     ("bearcad.picker"                      , "bearcad.picker(name)"),
     ("bearcad.pickers"                     , "bearcad.pickers()"),
-    ("bearcad.plane"                       , "bearcad.plane{ offset, from, origin, normal, name }"),
+    ("bearcad.plane"                       , "bearcad.plane{ offset, from, origin, normal, axis, angle, name }"),
     ("bearcad.project"                     , "bearcad.project{ entities, body, bodies, plane, planes, kind, index, name, type }?"),
     ("bearcad.quit"                        , "bearcad.quit()"),
     ("bearcad.rebuild_geometry"            , "bearcad.rebuild_geometry()"),

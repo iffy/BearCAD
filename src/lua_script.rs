@@ -11,8 +11,8 @@ use crate::model::{
 };
 use crate::names::find_element_by_name;
 use crate::script::{
-    parse_key, Instruction, ScreenshotRegion, ScriptRunner, StepResult, SyntheticInput,
-    TreatableSolidRef,
+    parse_key, Instruction, PlaneAxisRef, ScreenshotRegion, ScriptRunner, StepResult,
+    SyntheticInput, TreatableSolidRef,
 };
 use crate::value::{AngleUnit, LengthUnit};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
@@ -1927,6 +1927,52 @@ fn parse_boolean_op_args(
     }
     let keep_b: Option<bool> = opts.get("keep_b")?;
     Ok((kind, a, b, keep_b.unwrap_or(false)))
+}
+
+/// Parses `bearcad.plane{ axis = … }` (#1876): `"x"`/`"y"`/`"z"` for a world axis, a
+/// sketch-line ordinal, `{ line = i }`, or a line handle.
+fn parse_plane_axis(lua: &Lua, value: Value) -> mlua::Result<PlaneAxisRef> {
+    const SHAPES: &str = "\"x\"|\"y\"|\"z\" or a line";
+    match value {
+        Value::String(sv) => crate::construction::GlobalAxis::from_script_name(&sv.to_string_lossy())
+            .map(PlaneAxisRef::Global)
+            .ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "unknown plane axis '{}' ({SHAPES})",
+                    sv.to_string_lossy()
+                ))
+            }),
+        Value::Integer(i) if i >= 0 => Ok(PlaneAxisRef::Line(i as usize)),
+        Value::Number(n) if n >= 0.0 => Ok(PlaneAxisRef::Line(n.round() as usize)),
+        Value::Table(t) => {
+            if let Some(li) = t.ordinal_opt("line")? {
+                return Ok(PlaneAxisRef::Line(li));
+            }
+            match resolve_element(lua, Value::Table(t))? {
+                SceneElement::Line(key) => Ok(PlaneAxisRef::Line(
+                    ordinal_of_element(lua, &SceneElement::Line(key))?.0,
+                )),
+                SceneElement::GlobalAxis(axis) => Ok(PlaneAxisRef::Global(axis)),
+                other => Err(mlua::Error::external(format!(
+                    "plane `axis` must be {SHAPES}, got {}",
+                    element_kind_name(other)
+                ))),
+            }
+        }
+        other => match resolve_element(lua, other) {
+            Ok(SceneElement::Line(key)) => Ok(PlaneAxisRef::Line(
+                ordinal_of_element(lua, &SceneElement::Line(key))?.0,
+            )),
+            Ok(SceneElement::GlobalAxis(axis)) => Ok(PlaneAxisRef::Global(axis)),
+            Ok(other) => Err(mlua::Error::external(format!(
+                "plane `axis` must be {SHAPES}, got {}",
+                element_kind_name(other)
+            ))),
+            Err(_) => Err(mlua::Error::external(format!(
+                "plane `axis` must be {SHAPES}"
+            ))),
+        },
+    }
 }
 
 /// Parses an `axis = …` argument into a [`crate::model::RevolveAxis`]: `"x"`/`"y"`/`"z"` for
@@ -8099,24 +8145,37 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // #116: declaratively add a new construction plane offset from an existing one — the
-    // scripted equivalent of picking a face/plane in the viewport and typing an offset.
-    // `from` defaults to plane 0 (Ground). Alternatively `origin = {x,y,z}` and
-    // `normal = {x,y,z}` together anchor the plane on an arbitrary face (#465), like
-    // clicking a body face with the Plane tool. There is no scripted way yet to create
-    // one anchored on an axis (which also takes an `angle`).
+    // #116/#465/#1876: declaratively add a construction plane — offset from an existing
+    // one (`from`, default Ground), on a face (`origin` + `normal`), or on an axis
+    // (`axis` + `angle`), the last of those the same as clicking an axis with the Plane
+    // tool.
     api.set(
         "plane",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "plane",
+                &["offset", "from", "origin", "normal", "axis", "angle", "name"],
+            )?;
             let offset =
                 length_mm_or(lua, unsafe { &tick.state().doc }, &opts, "plane", "offset", 0.0)?;
             let from: usize = opts.ordinal_opt("from")?.unwrap_or(0);
             let origin: Option<Table> = opts.get("origin")?;
             let normal: Option<Table> = opts.get("normal")?;
+            let axis_val: Option<Value> = opts.get("axis")?;
+            let angle =
+                angle_deg_or(lua, unsafe { &tick.state().doc }, &opts, "plane", "angle", 0.0)?;
             unsafe {
-                match (origin, normal) {
-                    (Some(o), Some(n)) => {
+                match (axis_val, origin, normal) {
+                    (Some(axis), None, None) => {
+                        tick.exec(Instruction::CreateAxisPlane {
+                            offset,
+                            angle,
+                            axis: parse_plane_axis(lua, axis)?,
+                        })?;
+                    }
+                    (None, Some(o), Some(n)) => {
                         let v = |t: &Table| -> mlua::Result<glam::Vec3> {
                             Ok(glam::Vec3::new(t.get(1)?, t.get(2)?, t.get(3)?))
                         };
@@ -8126,8 +8185,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                             normal: v(&n)?,
                         })?;
                     }
-                    (None, None) => {
+                    (None, None, None) => {
                         tick.exec(Instruction::CreatePlane { offset, from })?;
+                    }
+                    (Some(_), _, _) => {
+                        return Err(mlua::Error::external(
+                            "plane: `axis` cannot be combined with `origin`/`normal`",
+                        ))
                     }
                     _ => {
                         return Err(mlua::Error::external(
@@ -20938,6 +21002,127 @@ pub mod tests {
             .expect("plane should be created");
         assert!((plane.origin.z - 15.0).abs() < 1e-3, "origin {:?}", plane.origin);
         assert!((plane.normal.z - 1.0).abs() < 1e-4, "normal {:?}", plane.normal);
+    }
+
+    /// #1876: `plane{ axis, angle }` anchors a plane on a world axis — the scripted
+    /// equivalent of clicking X/Y/Z with the Plane tool.
+    #[test]
+    fn lua_plane_from_axis_x_with_angle() {
+        let state = run_lua(r#"bearcad.plane{ axis = "x", angle = 90 }"#);
+        let plane = state
+            .doc
+            .construction_planes
+            .values()
+            .last()
+            .expect("plane should be created");
+        assert!(
+            plane.definition.is_axis(),
+            "should be axis-anchored, got {:?}",
+            plane.definition
+        );
+        let expected =
+            crate::construction::plane_from_axis(0.0, 90.0, glam::Vec3::ZERO, glam::Vec3::X);
+        assert!(
+            (plane.normal - expected.normal).length() < 1e-3,
+            "normal {:?}",
+            plane.normal
+        );
+        assert!(
+            (plane.origin - expected.origin).length() < 1e-3,
+            "origin {:?}",
+            plane.origin
+        );
+        assert!((plane.definition.angle_deg - 90.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn lua_plane_from_axis_y_with_offset() {
+        let state = run_lua(r#"bearcad.plane{ axis = "y", angle = 45, offset = 8 }"#);
+        let plane = state
+            .doc
+            .construction_planes
+            .values()
+            .last()
+            .expect("plane should be created");
+        assert!(plane.definition.is_axis());
+        let expected =
+            crate::construction::plane_from_axis(8.0, 45.0, glam::Vec3::ZERO, glam::Vec3::Y);
+        assert!(
+            (plane.normal - expected.normal).length() < 1e-3,
+            "normal {:?}",
+            plane.normal
+        );
+        assert!((plane.origin.length() - 8.0).abs() < 1e-3, "origin {:?}", plane.origin);
+    }
+
+    /// #1876: a sketch line is the same axis pick as clicking that line with the Plane tool.
+    #[test]
+    fn lua_plane_from_sketch_line_axis() {
+        let state = run_lua(
+            r#"
+            local l = bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 0 }
+            bearcad.plane{ axis = l, angle = 30, offset = 5 }
+            "#,
+        );
+        let plane = state
+            .doc
+            .construction_planes
+            .values()
+            .last()
+            .expect("plane should be created");
+        assert!(plane.definition.is_axis());
+        let line = state.doc.lines.values().next().expect("line");
+        let (a, b) = crate::face::line_world_endpoints(&state.doc, line).expect("line endpoints");
+        let expected = crate::construction::plane_from_axis(5.0, 30.0, a, b - a);
+        assert!(
+            (plane.normal - expected.normal).length() < 1e-3,
+            "normal {:?}",
+            plane.normal
+        );
+        assert!(
+            (plane.origin - expected.origin).length() < 1e-3,
+            "origin {:?}",
+            plane.origin
+        );
+        assert!(matches!(
+            plane.parent,
+            crate::model::ConstructionPlaneParent::Sketch(_)
+        ));
+    }
+
+    #[test]
+    fn lua_plane_from_line_table_axis() {
+        let state = run_lua(
+            r#"
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            bearcad.plane{ axis = { line = 0 }, angle = 90 }
+            "#,
+        );
+        let plane = state
+            .doc
+            .construction_planes
+            .values()
+            .last()
+            .expect("plane should be created");
+        assert!(plane.definition.is_axis());
+        assert!((plane.definition.angle_deg - 90.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn lua_plane_rejects_unknown_axis() {
+        let mut runner = ScriptRunner::from_lua_source(r#"bearcad.plane{ axis = "w" }"#).unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, None, &ctx);
+        }
+        let err = runner.error.expect("unknown axis should error");
+        assert!(
+            err.contains("unknown plane axis") || err.contains("'w'"),
+            "unexpected error: {err}"
+        );
     }
 
     /// #126: `extrude{ to = { face = { kind = "extrude_cap", ... } } }` snaps an extrusion's

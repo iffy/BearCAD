@@ -48,7 +48,7 @@ bearcad.begin_sketch("construction_plane", i)
 bearcad.begin_sketch{ kind = "extrude_cap"|"extrude_side"|…, … }
 bearcad.open_sketch(i)
 bearcad.exit_sketch()
-bearcad.plane{ offset?, from = 0?, origin = {x,y,z}?, normal = {x,y,z}?, name? }
+bearcad.plane{ offset?, from = 0?, origin = {x,y,z}?, normal = {x,y,z}?, axis = "x"|"y"|"z"|line?, angle?, name? }
 bearcad.project{ body?, bodies?, plane?, planes?, entities? }
 ```
 
@@ -351,7 +351,7 @@ bearcad.parameter_value(name)
 bearcad.paste{ linked, x, y, z }?
 bearcad.picker(name)
 bearcad.pickers()
-bearcad.plane{ offset, from, origin, normal, name }
+bearcad.plane{ offset, from, origin, normal, axis, angle, name }
 bearcad.project{ entities, body, bodies, plane, planes, kind, index, name, type }?
 bearcad.quit()
 bearcad.rebuild_geometry()

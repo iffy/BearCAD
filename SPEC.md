@@ -4008,12 +4008,13 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   Lua error naming it. The JSON dispatcher accepts the same string-for-number forms, and
   session-command export round-trips the expressions (rect/circle commits carry their typed
   dimension expressions; extrudes replay `distance = "<expr>"`).
-- `bearcad.plane{ offset?, from?, origin?, normal?, name? }` (#116/#465) declaratively adds a new construction plane
-  offset along the normal of an existing one (`from`, a construction-plane index — defaults to
-  plane 0 / Ground), the scripted equivalent of picking a plane in the viewport and typing an
-  offset. There is no scripted way yet to anchor a new plane on an axis (which also takes an
-  angle) — only `edit_plane`/`commit_plane`/`set_dim("offset"|"angle")` reach that, and only for
-  an already-existing plane.
+- `bearcad.plane{ offset?, from?, origin?, normal?, axis?, angle?, name? }` (#116/#465/#1876)
+  declaratively adds a new construction plane. Offset along the normal of an existing one
+  (`from`, a construction-plane index — defaults to plane 0 / Ground) is the scripted
+  equivalent of picking a plane in the viewport and typing an offset. `origin` + `normal`
+  together sit the plane on a face. `axis = "x"|"y"|"z"|line` with `angle` (degrees around
+  that axis) is the same as clicking an axis with the Plane tool — a world triad axis, a
+  sketch-line ordinal, `{ line = i }`, or a line handle.
 - **Invalid input fails loudly (#104/#109/#110/#112):** when a declarative modeling call's
   underlying action is rejected — degenerate input (zero-size rect/circle/line, zero-distance
   extrude), an extrude face that doesn't exist or isn't a closed loop, a chamfer/fillet vertex
@@ -5066,7 +5067,8 @@ The model in one place:
   on it (origin at the face centroid, normal the face normal, offset along the normal). A
   face wins over the ground/plane-quad fallback but loses to sharp targets (points, edges,
   axes) under the cursor (`construction::resolve_plane_pick_target`). Scriptable as
-  `bearcad.plane{ offset?, origin = {x,y,z}, normal = {x,y,z} }`.
+  `bearcad.plane{ offset?, origin = {x,y,z}, normal = {x,y,z} }`. An **axis** (world X/Y/Z
+  or a sketch line) is `bearcad.plane{ axis = "x"|"y"|"z"|line, angle?, offset? }` (#1876).
 - **3D body edges (#31):** any edge of any 3D body — not just 2D sketch geometry — is a valid
   axis reference for a construction plane, including STL/STEP-imported bodies. An edge here is
   a *feature* edge of the body's triangle mesh (a mesh boundary, or a crease where adjacent

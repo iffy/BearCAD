@@ -74,7 +74,7 @@ bearcad.begin_sketch("construction_plane", i)
 bearcad.begin_sketch{ kind = "extrude_cap"|"extrude_side"|…, … }
 bearcad.open_sketch(i)
 bearcad.exit_sketch()
-bearcad.plane{ offset?, from = 0?, origin = {x,y,z}?, normal = {x,y,z}?, name? }
+bearcad.plane{ offset?, from = 0?, origin = {x,y,z}?, normal = {x,y,z}?, axis = "x"|"y"|"z"|line?, angle?, name? }
 bearcad.project{ body?, bodies?, plane?, planes?, entities? }
 ```
 

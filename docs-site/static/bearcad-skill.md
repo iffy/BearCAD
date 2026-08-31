@@ -90,6 +90,7 @@ Construction planes:
 ```lua
 bearcad.plane{ offset = 12 }                                          -- above Ground
 bearcad.plane{ offset = 5, origin = {0, 0, 20}, normal = {0, 0, 1} }  -- on a face
+bearcad.plane{ axis = "x", angle = 45 }                                -- around a world axis
 ```
 
 ## Solids

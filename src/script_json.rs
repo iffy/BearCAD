@@ -24,7 +24,7 @@ use crate::model::{
     Document, DrawingOrientation, ExtrudeFace, ExtrudeTarget, ExtrusionEdgeRef, FaceId, LineEnd,
     RepeatMode, RevolveAxis, VertexTreatmentKind,
 };
-use crate::script::Instruction;
+use crate::script::{Instruction, PlaneAxisRef};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
 use serde_json::{json, Map, Value};
 
@@ -330,10 +330,30 @@ pub fn instruction_from_json(
                 .ok_or_else(|| format!("unknown sketch face kind '{kind}'"))?;
             Ok(Instruction::BeginSketch { face })
         }
-        "plane" => Ok(Instruction::CreatePlane {
-            offset: opt_f32(o, "offset")?.unwrap_or(0.0),
-            from: opt_usize(o, "from")?.unwrap_or(0),
-        }),
+        "plane" => {
+            let offset = opt_f32(o, "offset")?.unwrap_or(0.0);
+            if let Some(axis) = o.get("axis").filter(|v| !v.is_null()) {
+                return Ok(Instruction::CreateAxisPlane {
+                    offset,
+                    angle: opt_f32(o, "angle")?.unwrap_or(0.0),
+                    axis: plane_axis_from_json(axis)?,
+                });
+            }
+            let origin = o.get("origin").filter(|v| !v.is_null());
+            let normal = o.get("normal").filter(|v| !v.is_null());
+            match (origin, normal) {
+                (Some(ov), Some(nv)) => Ok(Instruction::CreateFacePlane {
+                    offset,
+                    origin: vec3_from_json(ov, "origin")?,
+                    normal: vec3_from_json(nv, "normal")?,
+                }),
+                (None, None) => Ok(Instruction::CreatePlane {
+                    offset,
+                    from: opt_usize(o, "from")?.unwrap_or(0),
+                }),
+                _ => Err("plane: origin and normal must be given together".into()),
+            }
+        }
         "rect" => {
             let (width, width_expr) =
                 opt_scalar(o, "width")?.ok_or("rect requires `width`")?;
@@ -2157,6 +2177,43 @@ fn mirror_op_args(
     Ok((plane, usize_list(o, "bodies")?, mode))
 }
 
+/// Construction-plane axis from `"x"`/`"y"`/`"z"` or `{ line = i }` (#1876).
+fn plane_axis_from_json(v: &Value) -> Result<PlaneAxisRef, String> {
+    match v {
+        Value::String(s) => crate::construction::GlobalAxis::from_script_name(s)
+            .map(PlaneAxisRef::Global)
+            .ok_or_else(|| format!("unknown plane axis '{s}' (\"x\"|\"y\"|\"z\" or {{line = i}})")),
+        Value::Number(n) => {
+            if let Some(i) = n.as_u64() {
+                Ok(PlaneAxisRef::Line(i as usize))
+            } else {
+                Err("plane `axis` number must be a line ordinal".into())
+            }
+        }
+        Value::Object(t) => {
+            if t.contains_key("line") {
+                Ok(PlaneAxisRef::Line(req_usize(t, "line", "axis")?))
+            } else {
+                Err("plane `axis` table needs `line`".into())
+            }
+        }
+        _ => Err("plane `axis` must be \"x\"|\"y\"|\"z\" or {line = i}".into()),
+    }
+}
+
+fn vec3_from_json(v: &Value, what: &str) -> Result<glam::Vec3, String> {
+    let a = v
+        .as_array()
+        .filter(|a| a.len() == 3)
+        .ok_or_else(|| format!("plane `{what}` must be [x, y, z]"))?;
+    let n = |i: usize| -> Result<f32, String> {
+        a[i].as_f64()
+            .map(|f| f as f32)
+            .ok_or_else(|| format!("plane `{what}` must be numbers"))
+    };
+    Ok(glam::Vec3::new(n(0)?, n(1)?, n(2)?))
+}
+
 /// A rotation/revolve axis from `"x"`/`"y"`/`"z"` or an object `{ line = i }`.
 fn revolve_axis_from_value(
     doc: &crate::model::Document,
@@ -2958,6 +3015,30 @@ mod tests {
         assert_eq!(
             instruction_from_json(&Document::default(), "plane", &json!({})),
             Ok(Instruction::CreatePlane { offset: 0.0, from: 0 })
+        );
+        assert_eq!(
+            instruction_from_json(
+                &Document::default(),
+                "plane",
+                &json!({ "axis": "x", "angle": 45 })
+            ),
+            Ok(Instruction::CreateAxisPlane {
+                offset: 0.0,
+                angle: 45.0,
+                axis: crate::script::PlaneAxisRef::Global(crate::construction::GlobalAxis::X),
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                &Document::default(),
+                "plane",
+                &json!({ "axis": { "line": 0 }, "angle": 30, "offset": 5 })
+            ),
+            Ok(Instruction::CreateAxisPlane {
+                offset: 5.0,
+                angle: 30.0,
+                axis: crate::script::PlaneAxisRef::Line(0),
+            })
         );
         assert_eq!(
             instruction_from_json(&Document::default(), "begin_sketch", &json!({ "kind": "plane", "index": 0 })),
