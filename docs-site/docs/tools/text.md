@@ -76,7 +76,7 @@ bearcad.text{ text = "Hello", x = 10, y = 10, size = 12 }
 bearcad.text{ text = "Label", size = "w / 2", font = "Helvetica",
               bold = true, rotation = 30, flip = true, name = "Lid label" }
 bearcad.select{ kind = "sketch_text", index = 0 }
-bearcad.set_gizmo{ name = "text_rotation", value = math.rad(45) }
+bearcad.ui.set_gizmo{ name = "text_rotation", value = math.rad(45) }
 bearcad.get{ kind = "sketch_text", index = 0 }  -- text, x, y, rotation, flip, …
 bearcad.count("sketch_text")
 

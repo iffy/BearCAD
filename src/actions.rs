@@ -22327,7 +22327,7 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: crate::model::BodyKe
 }
 
 /// A viewport gizmo currently available given the tool/creation state (#214). Each gizmo is a
-/// drag that writes one scalar; scripting can enumerate them (`bearcad.gizmos()`) and drive
+/// drag that writes one scalar; scripting can enumerate them (`bearcad.ui.gizmos()`) and drive
 /// their value (`set_gizmo`/`drag_gizmo`) so gizmo tools are automatable/testable headlessly.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GizmoInfo {

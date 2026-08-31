@@ -187,7 +187,7 @@ bearcad.joint{ parts = {0, 1, 2}, kind = "rigid" }
 bearcad.joint{ a = 0, b = 3, kind = "screw", lead = 2, position = 720 }
 
 -- Arm the tool with picks, without committing (for live-preview shots).
-bearcad.begin_joint{ a = 0, b = 1, kind = "slider" }
+bearcad.ui.begin_joint{ a = 0, b = 1, kind = "slider" }
 
 bearcad.ui.animate_joints(false)   -- the preview sweep, for every joint
 ```

@@ -81,7 +81,7 @@ bearcad.combine{ op = "intersect", a = {0}, b = {1}, keep_b = true }
 bearcad.edit_combine{ index = 0, op = "xor", a = {0}, b = {1} }
 -- `begin_combine` takes the same arguments but leaves the tool armed rather than
 -- committing, so the result preview is on screen for a screenshot.
-bearcad.begin_combine{ op = "cut", a = {0}, b = {1} }
+bearcad.ui.begin_combine{ op = "cut", a = {0}, b = {1} }
 ```
 
 ## Good to know

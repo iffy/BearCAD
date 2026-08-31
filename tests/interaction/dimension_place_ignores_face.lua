@@ -36,7 +36,7 @@ assert(bearcad.status():find("place the dimension"),
 -- Interior of the cap, clear of the origin, the small circle, and the rim.
 bearcad.ui.move_ground(0, 10)
 bearcad.ui.wait(6)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h == nil,
   "nothing should hover-highlight while placing a dimension, got "
     .. tostring(h and (h.kind .. (h.label and (" " .. h.label) or ""))))

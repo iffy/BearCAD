@@ -42235,7 +42235,7 @@ mod tests {
                     "the four edges of the face should light up, got {segments:?}"
                 );
                 // #1541: and each lit segment names the element a click would take, so
-                // `bearcad.hovered()` has something to report.
+                // `bearcad.ui.hovered()` has something to report.
                 assert_eq!(
                     elements.len(),
                     4,

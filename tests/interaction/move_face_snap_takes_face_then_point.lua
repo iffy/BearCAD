@@ -26,12 +26,12 @@ bearcad.ui.tool("move")
 bearcad.ui.wait(5)
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
 end
 
-bearcad.begin_move{ bodies = {1} }
+bearcad.ui.begin_move{ bodies = {1} }
 bearcad.ui.wait(5)
 bearcad.ui.tool_mode("face_snap")
 bearcad.ui.wait(8)
@@ -57,7 +57,7 @@ assert(#picker("Fixed face").items == 0, "the other side is untouched")
 -- y 0..20, so (70, 0) is the middle of its near edge.
 bearcad.ui.move_ground(70, 0)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h and h.kind == "body_vertex",
   "an edge midpoint should highlight, got " .. tostring(h and h.kind))
 
@@ -65,7 +65,7 @@ assert(h and h.kind == "body_vertex",
 -- the outline, so requiring the cursor be inside made the very points you aim at unpickable.
 bearcad.ui.move_ground(58, -2)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h and h.kind == "body_vertex",
   "a corner approached from off the face should highlight, got " .. tostring(h and h.kind))
 

@@ -24,7 +24,7 @@ bearcad.ui.camera{ target = {45, 15, 0}, distance = 320 }
 bearcad.ui.wait(5)
 bearcad.ui.tool("move")
 bearcad.ui.wait(5)
-bearcad.begin_move{ bodies = {1} }
+bearcad.ui.begin_move{ bodies = {1} }
 bearcad.ui.wait(5)
 bearcad.ui.tool_mode("face_snap")
 bearcad.ui.wait(8)

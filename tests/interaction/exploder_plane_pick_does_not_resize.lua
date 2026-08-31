@@ -43,7 +43,7 @@ bearcad.ui.wait(6)
 -- Find a construction plane's loupe. The fan publishes where it put each one; nothing else can
 -- say where to aim.
 local plane_leaf
-for _, leaf in ipairs(bearcad.exploder()) do
+for _, leaf in ipairs(bearcad.ui.exploder()) do
   if leaf.kind == "plane" and leaf.x then
     plane_leaf = leaf
     break

@@ -23,7 +23,7 @@ bearcad.ui.wait(5)
 bearcad.ui.tool("select")
 bearcad.ui.move_ground(20, 15)
 bearcad.ui.wait(5)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h and h.kind == "body", "Select should hover the body, got " .. tostring(h and h.kind))
 
 -- The 3D Mirror tool has no hover arm. Its Bodies picker takes whole bodies, so the body under
@@ -32,7 +32,7 @@ bearcad.ui.tool("mirror")
 bearcad.ui.wait(5)
 bearcad.ui.move_ground(20, 15)
 bearcad.ui.wait(5)
-h = bearcad.hovered()
+h = bearcad.ui.hovered()
 assert(h, "the Mirror tool should hover something its pickers can take, got nothing")
 assert(h.kind == "body" or h.kind == "plane" or h.kind == "face",
   "and it should be a plane, face or body — got " .. h.kind)
@@ -43,14 +43,14 @@ assert(h.kind == "body" or h.kind == "plane" or h.kind == "face",
 bearcad.ui.tool("joint")
 bearcad.ui.wait(5)
 local parts
-for _, p in ipairs(bearcad.pickers()) do
+for _, p in ipairs(bearcad.ui.pickers()) do
   if p.name == "Parts" then parts = p end
 end
 assert(parts, "the Joint tool's Parts picker should be visible to scripts")
 assert(parts.focused, "and focused with nothing picked yet")
 bearcad.ui.move_ground(20, 15)
 bearcad.ui.wait(5)
-h = bearcad.hovered()
+h = bearcad.ui.hovered()
 assert(h and h.kind == "body",
   "the Joint tool should hover the body its picker takes, got " .. tostring(h and h.kind))
 

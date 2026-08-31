@@ -1496,7 +1496,7 @@ pub struct ToolPickerView {
     /// block with the following controls (e.g. Mirror, #602) suppress the inner dividers.
     pub separator_above: bool,
     /// Where this picker draws. **Every** picker belongs in `tool_pickers` regardless (#958):
-    /// focus, hover, the tool-switch handoff, the Exploder's fan and `bearcad.pickers()` all
+    /// focus, hover, the tool-switch handoff, the Exploder's fan and `bearcad.ui.pickers()` all
     /// read that list, and a picker missing from it is invisible to every one of them.
     pub render: PickerRender,
 }
@@ -2140,7 +2140,7 @@ fn axis_constraint_button(
 /// Built on demand from the tool's state rather than cached from the last pane frame: a pick
 /// arriving before such a frame (right after a tool switch, or in a headless test) would
 /// otherwise find no pickers and silently do nothing. The context pane renders from this; so
-/// does the click routing, the viewport highlight, the hover fallback and `bearcad.pickers()`.
+/// does the click routing, the viewport highlight, the hover fallback and `bearcad.ui.pickers()`.
 /// Scope a filter to the open sketch (#742): an in-sketch tool picks that sketch's own
 /// geometry and nothing else. One rule rather than the same `element_in_sketch` check written
 /// out again in each of the hover and click paths (#958).
@@ -2321,7 +2321,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
     let mut tool_pickers = Vec::new();
     // The selection picker (#213) is a tool picker like any other — it is what Select,
     // Constraint, Dimension, Chamfer/Fillet, Sketch and Project pick into. Registering it here
-    // is what lets hover, the handoff, the Exploder's fan and `bearcad.pickers()` see it (#958);
+    // is what lets hover, the handoff, the Exploder's fan and `bearcad.ui.pickers()` see it (#958);
     // it draws where it always has, at the top of the pane. Suppressed while a draw
     // construction owns the pane, or in the drawing workbench.
     // A draw construction owns the pane while its tool is drawing *in a sketch*. Outside one,
@@ -2558,7 +2558,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         }
         // The Joint tool's two parts (#894/#955). It renders in the Joint block (between the
         // Base row and the kind dropdown), but it belongs here so focus, hover, the handoff
-        // and `bearcad.pickers()` can see it (#958).
+        // and `bearcad.ui.pickers()` can see it (#958).
         // Every slot stays registered (#1357) so J / the type dropdown does not remount a
         // different picker on the same rect. Unused ones stay unfocused — Rigid shows the
         // Parts list; every other kind shows the two named sides (#991).
@@ -2806,7 +2806,7 @@ pub fn tool_picker_views(input: &ContextInput<'_>) -> Vec<ToolPickerView> {
         // left **Start point A** live and focused beside Face Snap's own rows — so the hover
         // offered corners while the tool was asking for a face, and two pickers claimed focus
         // at once. A picker the pane doesn't show must not be registered either: the list is
-        // what focus, hover, the exploder and `bearcad.pickers()` all read.
+        // what focus, hover, the exploder and `bearcad.ui.pickers()` all read.
         let point_rows: &[(&'static str, PickerTarget, Option<crate::model::MovePointRef>, bool, bool)] =
             match m.translate_mode {
                 crate::model::MoveTranslateMode::PointSnap if m.planar => &[
@@ -12244,7 +12244,7 @@ mod tests {
     /// rows regardless left **Start point A** live and focused beside Face Snap's own two,
     /// so the hover offered corners while the tool was asking for a face — and two pickers
     /// claimed focus at once. The registered list is what focus, hover, the exploder and
-    /// `bearcad.pickers()` all read, so a row the pane doesn't show must not be in it.
+    /// `bearcad.ui.pickers()` all read, so a row the pane doesn't show must not be in it.
     #[test]
     fn each_move_mode_registers_only_its_own_pickers() {
         use crate::model::MoveTranslateMode as M;
@@ -12342,7 +12342,7 @@ mod tests {
 
     /// #1235: Free has no A/B/C pairing, so its handle is **Reference Point** — not the Point
     /// Snap label "Start point A". The registered heading is what the pane, hover, and
-    /// `bearcad.pickers()` all show, so the name has to live on the picker itself.
+    /// `bearcad.ui.pickers()` all show, so the name has to live on the picker itself.
     #[test]
     fn free_move_calls_its_handle_reference_point() {
         use crate::model::MoveTranslateMode as M;

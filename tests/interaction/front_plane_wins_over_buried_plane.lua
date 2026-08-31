@@ -27,7 +27,7 @@ bearcad.ui.wait(8)
 bearcad.ui.move_ground(70, 70)
 bearcad.ui.wait(8)
 
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h, "hovering the XY floor should highlight a plane")
 assert(h.kind == "plane",
   "expected a construction plane, got " .. tostring(h.kind))
@@ -38,7 +38,7 @@ assert(h.index == 0,
 -- Hold still: the hover must not flip to the buried plane.
 for i = 1, 10 do
   bearcad.ui.wait(2)
-  local again = bearcad.hovered()
+  local again = bearcad.ui.hovered()
   assert(again and again.index == 0,
     "hover must hold the front plane, frame " .. i .. " got "
       .. tostring(again and again.index))

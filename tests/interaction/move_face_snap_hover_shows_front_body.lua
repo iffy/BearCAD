@@ -23,7 +23,7 @@ bearcad.ui.wait(5)
 
 -- Start moving the block. Same geometry as #1336's click-through so the destination stage is
 -- reachable, but a Face Snap (not point snap) move so the MateFace hover path is exercised.
-bearcad.begin_move{ bodies = {1}, from = { body = 1, vertex = {0, 0, 0} } }
+bearcad.ui.begin_move{ bodies = {1}, from = { body = 1, vertex = {0, 0, 0} } }
 bearcad.ui.tool_mode("face_snap")
 bearcad.ui.wait(8)
 
@@ -31,7 +31,7 @@ bearcad.ui.wait(8)
 -- moving bodies are dropped from the *click*, but the front mock body must still glow on hover.
 bearcad.ui.move_ground(50, 20)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h, "hovering the overhanging front body should highlight it, got none")
 assert(h.kind == "face" or h.kind == "body_face" or h.kind == "body_vertex" or h.kind == "body",
   "the front (moving) body's face should be highlighted, got " .. tostring(h.kind))

@@ -18,7 +18,7 @@ bearcad.ui.click_ground(-80, -200)
 bearcad.ui.wait(5)
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
 end
@@ -30,14 +30,14 @@ assert(bodies and #bodies.items == 1 and bodies.items[1].kind == "image",
 -- Image-only moves have no snap points, so the tool should be in Free mode with gizmos.
 bearcad.ui.wait(5)
 local gizmos = {}
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name:find("^move_") then gizmos[g.name] = g end
 end
 assert(gizmos.move_x and gizmos.move_x.position,
   "Free Move should arm a translation gizmo on the image")
 
 local before = bearcad.get{ kind = "image", index = 0 }
-bearcad.set_gizmo{ name = "move_x", value = 25 }
+bearcad.ui.set_gizmo{ name = "move_x", value = 25 }
 bearcad.ui.wait(3)
 bearcad.ui.key("Enter")
 bearcad.ui.wait(8)

@@ -18,7 +18,7 @@ bearcad.ui.wait(3)
 bearcad.ui.click_ground(0, 0)
 bearcad.ui.wait(6)
 
-local gizmos = bearcad.gizmos()
+local gizmos = bearcad.ui.gizmos()
 local found = false
 for _, g in ipairs(gizmos) do
   if g.name == "shell" and g.kind == "push_pull" then
@@ -28,10 +28,10 @@ for _, g in ipairs(gizmos) do
 end
 assert(found, "shell thickness gizmo should be available after a body pick")
 
-bearcad.set_gizmo{ name = "shell", value = 4 }
+bearcad.ui.set_gizmo{ name = "shell", value = 4 }
 bearcad.ui.wait(3)
 local after = nil
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name == "shell" then after = g.value break end
 end
 assert(after and math.abs(after - 4) < 0.01,

@@ -11,7 +11,7 @@ bearcad.ui.tool("slice")
 bearcad.ui.wait(6)
 
 local seen, names = {}, {}
-for _, p in ipairs(bearcad.pickers()) do
+for _, p in ipairs(bearcad.ui.pickers()) do
   names[#names + 1] = p.name
   assert(not seen[p.name],
     "Slice in a sketch mounted two '" .. p.name .. "' pickers: " .. table.concat(names, ", "))

@@ -1687,8 +1687,8 @@ impl Instruction {
                 )
             }
             Instruction::BeginEditSectionPlane { view, cut } => match view {
-                Some(v) => format!("bearcad.begin_edit_section_plane{{ view = {v}, cut = {cut} }}"),
-                None => format!("bearcad.begin_edit_section_plane{{ cut = {cut} }}"),
+                Some(v) => format!("bearcad.ui.begin_edit_section_plane{{ view = {v}, cut = {cut} }}"),
+                None => format!("bearcad.ui.begin_edit_section_plane{{ cut = {cut} }}"),
             },
             Instruction::SetDrawingViewCrossSection { drawing, view, cross_section } => {
                 match cross_section {
@@ -2137,7 +2137,7 @@ impl Instruction {
                 boolean_op_lua("bearcad.combine", None, *kind, a, b, *keep_b)
             }
             Instruction::BeginBooleanOp { kind, a, b, keep_b } => {
-                boolean_op_lua("bearcad.begin_combine", None, *kind, a, b, *keep_b)
+                boolean_op_lua("bearcad.ui.begin_combine", None, *kind, a, b, *keep_b)
             }
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.edit_combine", Some(*op), *kind, a, b, *keep_b)
@@ -2147,7 +2147,7 @@ impl Instruction {
                 move_op_lua("bearcad.move_bodies", None, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
             Instruction::BeginMoveOp { targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
-                move_op_lua("bearcad.begin_move", None, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
+                move_op_lua("bearcad.ui.begin_move", None, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
             }
             Instruction::EditMoveOp { op, targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c } => {
                 move_op_lua("bearcad.edit_move", Some(*op), targets, images, tx, ty, tz, rx, ry, rz, roll_angle, *face_flip, face_spin, face_offset, start_point_a, end_point_a, start_point_b, end_point_b, start_point_c, end_point_c)
@@ -2156,7 +2156,7 @@ impl Instruction {
                 joint_op_lua("bearcad.joint", None, doc, members, *base, kind, placement, frame, position, position2, position3, limits)
             }
             Instruction::BeginJointOp { members, base, kind, placement, frame, position, position2, position3, limits } => {
-                joint_op_lua("bearcad.begin_joint", None, doc, members, *base, kind, placement, frame, position, position2, position3, limits)
+                joint_op_lua("bearcad.ui.begin_joint", None, doc, members, *base, kind, placement, frame, position, position2, position3, limits)
             }
             Instruction::EditJointOp { op, members, base, kind, placement, frame, position, position2, position3, limits } => {
                 joint_op_lua("bearcad.edit_joint", Some(*op), doc, members, *base, kind, placement, frame, position, position2, position3, limits)
@@ -2387,23 +2387,23 @@ impl Instruction {
             Instruction::EndTutorial => "bearcad.ui.tutorial_end()".to_string(),
             Instruction::SetDim { axis, value } => {
                 format!(
-                    "bearcad.set_dim({:?}, {value:?})",
+                    "bearcad.ui.set_dim({:?}, {value:?})",
                     rect_axis_lua_name(*axis)
                 )
             }
             Instruction::SetDimLabelOffset { axis, offset } => {
                 format!(
-                    "bearcad.set_dim_label_offset({:?}, {offset})",
+                    "bearcad.ui.set_dim_label_offset({:?}, {offset})",
                     dim_label_axis_lua_name(*axis)
                 )
             }
             Instruction::BeginEditCommittedDim { axis } => {
                 format!(
-                    "bearcad.edit_dim({:?})",
+                    "bearcad.ui.edit_dim({:?})",
                     dim_label_axis_lua_name(*axis)
                 )
             }
-            Instruction::CommitCommittedDim => "bearcad.commit_dim()".to_string(),
+            Instruction::CommitCommittedDim => "bearcad.ui.commit_dim()".to_string(),
             Instruction::AddAngleConstraint {
                 line_a,
                 line_b,
@@ -2434,11 +2434,11 @@ impl Instruction {
                 )
             }
             Instruction::ApplyConstraintShortcut(key) => {
-                format!("bearcad.constraint_shortcut({key:?})")
+                format!("bearcad.ui.constraint_shortcut({key:?})")
             }
             Instruction::DragVertex { point, u, v } => {
                 format!(
-                    "bearcad.ui.drag_vertex({}, {u}, {v})",
+                    "bearcad.drag_vertex({}, {u}, {v})",
                     constraint_point_lua_ref(point, doc)
                 )
             }
@@ -2449,7 +2449,7 @@ impl Instruction {
                 u,
                 v,
             } => format!(
-                "bearcad.ui.drag_line({}, {anchor_u}, {anchor_v}, {u}, {v})",
+                "bearcad.drag_line({}, {anchor_u}, {anchor_v}, {u}, {v})",
                 constraint_line_lua_ref(target, doc)
             ),
             Instruction::VertexTreatment { points, kind, amount } => {
@@ -2558,20 +2558,20 @@ impl Instruction {
                 format!("bearcad.{fname}{{ {} }}", parts.join(", "))
             }
             Instruction::SetLineLength { value } => {
-                format!("bearcad.set_dim(\"length\", {value:?})")
+                format!("bearcad.ui.set_dim(\"length\", {value:?})")
             }
             Instruction::SetCircleDiameter { value } => {
-                format!("bearcad.set_dim(\"diameter\", {value:?})")
+                format!("bearcad.ui.set_dim(\"diameter\", {value:?})")
             }
             Instruction::BeginEditConstructionPlane { index } => {
-                format!("bearcad.edit_plane({index})")
+                format!("bearcad.ui.edit_plane({index})")
             }
-            Instruction::CommitConstructionPlane => "bearcad.commit_plane()".to_string(),
+            Instruction::CommitConstructionPlane => "bearcad.ui.commit_plane()".to_string(),
             Instruction::SetPlaneOffset { value } => {
-                format!("bearcad.set_dim(\"offset\", {value:?})")
+                format!("bearcad.ui.set_dim(\"offset\", {value:?})")
             }
             Instruction::SetPlaneAngle { value } => {
-                format!("bearcad.set_dim(\"angle\", {value:?})")
+                format!("bearcad.ui.set_dim(\"angle\", {value:?})")
             }
             Instruction::CreatePlane { offset, from } => {
                 format!("bearcad.plane{{ offset = {offset}, from = {from} }}")
@@ -2991,9 +2991,9 @@ impl Instruction {
             },
             Instruction::SetGizmo { name, value, relative } => {
                 if *relative {
-                    format!("bearcad.drag_gizmo{{ name = {name:?}, by = {value} }}")
+                    format!("bearcad.ui.drag_gizmo{{ name = {name:?}, by = {value} }}")
                 } else {
-                    format!("bearcad.set_gizmo{{ name = {name:?}, value = {value} }}")
+                    format!("bearcad.ui.set_gizmo{{ name = {name:?}, value = {value} }}")
                 }
             }
             Instruction::Quit => "bearcad.quit()".to_string(),
@@ -4888,7 +4888,7 @@ fn mate_lua(placement: &crate::model::MoveOperation) -> Vec<String> {
     vec![format!("face = {{ {} }}", inner.join(", "))]
 }
 
-/// Render a joint call (`bearcad.joint{}` / `bearcad.edit_joint{}` / `bearcad.begin_joint{}`).
+/// Render a joint call (`bearcad.joint{}` / `bearcad.edit_joint{}` / `bearcad.ui.begin_joint{}`).
 #[allow(clippy::too_many_arguments)]
 fn joint_op_lua(
     call: &str,
@@ -10628,7 +10628,7 @@ mod tests {
         assert!(!runner.done, "REPL stays alive between entries");
     }
 
-    /// #214: `bearcad.set_gizmo`/`drag_gizmo` drive the in-progress extrude push/pull depth
+    /// #214: `bearcad.ui.set_gizmo`/`drag_gizmo` drive the in-progress extrude push/pull depth
     /// through the Lua → Instruction → Action path (there's no Lua entry to *start* an
     /// in-progress extrusion yet, so it's pre-seeded via the same action the tool uses).
     #[test]
@@ -10648,13 +10648,13 @@ mod tests {
         assert!(state.creating_extrusion.is_some());
 
         lines_tx
-            .send("bearcad.set_gizmo{ name = 'extrude', value = 15 }\n".to_string())
+            .send("bearcad.ui.set_gizmo{ name = 'extrude', value = 15 }\n".to_string())
             .unwrap();
         drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
         assert_eq!(state.creating_extrusion.as_ref().unwrap().distance, 15.0);
 
         lines_tx
-            .send("bearcad.drag_gizmo{ name = 'extrude', by = 5 }\n".to_string())
+            .send("bearcad.ui.drag_gizmo{ name = 'extrude', by = 5 }\n".to_string())
             .unwrap();
         drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
         assert_eq!(state.creating_extrusion.as_ref().unwrap().distance, 20.0);

@@ -13,7 +13,7 @@ bearcad.ui.pane("parameters", "hide")
 bearcad.ui.auto_zoom(false)
 bearcad.ui.ground("off")
 -- Move the first block onto the second, aimed along +X, with the C pair pending.
-bearcad.begin_move{
+bearcad.ui.begin_move{
   bodies = {0},
   from   = { body = 0, vertex = {0, 0, 0} },
   to     = { body = 1, vertex = {60, 0, 0} },

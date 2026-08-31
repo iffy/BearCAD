@@ -5,7 +5,7 @@
 -- degree of freedom is the point — with A and B the slab is still free to roll about the
 -- end A → end B line, and only C settles it.
 --
--- Each is the tool's **live preview** (`bearcad.begin_move`, not `move_bodies`): the slab
+-- Each is the tool's **live preview** (`bearcad.ui.begin_move`, not `move_bodies`): the slab
 -- still sits where it started, the ghost shows where it's going, and the picked pairs are
 -- marked and joined — start A green to end A red, the B and C pairs in blue with the dashed
 -- path each point travels. That's the thing being explained, so it's what the shot shows.
@@ -76,7 +76,7 @@ end
 
 -- A alone: the ghost sits where start A meets end A, facing exactly as the slab does.
 scene()
-bearcad.begin_move{
+bearcad.ui.begin_move{
   bodies = { 1 },
   from = { body = 1, vertex = START_A },
   to   = { body = 0, on_edge = END_A },
@@ -85,7 +85,7 @@ shoot("snap-pairs-a")
 
 -- A and B: the ghost also turns about end A until start B points at end B.
 scene()
-bearcad.begin_move{
+bearcad.ui.begin_move{
   bodies = { 1 },
   from   = { body = 1, vertex = START_A },
   to     = { body = 0, on_edge = END_A },
@@ -97,7 +97,7 @@ shoot("snap-pairs-ab")
 -- A, B and C: the ghost also spins about the end A → end B line until start C points at
 -- end C, standing it on its long edge. Nothing is left to choose.
 scene()
-bearcad.begin_move{
+bearcad.ui.begin_move{
   bodies = { 1 },
   from   = { body = 1, vertex = START_A },
   to     = { body = 0, on_edge = END_A },

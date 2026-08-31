@@ -22,7 +22,7 @@ bearcad.ui.wait(5)
 
 bearcad.ui.tool("move")
 bearcad.ui.wait(5)
-bearcad.begin_move{
+bearcad.ui.begin_move{
   bodies = {1},
   from = { body = 1, on_face = {70, 10, 10}, normal = {0, 0, 1} },
   to = { body = 0, on_face = {15, 15, 10}, normal = {0, 0, 1} },
@@ -30,7 +30,7 @@ bearcad.begin_move{
 bearcad.ui.wait(8)
 
 local function spin()
-  for _, g in ipairs(bearcad.gizmos()) do
+  for _, g in ipairs(bearcad.ui.gizmos()) do
     if g.name == "move_spin" then return g end
   end
 end

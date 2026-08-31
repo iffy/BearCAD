@@ -24,11 +24,11 @@ bearcad.ui.tool("select")
 bearcad.ui.wait(4)
 bearcad.ui.move(cx, cy)
 bearcad.ui.wait(4)
-assert(#bearcad.exploder() == 0, "no fan before Space")
+assert(#bearcad.ui.exploder() == 0, "no fan before Space")
 
 bearcad.ui.key("space")
 bearcad.ui.wait(6)
-local leaves = bearcad.exploder()
+local leaves = bearcad.ui.exploder()
 assert(#leaves > 0, "Space over the page should fan out what is under the cursor")
 local kinds = {}
 for _, l in ipairs(leaves) do kinds[l.kind] = true end
@@ -37,7 +37,7 @@ assert(kinds["projection"],
 
 bearcad.ui.key("space")
 bearcad.ui.wait(4)
-assert(#bearcad.exploder() == 0, "Space closes the fan again")
+assert(#bearcad.ui.exploder() == 0, "Space closes the fan again")
 
 -- Now the Dimension tool: find a spot down the card where an edge fans out, and pick it.
 bearcad.ui.tool("dimension")
@@ -48,7 +48,7 @@ for dy = -160, 160, 6 do
   bearcad.ui.wait(3)
   bearcad.ui.key("space")
   bearcad.ui.wait(5)
-  for _, l in ipairs(bearcad.exploder()) do
+  for _, l in ipairs(bearcad.ui.exploder()) do
     if (l.kind == "projected_edge" or l.kind == "drawing_dimension") and l.x then hit = l end
   end
   if hit then break end
@@ -59,7 +59,7 @@ assert(hit, "expected an edge to fan out somewhere down the card")
 
 bearcad.ui.click(hit.x, hit.y)
 bearcad.ui.wait(8)
-assert(#bearcad.exploder() == 0, "picking a loupe dismisses the fan")
+assert(#bearcad.ui.exploder() == 0, "picking a loupe dismisses the fan")
 assert(bearcad.status():find("dimension"),
   "picking an edge loupe with the Dimension tool should toggle its dimension, got: "
     .. bearcad.status())

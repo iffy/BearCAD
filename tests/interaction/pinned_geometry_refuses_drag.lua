@@ -6,7 +6,7 @@ bearcad.constrain("coincident",
   { kind = "line", index = 0, endpoint = "start" },
   { kind = "origin" })
 local ok, err = pcall(function()
-  bearcad.ui.drag_vertex({ kind = "line", index = 0, endpoint = "end" }, 13, 0)
+  bearcad.drag_vertex({ kind = "line", index = 0, endpoint = "end" }, 13, 0)
 end)
 assert(not ok, "a pinned dimensioned rect corner must refuse to drag")
 assert(tostring(err):find("constrained"), "unexpected error: " .. tostring(err))

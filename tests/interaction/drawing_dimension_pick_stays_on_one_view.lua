@@ -22,7 +22,7 @@ local function fan_at(x, y)
   bearcad.ui.wait(4)
   bearcad.ui.key("space")
   bearcad.ui.wait(6)
-  local n = #bearcad.exploder()
+  local n = #bearcad.ui.exploder()
   -- Esc with the fan closed leaves the Dimension tool.
   if n > 0 then
     bearcad.ui.key("escape")

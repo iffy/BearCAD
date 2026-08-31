@@ -20,14 +20,14 @@ local function fan_at(x, y)
   bearcad.ui.wait(4)
   bearcad.ui.key("space")
   bearcad.ui.wait(6)
-  local leaves = bearcad.exploder()
+  local leaves = bearcad.ui.exploder()
   local kinds = {}
   for _, l in ipairs(leaves) do kinds[l.kind] = (kinds[l.kind] or 0) + 1 end
   return leaves, kinds
 end
 
 local function close_fan()
-  if #bearcad.exploder() > 0 then
+  if #bearcad.ui.exploder() > 0 then
     bearcad.ui.key("escape")
     bearcad.ui.wait(4)
   end

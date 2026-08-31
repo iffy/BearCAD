@@ -25,7 +25,7 @@ bearcad.ui.tool("move")
 bearcad.ui.wait(5)
 
 -- The moving block's top face centre onto the slab's top face centre, with a 20° spin.
-bearcad.begin_move{
+bearcad.ui.begin_move{
   bodies = {1},
   spin = "20",
   from = { body = 1, on_face = {70, 10, 10}, normal = {0, 0, 1} },
@@ -35,7 +35,7 @@ bearcad.ui.wait(8)
 
 -- The spin gizmo should be live: Face Snap's two face rows are up, and the turn is set.
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
 end

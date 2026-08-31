@@ -21,7 +21,7 @@ bearcad.ui.camera{ target = {20, 20, 0}, distance = 260 }
 bearcad.ui.wait(5)
 
 -- Body 1 is the covering block. Start A is already set so the next click is End A.
-bearcad.begin_move{
+bearcad.ui.begin_move{
   bodies = {1},
   from   = { body = 1, vertex = {-5, -5, 0} },
 }
@@ -29,7 +29,7 @@ bearcad.ui.tool_mode("snap")
 bearcad.ui.wait(5)
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
 end
@@ -41,7 +41,7 @@ assert(#picker("End point A").items == 0, "end A starts empty")
 -- (40, 40) is a corner of the slab. The moving block covers that pixel from above.
 bearcad.ui.move_ground(40, 40)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h, "hovering the buried slab corner should highlight something")
 assert(h.kind == "body_vertex",
   "it should be the slab's corner, not the moving block's face, got " .. tostring(h.kind))

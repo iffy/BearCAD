@@ -33,7 +33,7 @@ for _, row in ipairs(bearcad.debug.tool_table()) do
     bearcad.ui.wait(3)
     bearcad.ui.move_ground(-80, -200)
     bearcad.ui.wait(5)
-    local h = bearcad.hovered()
+    local h = bearcad.ui.hovered()
     assert(h and h.kind == "image",
       row.tool .. " should hover the image, got " .. (h and h.kind or "nothing"))
     bearcad.ui.click_ground(-80, -200)

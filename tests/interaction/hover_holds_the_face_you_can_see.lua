@@ -31,7 +31,7 @@ bearcad.ui.wait(5)
 bearcad.ui.move_ground(20, 15)
 bearcad.ui.wait(6)
 
-local first = bearcad.hovered()
+local first = bearcad.ui.hovered()
 assert(first, "hovering the body's cap should highlight something")
 assert(first.kind == "face", "and it should be a face, got " .. tostring(first.kind))
 assert(first.label, "a hovered face should report which face it is")
@@ -39,7 +39,7 @@ assert(first.label, "a hovered face should report which face it is")
 -- Hold still for many frames. The hover must not change its mind even once.
 for i = 1, 25 do
   bearcad.ui.wait(2)
-  local h = bearcad.hovered()
+  local h = bearcad.ui.hovered()
   assert(h and h.label == first.label,
     "the hover must hold still, but frame " .. i .. " changed from "
       .. first.label .. " to " .. tostring(h and h.label))

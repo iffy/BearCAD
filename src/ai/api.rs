@@ -170,8 +170,6 @@ bearcad.drawing_views(i)           -- a drawing's page: orientation, style, dime
 bearcad.body_edges(i)
 bearcad.body_cylinders(i)
 bearcad.selection()
-bearcad.pickers()                  -- active tool pickers; bearcad.picker("Targets") for one
-bearcad.gizmos()                   -- live gizmo rows; bearcad.gizmo("move_rz") for one
 bearcad.visible(el)                -- effective visibility, component chain included
 bearcad.set_visible(el, false)     -- handle, list, or { kind = "plane" }; boolean only
 bearcad.set_construction(el, true) -- same targets; selection forms are bearcad.ui.*
@@ -236,6 +234,11 @@ bearcad.ui.right_click_ground(x, y)         -- opens a context menu
 bearcad.ui.context_menu()                   -- { kind, index } of the open menu, or nil
 bearcad.ui.key("enter")
 bearcad.ui.palette("Export STEP")
+bearcad.ui.begin_move{ … } / begin_combine / begin_joint   -- arm a tool; do not commit
+bearcad.ui.pickers() / picker("Targets")                  -- armed tool pickers
+bearcad.ui.gizmos() / gizmo("move_rz")                    -- live gizmo rows
+bearcad.ui.hovered() / exploder()                         -- viewport hover / Selection Exploder
+bearcad.ui.set_dim / edit_dim / commit_dim                -- dimension widget
 ```
 "#;
 
@@ -429,8 +432,8 @@ mod tests {
             "bearcad.component{",
             "bearcad.set_units{",
             "bearcad.offset_sketch{",
-            "bearcad.hovered(",
-            "bearcad.pickers(",
+            "bearcad.ui.hovered(",
+            "bearcad.ui.pickers(",
         ] {
             assert!(doc.contains(call), "the page never shows how to call {call}…");
         }

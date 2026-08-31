@@ -16,7 +16,7 @@ bearcad.ui.tool("repeat")
 bearcad.ui.wait(3)
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
   return nil
@@ -30,7 +30,7 @@ assert(#entities.items == 0, "the picker starts empty when nothing was pre-selec
 -- Hover the circle's rim: the focused picker takes circles, so it must light up.
 bearcad.ui.move_ground(0, 4)
 bearcad.ui.wait(5)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h and h.kind == "circle",
   "the Repeat tool should highlight a hoverable circle, got " .. tostring(h and h.kind))
 

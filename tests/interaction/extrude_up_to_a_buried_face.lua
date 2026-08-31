@@ -27,7 +27,7 @@ bearcad.ui.camera{ target = {20, 15, 0}, distance = 260 }
 bearcad.ui.wait(5)
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
 end
@@ -50,7 +50,7 @@ bearcad.ui.move_ground(20, 15)
 bearcad.ui.wait(4)
 bearcad.ui.key("space")
 bearcad.ui.wait(8)
-local leaves = bearcad.exploder()
+local leaves = bearcad.ui.exploder()
 assert(#leaves > 0, "Space should open the fan while Up to is armed, got " .. #leaves .. " leaves")
 
 -- The buried bottom cap is in the fan, with a loupe to aim at.

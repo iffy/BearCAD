@@ -32,7 +32,7 @@ local function fan_at(x, y)
   bearcad.ui.key("space")
   bearcad.ui.wait(4)
   local fan_edges, fan_corners = 0, 0
-  for _, l in ipairs(bearcad.exploder()) do
+  for _, l in ipairs(bearcad.ui.exploder()) do
     if l.x then
       if l.kind == "projected_corner" then
         fan_corners = fan_corners + 1

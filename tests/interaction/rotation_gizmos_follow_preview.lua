@@ -18,12 +18,12 @@ bearcad.ui.wait(5)
 bearcad.ui.tool("move")
 bearcad.ui.tool_mode("free")
 bearcad.ui.wait(5)
-bearcad.begin_move{ bodies = {0} }
+bearcad.ui.begin_move{ bodies = {0} }
 bearcad.ui.wait(5)
 
 -- Collect the three rotation gizmos and their world-space handle positions.
 local rot = {}
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name:find("^move_r") then
     assert(g.position ~= nil, g.name .. " should expose its handle position")
     rot[g.name] = g.position
@@ -44,9 +44,9 @@ assert(dist(rot.move_ry, rot.move_rz) > 0.1, "move_ry and move_rz handles overla
 -- #1414: turning one ring (here -30° about Z) swings the other handles with the preview, so
 -- the X-ring and Y-ring handles change where they sit.
 local rx_before = rot.move_rx
-bearcad.set_gizmo{ name = "move_rz", value = -30 }   -- degrees (#1657)
+bearcad.ui.set_gizmo{ name = "move_rz", value = -30 }   -- degrees (#1657)
 bearcad.ui.wait(8)
-for _, g in ipairs(bearcad.gizmos()) do if g.name == "move_rx" then rot.move_rx = g.position end end
+for _, g in ipairs(bearcad.ui.gizmos()) do if g.name == "move_rx" then rot.move_rx = g.position end end
 assert(dist(rot.move_rx, rx_before) > 0.1,
   "move_rx handle should follow the Z-ring turn that rotated the preview")
 assert(not (bearcad.status() or ""):find("error", 1, true),

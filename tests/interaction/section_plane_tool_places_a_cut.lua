@@ -22,7 +22,7 @@ bearcad.ui.tool("section_plane")
 bearcad.ui.wait(3)
 
 local function anchor()
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == "Anchor" then return p end
   end
   return nil

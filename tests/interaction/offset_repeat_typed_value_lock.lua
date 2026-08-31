@@ -62,7 +62,7 @@ bearcad.ui.wait(5)
 -- CountGap 3×10 mm on a 20 mm body, distance-to-end: last copy ends at 80 mm
 -- from the start plane (x = 0). Handle at (80, 10).
 local function repeat_gizmo()
-  for _, g in ipairs(bearcad.gizmos()) do
+  for _, g in ipairs(bearcad.ui.gizmos()) do
     if g.name == "repeat" then return g end
   end
 end

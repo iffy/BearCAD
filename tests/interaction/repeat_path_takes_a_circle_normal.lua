@@ -19,7 +19,7 @@ bearcad.ui.camera{ target = {0, 0, 3}, distance = 260 }
 bearcad.ui.wait(5)
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
   return nil
@@ -31,7 +31,7 @@ bearcad.ui.tool("select")
 bearcad.ui.wait(3)
 bearcad.ui.move_ground(0, 0)
 bearcad.ui.wait(5)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(not h or h.kind ~= "circle_normal",
   "Select should not offer a circle normal, got " .. (h and h.kind or "nothing"))
 
@@ -45,7 +45,7 @@ assert(picker("Path").focused, "with a body gathered, the Path picker takes over
 -- Hovering the circle's centre now shows its normal…
 bearcad.ui.move_ground(0, 0)
 bearcad.ui.wait(6)
-h = bearcad.hovered()
+h = bearcad.ui.hovered()
 assert(h and h.kind == "circle_normal",
   "the Path picker should light the circle's normal, got " .. (h and h.kind or "nothing"))
 

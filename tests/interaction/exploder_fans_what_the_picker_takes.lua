@@ -23,7 +23,7 @@ local function kinds_at(x, y)
   bearcad.ui.wait(5)
   local seen = {}
   local n = 0
-  for _, leaf in ipairs(bearcad.exploder()) do
+  for _, leaf in ipairs(bearcad.ui.exploder()) do
     seen[leaf.kind] = true
     n = n + 1
   end

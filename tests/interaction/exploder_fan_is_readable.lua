@@ -1,4 +1,4 @@
--- #968: `bearcad.exploder()` reports what the Selection Exploder is fanning out, so the rule
+-- #968: `bearcad.ui.exploder()` reports what the Selection Exploder is fanning out, so the rule
 -- that the fan should offer exactly what the focused picker can take (#957) is assertable.
 -- Nothing else exposes the loupes.
 bearcad.new()
@@ -17,7 +17,7 @@ bearcad.ui.wait(5)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(5)
 
-assert(#bearcad.exploder() == 0, "a closed exploder fans nothing")
+assert(#bearcad.ui.exploder() == 0, "a closed exploder fans nothing")
 
 -- A corner of the solid: several things stack there — the corner, its edges, the faces
 -- meeting at it, the sketch geometry under them, and the body itself.
@@ -26,7 +26,7 @@ bearcad.ui.wait(3)
 bearcad.ui.key("space")
 bearcad.ui.wait(5)
 
-local leaves = bearcad.exploder()
+local leaves = bearcad.ui.exploder()
 assert(#leaves > 1, "a crowded corner should fan several leaves, got " .. #leaves)
 
 local kinds = {}
@@ -38,7 +38,7 @@ assert(kinds["body"], "and the whole body")
 
 bearcad.ui.key("escape")
 bearcad.ui.wait(5)
-assert(#bearcad.exploder() == 0, "dismissing the fan empties it")
+assert(#bearcad.ui.exploder() == 0, "dismissing the fan empties it")
 
 print("ok: the exploder's fan is readable from a script")
 bearcad.quit()

@@ -15,7 +15,7 @@ bearcad.ui.camera{ target = {0, 0, 0}, distance = 160, projection = "orthographi
 bearcad.ui.wait(8)
 
 local rot
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name == "text_rotation" then rot = g end
 end
 assert(rot, "Text tool should show a text_rotation gizmo on the selected text")
@@ -26,7 +26,7 @@ bearcad.ui.drag_ground(p.x, p.y, p.x, p.y + 20)
 bearcad.ui.wait(8)
 
 local after
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name == "text_rotation" then after = g end
 end
 assert(after, "rotation gizmo still present after the drag")

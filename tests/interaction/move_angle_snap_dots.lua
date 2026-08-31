@@ -16,7 +16,7 @@ bearcad.ui.ground("off")
 -- The A pair and start B are set; end B is what the next click is for. The sphere is
 -- centred on (60, 0, 0) with a radius of 20.
 local function arm()
-  bearcad.begin_move{
+  bearcad.ui.begin_move{
     bodies = {0},
     from   = { body = 0, vertex = {0, 0, 0} },
     to     = { body = 1, vertex = {60, 0, 0} },

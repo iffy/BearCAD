@@ -25,7 +25,7 @@ bearcad.ui.click_ground(30, 30)
 bearcad.ui.wait(5)
 
 local function gizmo(name)
-  return bearcad.gizmo(name)
+  return bearcad.ui.gizmo(name)
 end
 
 local tilt = gizmo("tilt_u")

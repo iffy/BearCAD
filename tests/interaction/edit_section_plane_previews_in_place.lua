@@ -1,4 +1,4 @@
--- #1783/#1787: editing a cutting plane (`bearcad.begin_edit_section_plane`) previews in
+-- #1783/#1787: editing a cutting plane (`bearcad.ui.begin_edit_section_plane`) previews in
 -- place of the plane being edited — the live drag must not compound with the plane's
 -- committed state — and cancelling leaves the plane exactly as it was.
 bearcad.new()
@@ -19,7 +19,7 @@ end
 assert(math.abs(offset_of() - 5) < 1e-4, "the plane starts at offset 5")
 
 -- Open the live edit draft.
-bearcad.begin_edit_section_plane{ cut = 0 }
+bearcad.ui.begin_edit_section_plane{ cut = 0 }
 bearcad.ui.wait(5)
 assert(bearcad.status():find("Edit cutting plane"),
   "begin_edit_section_plane opens the edit draft, got: " .. bearcad.status())

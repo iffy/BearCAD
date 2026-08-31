@@ -55,7 +55,7 @@ assert(math.abs(bearcad.section_planes(0)[1].depth - 6) < 1e-4, "depth survives 
 -- And the tool's own Cut depth field drives it: open the plane's edit draft, type into
 -- the field, accept. Blank in that field is the through cut.
 bearcad.edit_section_plane{ cut = 0, depth = false }
-bearcad.begin_edit_section_plane{ cut = 0 }
+bearcad.ui.begin_edit_section_plane{ cut = 0 }
 bearcad.ui.wait(6)
 local row = assert(
   bearcad.ui.context_row_rect("Cut depth"),

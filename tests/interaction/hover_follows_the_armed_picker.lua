@@ -23,7 +23,7 @@ bearcad.ui.wait(5)
 -- that is what hovering it shows.
 bearcad.ui.move_ground(20, 15)
 bearcad.ui.wait(5)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h and h.kind == "body",
   "with Targets armed the body should hover, got " .. tostring(h and h.kind))
 
@@ -32,13 +32,13 @@ assert(h and h.kind == "body",
 bearcad.ui.picker_focus("Cutters")
 bearcad.ui.wait(5)
 local cutters
-for _, p in ipairs(bearcad.pickers()) do
+for _, p in ipairs(bearcad.ui.pickers()) do
   if p.name == "Cutters" then cutters = p end
 end
 assert(cutters and cutters.focused, "the Cutters picker should be armed")
 bearcad.ui.move_ground(20, 15)
 bearcad.ui.wait(5)
-h = bearcad.hovered()
+h = bearcad.ui.hovered()
 assert(h == nil or h.kind ~= "body",
   "Cutters cannot take a body, so it should not hover one — got " .. tostring(h and h.kind))
 

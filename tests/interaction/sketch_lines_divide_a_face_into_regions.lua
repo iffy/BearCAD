@@ -27,7 +27,7 @@ bearcad.ui.camera{ target = {30, 20, 10}, distance = 220 }
 bearcad.ui.wait(5)
 
 local function picked_faces()
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == "Faces" then return #p.items end
   end
   return -1

@@ -183,7 +183,7 @@ bearcad.move_bodies{ bodies = {0},
 
 -- `begin_move` takes the same arguments but leaves the tool armed rather than committing,
 -- so the preview is on screen: the ghost, the A connector, and the B and C paths.
-bearcad.begin_move{ bodies = {0},
+bearcad.ui.begin_move{ bodies = {0},
   from = { body = 0, vertex = {0, 0, 0} },
   to   = { body = 1, vertex = {40, 0, 0} } }
 ```

@@ -24,7 +24,7 @@ bearcad.ui.click_ground(0, 0)
 bearcad.ui.wait(5)
 
 local names = {}
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   names[g.name] = g
 end
 assert(names.offset, "one offset gizmo after a face pick")
@@ -32,7 +32,7 @@ assert(names.tilt_u and names.tilt_v, "two in-plane tilts, not a roll about the 
 assert(not names.roll, "rotation is not around the face normal")
 
 local anchor
-for _, p in ipairs(bearcad.pickers()) do
+for _, p in ipairs(bearcad.ui.pickers()) do
   if p.name == "Anchor" then anchor = p end
 end
 assert(anchor, "the tool still has an Anchor picker")

@@ -17,7 +17,7 @@ bearcad.ui.zoom_fit()
 bearcad.ui.wait(5)
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
   return nil
@@ -29,7 +29,7 @@ local function fan_kinds(x, y)
   bearcad.ui.key("space")
   bearcad.ui.wait(5)
   local seen = {}
-  for _, leaf in ipairs(bearcad.exploder()) do seen[leaf.kind] = true end
+  for _, leaf in ipairs(bearcad.ui.exploder()) do seen[leaf.kind] = true end
   bearcad.ui.key("escape")
   bearcad.ui.wait(4)
   return seen

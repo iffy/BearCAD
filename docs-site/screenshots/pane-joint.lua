@@ -41,7 +41,7 @@ local function edge_between(body, a, b)
   end
   error("no edge of body " .. body .. " runs between those corners")
 end
-bearcad.begin_joint{
+bearcad.ui.begin_joint{
   a = 0, b = 1, kind = "slider",
   face = { moving = face_facing(1, {-1, 0, 0}), fixed = face_facing(0, {1, 0, 0}) },
   slide_max = 20,

@@ -54,7 +54,7 @@ bearcad.clear_selection()
 bearcad.ui.wait(5)
 bearcad.ui.move_ground(90, 30)
 bearcad.ui.wait(5)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h and h.kind == "line",
   "hovering a run member should highlight a line, got " .. tostring(h and h.kind))
 

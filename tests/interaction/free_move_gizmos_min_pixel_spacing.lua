@@ -18,14 +18,14 @@ bearcad.ui.wait(5)
 bearcad.ui.tool("move")
 bearcad.ui.tool_mode("free")
 bearcad.ui.wait(5)
-bearcad.begin_move{ bodies = {0} }
+bearcad.ui.begin_move{ bodies = {0} }
 bearcad.ui.wait(8)
 
 -- In-plane handles only: +Z and the Y-ring sit on the view axis and share a
 -- screen point by construction.
 local want = { move_x = true, move_y = true, move_rx = true, move_rz = true }
 local handles = {}
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if want[g.name] then
     assert(g.screen, g.name .. " should expose its screen position")
     table.insert(handles, { name = g.name, x = g.screen.x, y = g.screen.y })

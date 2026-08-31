@@ -44,7 +44,7 @@ bearcad.ui.wait(5)
 bearcad.ui.click(cx + 120, cy + 120)   -- blank page: clears the selection
 bearcad.ui.wait(5)
 local function selected_kind()
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == "Selection" then
       for _, it in ipairs(p.items) do return it.kind end
     end

@@ -18,7 +18,7 @@ bearcad.ui.tool("section_plane")
 bearcad.ui.wait(3)
 
 local anchor
-for _, p in ipairs(bearcad.pickers()) do
+for _, p in ipairs(bearcad.ui.pickers()) do
   if p.name == "Anchor" then anchor = p end
 end
 assert(anchor, "the cutting plane tool must register an Anchor picker")
@@ -32,7 +32,7 @@ assert(not takes["body"], "but not a whole body")
 -- Hover the block's top: a face (or the plane it sits on) should light up.
 bearcad.ui.move_ground(0, 0)
 bearcad.ui.wait(5)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h, "hovering a pickable anchor should highlight it, got nothing")
 assert(h.kind == "face" or h.kind == "plane" or h.kind == "profile",
   "the cutting plane should hover a face or plane, got " .. tostring(h.kind))

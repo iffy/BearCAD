@@ -144,8 +144,6 @@ bearcad.drawing_views(i)           -- a drawing's page: orientation, style, dime
 bearcad.body_edges(i)
 bearcad.body_cylinders(i)
 bearcad.selection()
-bearcad.pickers()                  -- active tool pickers; bearcad.picker("Targets") for one
-bearcad.gizmos()                   -- live gizmo rows; bearcad.gizmo("move_rz") for one
 bearcad.visible(el)                -- effective visibility, component chain included
 bearcad.set_visible(el, false)     -- handle, list, or { kind = "plane" }; boolean only
 bearcad.set_construction(el, true) -- same targets; selection forms are bearcad.ui.*
@@ -210,6 +208,11 @@ bearcad.ui.right_click_ground(x, y)         -- opens a context menu
 bearcad.ui.context_menu()                   -- { kind, index } of the open menu, or nil
 bearcad.ui.key("enter")
 bearcad.ui.palette("Export STEP")
+bearcad.ui.begin_move{ … } / begin_combine / begin_joint   -- arm a tool; do not commit
+bearcad.ui.pickers() / picker("Targets")                  -- armed tool pickers
+bearcad.ui.gizmos() / gizmo("move_rz")                    -- live gizmo rows
+bearcad.ui.hovered() / exploder()                         -- viewport hover / Selection Exploder
+bearcad.ui.set_dim / edit_dim / commit_dim                -- dimension widget
 ```
 
 ## Every function
@@ -223,10 +226,6 @@ cover.
 bearcad.add_parameter(name, expression)
 bearcad.add_unit_instance{ unit, name }
 bearcad.bake(index)   -- freeze a boolean's result into standalone bodies and consume its inputs
-bearcad.begin_combine{ op, a, b, keep_b }
-bearcad.begin_edit_section_plane{ view, cut }
-bearcad.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
-bearcad.begin_move{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
 bearcad.begin_sketch(…)
 bearcad.body_cylinders(index)
 bearcad.body_edges(index)
@@ -242,11 +241,8 @@ bearcad.clear()
 bearcad.clear_selection()
 bearcad.clone_unit_instance{ instance }
 bearcad.combine{ op, a, b, keep_b, name }
-bearcad.commit_dim()
-bearcad.commit_plane()
 bearcad.component{ name, parent }?
 bearcad.constrain(kind, a, b, …)
-bearcad.constraint_shortcut(key)
 bearcad.copy()
 bearcad.count(kind)
 bearcad.count_saved(kind)
@@ -267,7 +263,6 @@ bearcad.delete_section_plane{ view, cut }
 bearcad.delete_selection()
 bearcad.derive_parameter{ kind, a, b, body, body_b, name, instance, face, edge }
 bearcad.dimension{ kind, value, index, a, b, sign, point, line, anchor, mover }
-bearcad.drag_gizmo{ name, by }
 bearcad.drag_line({ … }, anchor_u?, anchor_v?, u?, v?)
 bearcad.drag_vertex({ … }, u?, v?)
 bearcad.drawing{ name }?
@@ -302,7 +297,6 @@ bearcad.drawing_views(index)
 bearcad.edit_chamfer{ index, edge, edges, extrusion, primitive, distance }
 bearcad.edit_circle{ index, r, radius, diameter, name }
 bearcad.edit_combine{ index, op, a, b, keep_b }
-bearcad.edit_dim(axis)
 bearcad.edit_drawing_loupe{ drawing, view, index, at?, radius?, to?, to_radius?, style? }   -- style is a drawing view style, or "view" to follow the projection's
 bearcad.edit_extrusion{ index, extrusion, distance, by, to }
 bearcad.edit_fillet{ index, edge, edges, extrusion, primitive, radius }
@@ -311,7 +305,6 @@ bearcad.edit_loft{ index, circle, circles, polygon, polygons, bodies, body, name
 bearcad.edit_mirror{ index, plane, bodies, output }
 bearcad.edit_move{ index, bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
 bearcad.edit_parameter{ name, private, min, max, step, rename }
-bearcad.edit_plane(index)
 bearcad.edit_repeat{ index, bodies, axis, around, flip, mode, count, spacing, length, to }
 bearcad.edit_revolve{ index, circle, circles, polygon, axis, angle, revolutions, pitch, offset, gap, symmetric, bodies, body, name }
 bearcad.edit_section_plane{ view, cut, offset, roll, depth, flip, bodies, exclude_bodies }
@@ -325,7 +318,6 @@ bearcad.edit_slice{ index, bodies, cutters, extend }
 bearcad.edit_sweep{ index, circle, circles, polygon, path, bodies, body, name }
 bearcad.element(kind, index)   -- or bearcad.element(id_or_name)
 bearcad.exit_sketch()
-bearcad.exploder()
 bearcad.export_3mf(path, body?)
 bearcad.export_drawing_pdf{ drawing, path }
 bearcad.export_drawing_svg{ drawing, path }
@@ -339,10 +331,7 @@ bearcad.fillet_edge{ edges, edge, extrusion, shape, radius }
 bearcad.fillet_vertex{ points, point, radius }
 bearcad.find(name)
 bearcad.get{ kind, index }
-bearcad.gizmo(name)
-bearcad.gizmos()
 bearcad.globals()
-bearcad.hovered()
 bearcad.id(element)   -- the element's stable, never-reused id
 bearcad.image_corners(index)
 bearcad.image_opacity{ image, opacity }
@@ -359,7 +348,6 @@ bearcad.material{ name, color, bodies }   -- no color + an existing name applies
 bearcad.mirror_bodies{ plane, bodies, output, name }
 bearcad.mirror_sketch{ sketch, line, lines, circles }
 bearcad.move_bodies{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c, name }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
-bearcad.move_preview()
 bearcad.move_to_component{ kind, index, component }
 bearcad.new()
 bearcad.offset_sketch{ sketch, lines, circles, distance, construction }
@@ -373,8 +361,6 @@ bearcad.parameter_options(name, open?)
 bearcad.parameter_slider(name, value?)
 bearcad.parameter_value(name)
 bearcad.paste{ linked, x, y, z }?
-bearcad.picker(name)
-bearcad.pickers()
 bearcad.plane{ offset, from, origin, normal, axis, angle, name }
 bearcad.project{ entities, body, bodies, plane, planes, kind, index, name, type }?
 bearcad.quit()
@@ -397,9 +383,6 @@ bearcad.selection()
 bearcad.session_log()
 bearcad.set_body_shadow{ body, shadow }
 bearcad.set_construction(element, construction)   -- handle, list, or { kind = "line" }
-bearcad.set_dim(axis, value)
-bearcad.set_dim_label_offset(axis, offset)
-bearcad.set_gizmo{ name, value }
 bearcad.set_joint_rest(op)
 bearcad.set_material{ body, material }
 bearcad.set_name(element, name)
@@ -428,28 +411,37 @@ bearcad.ui.animate_zoom_to_fit(on?)
 bearcad.ui.apply_construction(construction)
 bearcad.ui.apply_visibility(visible)
 bearcad.ui.auto_zoom(on?)
+bearcad.ui.begin_combine{ op, a, b, keep_b }
+bearcad.ui.begin_edit_section_plane{ view, cut }
+bearcad.ui.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
+bearcad.ui.begin_move{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
 bearcad.ui.camera{ yaw, pitch, distance, target, projection, shading, ground }?   -- no fields = read
 bearcad.ui.changelog(verb?)
 bearcad.ui.click(x, y, { shift?, ctrl?, cmd? }?)
 bearcad.ui.click_ground(x, y, { shift?, ctrl?, cmd? }?)
 bearcad.ui.click_world(x, y, z, { shift?, ctrl?, cmd? }?)
 bearcad.ui.close_tab(index?)
+bearcad.ui.commit_dim()
+bearcad.ui.commit_plane()
 bearcad.ui.complete_all_tutorials()
 bearcad.ui.complete_tutorial(name)
+bearcad.ui.constraint_shortcut(key)
 bearcad.ui.context_menu()
 bearcad.ui.context_row_rect(label)
 bearcad.ui.detach_tab(index?)
 bearcad.ui.double_click(x, y)
 bearcad.ui.drag(x0, y0, x1, y1)
+bearcad.ui.drag_gizmo{ name, by }
 bearcad.ui.drag_ground(x0, y0, x1, y1)
-bearcad.ui.drag_line({ … }, anchor_u?, anchor_v?, u?, v?)
-bearcad.ui.drag_vertex({ … }, u?, v?)
 bearcad.ui.drag_world(x0, y0, z0, x1, y1, z1)
 bearcad.ui.drawing_loupe_rect{ view, index, magnified? }   -- { x, y, w, h, band, handle } — the circle's box in window coords, the px of rim that resizes it, and the centre dot that moves it
 bearcad.ui.drawing_view_rect(view)
+bearcad.ui.edit_dim(axis)
+bearcad.ui.edit_plane(index)
 bearcad.ui.elements_graph{ shadow_bodies? }
 bearcad.ui.elements_row_rect(label)
 bearcad.ui.elements_view(name)
+bearcad.ui.exploder()
 bearcad.ui.first_person(on?)
 bearcad.ui.first_person_advance(seconds)
 bearcad.ui.first_person_fly(on?)
@@ -461,9 +453,12 @@ bearcad.ui.focus_calibrate()
 bearcad.ui.focus_dim(axis)
 bearcad.ui.focus_name()
 bearcad.ui.focused_window()
+bearcad.ui.gizmo(name)
+bearcad.ui.gizmos()
 bearcad.ui.ground(name)
 bearcad.ui.headless()   -- true when the run has no OS window
 bearcad.ui.help(on?)
+bearcad.ui.hovered()
 bearcad.ui.install_age(days?)
 bearcad.ui.key(name, { shift?, ctrl?, cmd? }?)
 bearcad.ui.keydown(name, { shift?, ctrl?, cmd? }?)
@@ -474,6 +469,7 @@ bearcad.ui.menu_items()   -- labels of the open context menu's items, in order
 bearcad.ui.menu_structure()
 bearcad.ui.move(x, y)
 bearcad.ui.move_ground(x, y)
+bearcad.ui.move_preview()
 bearcad.ui.move_world(x, y, z)
 bearcad.ui.new_tab{ same }?
 bearcad.ui.orbit(dx, dy)
@@ -483,7 +479,9 @@ bearcad.ui.pan(dx, dy)
 bearcad.ui.pane(pane, visible)
 bearcad.ui.pane_rect(pane)
 bearcad.ui.pane_scroll(pane)
+bearcad.ui.picker(name)
 bearcad.ui.picker_focus(name)
+bearcad.ui.pickers()
 bearcad.ui.reorder_tab(from, to)
 bearcad.ui.repeat_tool{ axis?, count?, gap?, distance?, offset?, to_end?, computed?, around?, flip? }
 bearcad.ui.report_issue(verb?)
@@ -493,6 +491,9 @@ bearcad.ui.right_drag(dx, dy)
 bearcad.ui.right_drag_pan(dx, dy)
 bearcad.ui.screenshot(path?, region?)
 bearcad.ui.scroll_pane(pane, dy)
+bearcad.ui.set_dim(axis, value)
+bearcad.ui.set_dim_label_offset(axis, offset)
+bearcad.ui.set_gizmo{ name, value }
 bearcad.ui.set_home_view()
 bearcad.ui.settings(verb?)
 bearcad.ui.shading(name)   -- wireframe, transparent, solid, solid_wireframe, realistic, loose_pencil, dark_pencil, color_pencil, watercolor

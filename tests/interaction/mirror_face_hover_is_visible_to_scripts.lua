@@ -1,5 +1,5 @@
 -- #1541: hovering a closed sketch face during Mirror lights its four edges as a Curve
--- highlight, which carried no element identity — so `bearcad.hovered()` reported nil and a
+-- highlight, which carried no element identity — so `bearcad.ui.hovered()` reported nil and a
 -- script could not assert the very hover #1539 added.
 bearcad.new()
 bearcad.rect{ x = -20, y = -15, width = 40, height = 30 }
@@ -16,7 +16,7 @@ bearcad.ui.camera{ target = {0, 0, 0}, distance = 200 }
 bearcad.ui.wait(8)
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
   return nil
@@ -33,7 +33,7 @@ assert(picker("Shapes") and picker("Shapes").focused,
 -- Hover well inside the rectangle, away from every edge.
 bearcad.ui.move_ground(0, 0)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h, "the face's lit-up boundary should be visible to scripts, got nil")
 assert(h.kind == "line", "the boundary is made of sketch lines, got " .. h.kind)
 assert(h.count == 4,
@@ -44,7 +44,7 @@ bearcad.ui.tool("select")
 bearcad.ui.wait(5)
 bearcad.ui.move_ground(0, -15)
 bearcad.ui.wait(8)
-h = bearcad.hovered()
+h = bearcad.ui.hovered()
 assert(h and h.count == 1,
   "hovering one edge should report a count of 1, got " .. tostring(h and h.count))
 

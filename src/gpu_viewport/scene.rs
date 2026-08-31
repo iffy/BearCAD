@@ -715,7 +715,7 @@ pub enum ViewportHoverHighlight {
     /// A whole analytic edge given as its segments (#807): a hole's rim is many chords in the
     /// mesh but one edge to the tools, so it highlights as one. `elements` names what those
     /// segments *are* (#1541) — a face expanded to its boundary lights many edges at once, and
-    /// without the identities `bearcad.hovered()` had nothing to report. Empty when the lit
+    /// without the identities `bearcad.ui.hovered()` had nothing to report. Empty when the lit
     /// geometry has no `SceneElement` of its own.
     Curve {
         segments: Vec<(Vec3, Vec3)>,

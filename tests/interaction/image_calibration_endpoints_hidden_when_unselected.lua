@@ -20,7 +20,7 @@ bearcad.ui.wait(10)
 
 bearcad.ui.move_ground(-80, -200)
 bearcad.ui.wait(5)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(not h or h.kind ~= "point",
   "an unselected image's calibration endpoint must not hover as a point, got "
     .. (h and h.kind or "nothing"))

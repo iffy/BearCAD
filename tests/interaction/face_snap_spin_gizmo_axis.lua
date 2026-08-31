@@ -24,7 +24,7 @@ bearcad.ui.tool("move")
 bearcad.ui.wait(5)
 
 -- 0° turn: the connector must still curve (leave each face along its normal).
-bearcad.begin_move{
+bearcad.ui.begin_move{
   bodies = {1},
   from = { body = 1, on_face = {70, 10, 10}, normal = {0, 0, 1} },
   to = { body = 0, on_face = {15, 15, 10}, normal = {0, 0, 1} },
@@ -32,7 +32,7 @@ bearcad.begin_move{
 bearcad.ui.wait(8)
 
 local spin
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name == "move_spin" then spin = g end
 end
 assert(spin, "Face Snap exposes a move_spin gizmo")
@@ -47,10 +47,10 @@ assert(math.abs(dx) < 1.0 or math.abs(dy) < 1.0,
   "0° handle sits on a world axis, offset=(" .. dx .. "," .. dy .. "," .. dz .. ")")
 
 -- The gizmo is scriptable: a 20° turn writes through.
-bearcad.set_gizmo{ name = "move_spin", value = 20 }   -- degrees (#1657)
+bearcad.ui.set_gizmo{ name = "move_spin", value = 20 }   -- degrees (#1657)
 bearcad.ui.wait(6)
 local after
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name == "move_spin" then after = g.value end
 end
 assert(type(after) == "number" and math.abs(after - 20) < 1e-3,

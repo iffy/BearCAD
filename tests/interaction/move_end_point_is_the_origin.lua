@@ -11,7 +11,7 @@ bearcad.ui.pane("parameters", "hide")
 bearcad.ui.auto_zoom(false)
 bearcad.ui.ground("off")
 -- The moving body and its source corner are set; end point A is what the next click is for.
-bearcad.begin_move{
+bearcad.ui.begin_move{
   bodies = {0},
   from   = { body = 0, vertex = {40, 40, 0} },
 }

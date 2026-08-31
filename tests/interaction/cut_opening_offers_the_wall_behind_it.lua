@@ -32,7 +32,7 @@ bearcad.ui.wait(5)
 -- The middle of the opening: the pocket's back wall is the only material on this ray.
 bearcad.ui.move_world(40, 20, 30)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h, "hovering into the pocket should highlight a face")
 assert(h.kind == "face", "expected a face hover, got " .. tostring(h.kind))
 

@@ -26,7 +26,7 @@ local function fan_at(x, y)
   bearcad.ui.key("space")
   bearcad.ui.wait(6)
   local kinds = {}
-  for _, leaf in ipairs(bearcad.exploder()) do
+  for _, leaf in ipairs(bearcad.ui.exploder()) do
     kinds[#kinds + 1] = leaf.kind
   end
   bearcad.ui.key("escape")
@@ -51,14 +51,14 @@ bearcad.ui.wait(4)
 bearcad.ui.key("space")
 bearcad.ui.wait(6)
 local loupe
-for _, leaf in ipairs(bearcad.exploder()) do
+for _, leaf in ipairs(bearcad.ui.exploder()) do
   if leaf.kind == "sketch_text" and leaf.x then loupe = leaf end
 end
 assert(loupe, "the fan still holds the letters, with a loupe to click")
 bearcad.ui.click(loupe.x, loupe.y)
 bearcad.ui.wait(8)
 local picked = 0
-for _, p in ipairs(bearcad.pickers()) do
+for _, p in ipairs(bearcad.ui.pickers()) do
   if p.name == "Faces" then picked = #p.items end
 end
 assert(picked >= 1, "picking the loupe should feed the Extrude tool the letters, got " .. picked)

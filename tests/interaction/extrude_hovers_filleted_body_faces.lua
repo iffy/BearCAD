@@ -31,7 +31,7 @@ bearcad.ui.camera{ target = {20, 15, 0}, distance = 260 }
 bearcad.ui.wait(5)
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
 end
@@ -41,7 +41,7 @@ bearcad.ui.wait(5)
 
 bearcad.ui.move_ground(20, 15)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h, "hovering a remaining flat on the filleted body should highlight a face")
 assert(h.kind == "face",
   "Extrude should hover the flat face, got " .. tostring(h.kind))

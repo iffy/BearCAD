@@ -26,7 +26,7 @@ local function has_kind(sel, kind)
 end
 
 local function body_loupe()
-  for _, leaf in ipairs(bearcad.exploder()) do
+  for _, leaf in ipairs(bearcad.ui.exploder()) do
     if leaf.kind == "body" and leaf.x then
       return leaf
     end
@@ -45,7 +45,7 @@ bearcad.ui.wait(3)
 -- Shift+Space opens the fan while Shift is still down; then Shift is released.
 bearcad.ui.key("space", { shift = true })
 bearcad.ui.wait(6)
-assert(#bearcad.exploder() > 0, "Shift+Space should open the fan over the crowded corner")
+assert(#bearcad.ui.exploder() > 0, "Shift+Space should open the fan over the crowded corner")
 
 local leaf = body_loupe()
 assert(leaf, "the fan should offer the body as a leaf")
@@ -53,7 +53,7 @@ assert(leaf, "the fan should offer the body as a leaf")
 bearcad.ui.click(leaf.x, leaf.y)
 bearcad.ui.wait(8)
 
-assert(#bearcad.exploder() == 0,
+assert(#bearcad.ui.exploder() == 0,
   "a pick after Shift-opened fan should dismiss it immediately")
 local sel = bearcad.selection()
 assert(has_kind(sel, "construction_plane"),
@@ -72,7 +72,7 @@ bearcad.ui.move_ground(40, 30)
 bearcad.ui.wait(3)
 bearcad.ui.key("space")
 bearcad.ui.wait(6)
-assert(#bearcad.exploder() > 0, "Space should open the fan")
+assert(#bearcad.ui.exploder() > 0, "Space should open the fan")
 
 leaf = body_loupe()
 assert(leaf, "the fan should offer the body again")
@@ -80,7 +80,7 @@ assert(leaf, "the fan should offer the body again")
 bearcad.ui.click(leaf.x, leaf.y, { shift = true })
 bearcad.ui.wait(8)
 
-assert(#bearcad.exploder() > 0,
+assert(#bearcad.ui.exploder() > 0,
   "Shift-clicking a loupe after a plain open should keep the fan up")
 sel = bearcad.selection()
 assert(has_kind(sel, "construction_plane"),

@@ -79,7 +79,7 @@ bearcad.ui.wait(3)
 -- Front edge of the top cap (y = 0). Inward bisector is +Y; handle at ~4 mm in.
 bearcad.ui.click_ground(20, 0)
 bearcad.ui.wait(6)
-local gizmos = bearcad.gizmos()
+local gizmos = bearcad.ui.gizmos()
 local had = false
 for _, g in ipairs(gizmos) do
   if g.name == "chamfer" then had = true break end
@@ -90,14 +90,14 @@ bearcad.ui.wait(4)
 bearcad.ui.click_ground(20, 4)
 bearcad.ui.wait(4)
 had = false
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name == "chamfer" then had = true break end
 end
 assert(had, "3D chamfer second click must release the handle, not commit")
 bearcad.ui.key("enter")
 bearcad.ui.wait(8)
 had = false
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name == "chamfer" then had = true break end
 end
 assert(not had, "Enter should commit the 3D chamfer")
@@ -147,7 +147,7 @@ bearcad.ui.wait(3)
 bearcad.ui.click_ground(0, 0)
 bearcad.ui.wait(6)
 local found = false
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name == "shell" then found = true break end
 end
 assert(found, "shell thickness gizmo should appear after a body pick")

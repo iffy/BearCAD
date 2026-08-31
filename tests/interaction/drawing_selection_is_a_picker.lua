@@ -17,7 +17,7 @@ bearcad.ui.wait(5)
 
 bearcad.ui.tool("select")
 bearcad.ui.wait(5)
-local sel = bearcad.picker("Selection")
+local sel = bearcad.ui.picker("Selection")
 assert(sel, "the drawing Select tool should register a Selection picker")
 assert(sel.focused, "and it should be armed")
 -- The three page-item kinds are their own kinds, which is what keeps each row's icon (#363)
@@ -31,7 +31,7 @@ assert(not takes["body"], "and nothing from the model")
 -- The Aligned-view tool's base view is a single-pick projection input.
 bearcad.ui.tool("drawing_align")
 bearcad.ui.wait(5)
-local base = bearcad.picker("Base view")
+local base = bearcad.ui.picker("Base view")
 assert(base, "the Aligned-view tool should register a Base view picker")
 assert(base.limit == 1, "it takes one projection, got limit " .. tostring(base.limit))
 assert(#base.accepts == 1 and base.accepts[1] == "projection",

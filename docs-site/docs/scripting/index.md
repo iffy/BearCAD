@@ -115,12 +115,12 @@ Viewport drag handles are scriptable — each gizmo is one scalar:
 
 ```lua
 -- What gizmos does the current tool state expose?
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   print(g.kind, g.name, g.value)   -- e.g. "push_pull"  "extrude"  7.0
 end
 
-bearcad.set_gizmo{ name = "extrude", value = 15 }   -- set the depth outright
-bearcad.drag_gizmo{ name = "extrude", by = 5 }      -- nudge it (mirrors a drag delta)
+bearcad.ui.set_gizmo{ name = "extrude", value = 15 }   -- set the depth outright
+bearcad.ui.drag_gizmo{ name = "extrude", by = 5 }      -- nudge it (mirrors a drag delta)
 ```
 
 Lengths are in millimetres, angles in degrees. Gizmos today: `"extrude"`,
@@ -129,7 +129,7 @@ Lengths are in millimetres, angles in degrees. Gizmos today: `"extrude"`,
 `"text_width"` (a selected wrapped text's box width), and `"text_rotation"`
 (a selected text's turn about its origin).
 
-`bearcad.move_preview()` is the Move tool's intended pose (the hover candidate, or
+`bearcad.ui.move_preview()` is the Move tool's intended pose (the hover candidate, or
 the in-progress move): `{ translation, rotation, bbox }`, or `nil` when there is
 no ghost.
 

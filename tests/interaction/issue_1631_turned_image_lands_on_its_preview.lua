@@ -7,7 +7,7 @@ bearcad.ui.tool("select")
 bearcad.ui.wait(3)
 
 -- The live preview of a turn-and-slide, as the viewport draws it.
-bearcad.begin_move{ images = {0}, x = -56.6, y = 73.9, rz = -90 }
+bearcad.ui.begin_move{ images = {0}, x = -56.6, y = 73.9, rz = -90 }
 bearcad.ui.wait(3)
 local preview = bearcad.image_corners(0)
 

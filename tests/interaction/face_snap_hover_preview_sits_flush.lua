@@ -23,7 +23,7 @@ bearcad.ui.camera{ target = {45, 15, 0}, distance = 320 }
 bearcad.ui.wait(5)
 bearcad.ui.tool("move")
 bearcad.ui.wait(5)
-bearcad.begin_move{ bodies = {1} }
+bearcad.ui.begin_move{ bodies = {1} }
 bearcad.ui.wait(5)
 bearcad.ui.tool_mode("face_snap")
 bearcad.ui.wait(8)
@@ -41,11 +41,11 @@ bearcad.ui.wait(8)
 -- upside-down on the slab; a translation-only hover drops it through the slab.
 bearcad.ui.move_ground(15, 0)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h and h.kind == "body_vertex",
   "the edge midpoint should highlight, got " .. tostring(h and h.kind))
 
-local p = bearcad.move_preview()
+local p = bearcad.ui.move_preview()
 assert(p and p.bbox, "hovering a Face Snap point should preview the move")
 assert(p.bbox.min.z > 9.5,
   "the moving face should sit against the slab top (z = 10), not slice through, min.z="

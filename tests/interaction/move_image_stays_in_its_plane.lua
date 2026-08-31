@@ -19,13 +19,13 @@ bearcad.ui.tool("select")
 bearcad.ui.tool("move")
 bearcad.ui.wait(8)
 
-local bodies = bearcad.picker("Bodies")
+local bodies = bearcad.ui.picker("Bodies")
 assert(bodies and #bodies.items == 1 and bodies.items[1].kind == "image",
   "the Move tool should hold the one tracing image")
 assert(bearcad.ui.tool_mode() == "free", "an image-only move lands in Free (#1587)")
 
 local function gizmo(name)
-  return bearcad.gizmo(name)
+  return bearcad.ui.gizmo(name)
 end
 
 -- The image sits on the ground (XY) plane, so Z is the axis that isn't in it.
@@ -34,7 +34,7 @@ assert(not gizmo("move_z"), "an XY image must not offer an out-of-plane Z slide 
 assert(gizmo("move_rz"), "an XY image should turn about its plane normal (#1601)")
 assert(not gizmo("move_rx") and not gizmo("move_ry"),
   "an XY image must not offer a turn that tilts it out of its plane (#1601)")
-assert(not pcall(bearcad.set_gizmo, { name = "move_z", value = 10 }),
+assert(not pcall(bearcad.ui.set_gizmo, { name = "move_z", value = 10 }),
   "the skipped axis must refuse a scripted drag too (#1601)")
 
 -- Only Free and the 2D Point Snap are modes for an image (#1601).

@@ -10399,7 +10399,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
     // Open the live edit draft of a cutting plane (#1787): the offset/tilt gizmos preview
     // in place of the plane being edited (#1783) until Enter commits or Esc cancels.
-    // `bearcad.begin_edit_section_plane{ view?, cut }`.
+    // `bearcad.ui.begin_edit_section_plane{ view?, cut }`.
     api.set(
         "begin_edit_section_plane",
         lua.create_function(|lua, opts: Table| {
@@ -11731,6 +11731,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "camera", "elements_view", "elements_graph", "workbench", "auto_zoom", "animate_joints", "animate_zoom_to_fit",
             "update_channel",
             "snapping", "picker_focus", "angle_snap",
+            "begin_combine", "begin_move", "begin_joint", "begin_edit_section_plane",
+            "set_dim", "edit_dim", "commit_dim", "set_dim_label_offset",
+            "commit_plane", "edit_plane",
+            "gizmos", "gizmo", "set_gizmo", "drag_gizmo", "move_preview",
+            "constraint_shortcut",
+            "pickers", "picker", "hovered", "exploder",
             "tutorial", "tutorial_next", "tutorial_assist", "tutorial_end", "tutorial_step",
             "tutorial_narration",
             "tutorial_orb",
@@ -11763,11 +11769,6 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             bearcad.debug[name] = bearcad[name]
             bearcad[name] = nil
         end
-        -- Sketch-local (not viewport) manipulation, so it stays in the modeling namespace
-        -- (#114); the ui aliases keep older scripts working.
-        bearcad.ui.drag_vertex = bearcad.drag_vertex
-        bearcad.ui.drag_line = bearcad.drag_line
-
         local function yielding(name, native_name)
             local native = bearcad.ui[native_name or name]
             bearcad.ui[name] = function(...)
@@ -12313,9 +12314,9 @@ pub mod tests {
               tostring(err))
 
             -- Import already selected the image (#1582).
-            bearcad.edit_dim("length")
-            bearcad.set_dim("length", "10")
-            bearcad.commit_dim()
+            bearcad.ui.edit_dim("length")
+            bearcad.ui.set_dim("length", "10")
+            bearcad.ui.commit_dim()
             img = bearcad.get{{ kind = "image", index = 0 }}
             assert(math.abs(img.length - 10) < 1e-3, "dim edit span " .. img.length)
             assert(img.expression == "10", img.expression)
@@ -12753,9 +12754,9 @@ pub mod tests {
               "import without a named plane should select only the image, got "
               .. (#sel > 0 and (sel[1].kind .. " " .. tostring(sel[1].index)) or "nothing"))
             -- Selection + Select tool is enough to type a calibration length.
-            bearcad.edit_dim("length")
-            bearcad.set_dim("length", "10")
-            bearcad.commit_dim()
+            bearcad.ui.edit_dim("length")
+            bearcad.ui.set_dim("length", "10")
+            bearcad.ui.commit_dim()
             local img = bearcad.get{{ kind = "image", index = 0 }}
             assert(math.abs(img.length - 10) < 1e-3, "immediate calibrate span " .. img.length)
 
@@ -13435,10 +13436,10 @@ pub mod tests {
             bearcad.text{ text = "R", x = 0, y = 0, size = 20 }
             bearcad.select{ kind = "sketch_text", index = 0 }
             local names = {}
-            for _, g in ipairs(bearcad.gizmos()) do names[g.name] = g end
+            for _, g in ipairs(bearcad.ui.gizmos()) do names[g.name] = g end
             assert(names.text_rotation, "selected text exposes text_rotation")
             assert(math.abs(names.text_rotation.value) < 1e-5)
-            bearcad.set_gizmo{ name = "text_rotation", value = 45 }  -- degrees (#1657)
+            bearcad.ui.set_gizmo{ name = "text_rotation", value = 45 }  -- degrees (#1657)
             local t = bearcad.get{ kind = "sketch_text", index = 0 }
             assert(math.abs(t.rotation - 45) < 0.05, "rotation should be 45°, got " .. tostring(t.rotation))
             assert(t.flip == false, "starts unflipped")
@@ -14543,10 +14544,27 @@ pub mod tests {
             assert(sections[1] == "MCP Server")
             assert(sections[2] == "Agent Skill")
             -- drag_vertex/drag_line take sketch-local coordinates, so they live in the
-            -- modeling namespace (#114) with back-compat aliases under bearcad.ui.
+            -- modeling namespace (#114) — one home, no ui alias (#1874).
             for _, name in ipairs({ "drag_vertex", "drag_line" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " missing")
-                assert(bearcad.ui[name] == bearcad[name], "bearcad.ui." .. name .. " alias missing")
+                assert(bearcad.ui[name] == nil, "bearcad.ui." .. name .. " should not alias the modeling call")
+            end
+            -- #1873: live-tool arm/preview verbs sit under ui so agents don't confuse them
+            -- with the committing modeling twins.
+            for _, name in ipairs({ "begin_combine", "begin_move", "begin_joint",
+                                    "begin_edit_section_plane" }) do
+                assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")
+                assert(bearcad[name] == nil, "bearcad." .. name .. " should move to bearcad.ui")
+            end
+            -- #1874: verbs that need an armed tool, a widget, or viewport hover/fan.
+            for _, name in ipairs({ "set_dim", "edit_dim", "commit_dim", "set_dim_label_offset",
+                                    "commit_plane", "edit_plane",
+                                    "gizmos", "gizmo", "set_gizmo", "drag_gizmo",
+                                    "constraint_shortcut",
+                                    "pickers", "picker", "hovered", "exploder",
+                                    "move_preview" }) do
+                assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")
+                assert(bearcad[name] == nil, "bearcad." .. name .. " should move to bearcad.ui")
             end
             -- declarative modeling stays at the top level
             for _, name in ipairs({ "rect", "line", "circle", "extrude", "new", "select",
@@ -14555,6 +14573,8 @@ pub mod tests {
                                     "import_stl", "import_step", "import_lua", "chamfer_vertex",
                                     "fillet_vertex", "chamfer_edge", "fillet_edge", "project",
                                     "sketch_faces",
+                                    "combine", "move_bodies", "joint", "begin_sketch",
+                                    "edit_section_plane",
                                     "globals", "count_saved", "version" }) do
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
             end
@@ -15450,9 +15470,9 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.circle{ x = 0, y = 0, r = 4 }
-            bearcad.edit_dim("diameter")
-            bearcad.set_dim("diameter", "20")
-            bearcad.commit_dim()
+            bearcad.ui.edit_dim("diameter")
+            bearcad.ui.set_dim("diameter", "20")
+            bearcad.ui.commit_dim()
             local c = bearcad.get{ kind = "circle", index = 0 }
             assert(math.abs(c.diameter - 20) < 1e-3, "diameter stayed " .. tostring(c.diameter))
         "#,
@@ -15467,12 +15487,12 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.rect{ width = 40, height = 20 }
-            bearcad.edit_dim("width")
-            bearcad.set_dim("width", "80")
-            bearcad.commit_dim()
-            bearcad.edit_dim("height")
-            bearcad.set_dim("height", "30")
-            bearcad.commit_dim()
+            bearcad.ui.edit_dim("width")
+            bearcad.ui.set_dim("width", "80")
+            bearcad.ui.commit_dim()
+            bearcad.ui.edit_dim("height")
+            bearcad.ui.set_dim("height", "30")
+            bearcad.ui.commit_dim()
             local w = bearcad.get{ kind = "line", index = 0 }
             local h = bearcad.get{ kind = "line", index = 1 }
             assert(math.abs(w.length - 80) < 1e-3, "width stayed " .. tostring(w.length))
@@ -15491,9 +15511,9 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0, dimension = 40 }
-            bearcad.edit_dim("length")
-            bearcad.set_dim("length", "50")
-            bearcad.commit_dim()
+            bearcad.ui.edit_dim("length")
+            bearcad.ui.set_dim("length", "50")
+            bearcad.ui.commit_dim()
             local l = bearcad.get{ kind = "line", index = 0 }
             assert(math.abs(l.length - 50) < 1e-3, "length stayed " .. tostring(l.length))
         "#,
@@ -16711,30 +16731,30 @@ pub mod tests {
         assert!(state.doc.bodies.len() >= 1);
     }
 
-    /// #1879: `bearcad.picker(name)` / `bearcad.gizmo(name)` return the named row, or nil.
+    /// #1879: `bearcad.ui.picker(name)` / `bearcad.ui.gizmo(name)` return the named row, or nil.
     #[test]
     fn lua_picker_and_gizmo_lookup_by_name() {
         run_lua_expect_ok(
             r#"
-            assert(type(bearcad.picker) == "function")
-            assert(type(bearcad.gizmo) == "function")
-            assert(bearcad.picker("nope") == nil, "an unknown picker is nil, not an error")
-            assert(bearcad.gizmo("nope") == nil, "an unknown gizmo is nil, not an error")
+            assert(type(bearcad.ui.picker) == "function")
+            assert(type(bearcad.ui.gizmo) == "function")
+            assert(bearcad.ui.picker("nope") == nil, "an unknown picker is nil, not an error")
+            assert(bearcad.ui.gizmo("nope") == nil, "an unknown gizmo is nil, not an error")
 
             bearcad.rect{ width = 10, height = 10 }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
-            bearcad.begin_move{ bodies = {0} }
+            bearcad.ui.begin_move{ bodies = {0} }
             bearcad.ui.tool_mode("free")
-            local rz = bearcad.gizmo("move_rz")
+            local rz = bearcad.ui.gizmo("move_rz")
             assert(rz and rz.name == "move_rz", "gizmo looks up by name")
             assert(rz.kind == "rotate")
             local listed
-            for _, g in ipairs(bearcad.gizmos()) do
+            for _, g in ipairs(bearcad.ui.gizmos()) do
                 if g.name == "move_rz" then listed = g end
             end
             assert(listed and listed.value == rz.value, "the named row matches gizmos()")
-            bearcad.set_gizmo{ name = "move_rz", value = 45 }
-            assert(math.abs(bearcad.gizmo("move_rz").value - 45) < 1e-3)
+            bearcad.ui.set_gizmo{ name = "move_rz", value = 45 }
+            assert(math.abs(bearcad.ui.gizmo("move_rz").value - 45) < 1e-3)
         "#,
         );
     }
@@ -19521,20 +19541,20 @@ pub mod tests {
         );
     }
 
-    /// #1458: `bearcad.move_preview()` is the Move tool's intended pose. Nothing
+    /// #1458: `bearcad.ui.move_preview()` is the Move tool's intended pose. Nothing
     /// in-progress means no ghost, so it is nil — the same answer a script gets
     /// before the first hover.
     #[test]
     fn lua_move_preview_is_nil_without_a_move() {
         run_lua_expect_ok(
             r#"
-            assert(type(bearcad.move_preview) == "function")
-            assert(bearcad.move_preview() == nil, "no move, no ghost")
+            assert(type(bearcad.ui.move_preview) == "function")
+            assert(bearcad.ui.move_preview() == nil, "no move, no ghost")
             "#,
         );
     }
 
-    /// `bearcad.begin_move` arms the tool with its picks instead of committing them, so a
+    /// `bearcad.ui.begin_move` arms the tool with its picks instead of committing them, so a
     /// script can drive the live preview — the ghost and the pair marks — the way the
     /// documentation shots do.
     #[test]
@@ -19545,7 +19565,7 @@ pub mod tests {
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
             bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
             bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 10 }
-            bearcad.begin_move{
+            bearcad.ui.begin_move{
                 bodies = {1},
                 from   = { body = 1, vertex = {40, 0, 0} },
                 to     = { body = 0, vertex = {0, 0, 10} },
@@ -19667,7 +19687,7 @@ pub mod tests {
         );
     }
 
-    /// #894: `bearcad.begin_joint` arms the tool with its picks instead of committing.
+    /// #894: `bearcad.ui.begin_joint` arms the tool with its picks instead of committing.
     #[test]
     fn lua_begin_joint_arms_the_tool_without_committing() {
         let state = run_lua(
@@ -19676,7 +19696,7 @@ pub mod tests {
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
             bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
             bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
-            bearcad.begin_joint{
+            bearcad.ui.begin_joint{
                 a = 0, b = 1, kind = "slider",
                 face = {
                   moving = bearcad.body_faces(1)[1],
@@ -20242,16 +20262,16 @@ pub mod tests {
             r#"
             bearcad.rect{ width = 10, height = 10 }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
-            bearcad.begin_move{ bodies = {0} }
+            bearcad.ui.begin_move{ bodies = {0} }
             bearcad.ui.tool_mode("free")
             local names = {}
-            for _, g in ipairs(bearcad.gizmos()) do names[g.name] = g.value end
+            for _, g in ipairs(bearcad.ui.gizmos()) do names[g.name] = g.value end
             assert(names.move_x ~= nil, "translation gizmos present")
             assert(names.move_rx ~= nil and names.move_ry ~= nil and names.move_rz ~= nil,
                    "rotation gizmos present")
-            bearcad.set_gizmo{ name = "move_rz", value = 90 }   -- degrees (#1657)
+            bearcad.ui.set_gizmo{ name = "move_rz", value = 90 }   -- degrees (#1657)
             local rz
-            for _, g in ipairs(bearcad.gizmos()) do
+            for _, g in ipairs(bearcad.ui.gizmos()) do
                 if g.name == "move_rz" then rz = g.value end
             end
             assert(math.abs(rz - 90) < 1e-3, "rotation gizmos read back in degrees, got " .. rz)
@@ -20667,7 +20687,7 @@ pub mod tests {
                 r#"
                 bearcad.rect{{ width = 10, height = 10 }}
                 bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 5 }}
-                bearcad.begin_move{{ bodies = {{0}} }}
+                bearcad.ui.begin_move{{ bodies = {{0}} }}
                 bearcad.ui.tool_mode("{name}")
                 "#
             ));
@@ -20679,7 +20699,7 @@ pub mod tests {
             r#"
             bearcad.rect{ width = 10, height = 10 }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
-            bearcad.begin_move{ bodies = {0} }
+            bearcad.ui.begin_move{ bodies = {0} }
             local ok, err = pcall(bearcad.ui.tool_mode, "in_place")
             assert(not ok, "the Move tool has no In place mode")
             assert(tostring(err):find("in_place"), "unexpected error: " .. tostring(err))
@@ -21487,7 +21507,7 @@ pub mod tests {
             bearcad.cuboid{ width = 30, depth = 20, height = 20 }
             bearcad.cross_section{}
             bearcad.section_plane{ origin = {0, 0, 0}, normal = {0, 0, 1}, offset = 5 }
-            bearcad.begin_edit_section_plane{ cut = 0 }
+            bearcad.ui.begin_edit_section_plane{ cut = 0 }
             "#,
         );
         let view = state.doc.cross_sections.keys().next().expect("the view");
@@ -21507,7 +21527,7 @@ pub mod tests {
             bearcad.new()
             bearcad.cross_section{}
             bearcad.section_plane{ origin = {0, 0, 0}, normal = {0, 0, 1} }
-            local ok = pcall(bearcad.begin_edit_section_plane, { cut = 3 })
+            local ok = pcall(bearcad.ui.begin_edit_section_plane, { cut = 3 })
             assert(not ok, "an unknown plane should error")
             "#,
         );

@@ -972,7 +972,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   - Scripting: `bearcad.combine{ op = "union"|"cut"|"intersect"|"xor", a = {…},
     b = {…}, keep_b?, name? }` (`difference` means cut, same as 2D) and
     `bearcad.edit_combine{ index, … }`;
-    session-command export replays both. `bearcad.begin_combine{ op, a, b, keep_b? }` arms
+    session-command export replays both. `bearcad.ui.begin_combine{ op, a, b, keep_b? }` arms
     the tool with
     picked sides **without** committing, so a script can drive the result preview — the
     counterpart `begin_move` gives Move. The result geometry is kernel-computed (`xor`
@@ -1233,7 +1233,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
   on the body's mesh); `from_b`/`to_b` add the optional B pair, and so the rotation, and
-  `from_c`/`to_c` the optional C pair, and so the spin. `bearcad.begin_move{ … }` takes the
+  `from_c`/`to_c` the optional C pair, and so the spin. `bearcad.ui.begin_move{ … }` takes the
   same arguments but **arms the tool instead of committing** — the picks land in
   `creating_move` with the Move tool up, so a script can drive the live preview (the ghost,
   the A connector, the B and C paths) rather than only the finished operation. A point table takes
@@ -1683,7 +1683,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   freedoms then act on top of, and has no bearing on how the joint moves.
 
   - **Only the mode's own pickers are registered (#1081).** The registered list is what
-    focus, hover, the Selection Exploder and `bearcad.pickers()` all read, so a row the pane
+    focus, hover, the Selection Exploder and `bearcad.ui.pickers()` all read, so a row the pane
     doesn't show must not be in it: Face Snap registers its two staged rows, Point Snap its
     six point rows, Free its **Reference Point** (#1235; the handle its typed amounts move
     from), and In place nothing. Registering all six regardless left **Start point A** live
@@ -1817,7 +1817,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   (`vertex`/`on_edge`/`on_face`/`midpoint`/`origin`);
   `bearcad.body_faces(i)` and `bearcad.body_edges(i)` report a body's faces and edges in exactly
   that spelling, so a script names one without guessing its key;
-  `bearcad.edit_joint{ index, … }`, `bearcad.begin_joint{ … }` (arms the tool without
+  `bearcad.edit_joint{ index, … }`, `bearcad.ui.begin_joint{ … }` (arms the tool without
   committing, like `begin_move`), `bearcad.set_joint_rest(i)` / `bearcad.revert_joint(i)`
   / `bearcad.revert_joints()`, and `bearcad.count("joint")`; session-command export
   replays them all.
@@ -3963,8 +3963,7 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   `bearcad.ui.wait`, `bearcad.ui.screenshot`, …). Examples and documentation should model
   with the top-level API and avoid `bearcad.ui.*` except where a UI interaction is the point.
 - **Semantic gizmo manipulation (#114).** `bearcad.drag_vertex` and `bearcad.drag_line` take
-  sketch-local (not viewport) coordinates, so they are top-level modeling calls (with
-  back-compat aliases under `bearcad.ui.*`). Besides the positional absolute forms, each has
+  sketch-local (not viewport) coordinates, so they are top-level modeling calls. Besides the positional absolute forms, each has
   a table delta form that moves things like a mouse drag would without knowing coordinates:
   `bearcad.drag_vertex{ point = <point>, du?, dv? }` nudges a vertex from wherever it
   currently is, and `bearcad.drag_line{ line = <line>, du?, dv? }` translates a line. Both
@@ -3972,11 +3971,11 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   catchable Lua error, like the GUI refusing the drag.
 - **Scriptable gizmos (#214).** Viewport gizmos — a tool's drag handle for its live value,
   each a single scalar — are enumerable and drivable from a script, so gizmo-driven tools are
-  automatable/testable without a mouse. `bearcad.gizmos()` returns the gizmos available in the
+  automatable/testable without a mouse. `bearcad.ui.gizmos()` returns the gizmos available in the
   current tool/creation state (`{ kind, name, value }` per handle; `kind` is `"push_pull"`,
   `"rotate"`, or `"offset"`; push/pull and offset in mm, rotate in degrees — #1657).
-  `bearcad.gizmo(name)` (#1879) returns that row or nil.
-  `bearcad.set_gizmo{ name, value }` sets the scalar; `bearcad.drag_gizmo{ name, by }`
+  `bearcad.ui.gizmo(name)` (#1879) returns that row or nil.
+  `bearcad.ui.set_gizmo{ name, value }` sets the scalar; `bearcad.ui.drag_gizmo{ name, by }`
   nudges it by a delta. The value is applied the same way a drag does (the semantic path). Current coverage: the extrude
   push/pull depth (`"extrude"`), the chamfer/fillet amount (2D sketch-vertex and 3D body-edge,
   named `"chamfer"`/`"fillet"` by kind), the revolve sweep angle (`"revolve"`, degrees), the
@@ -4032,20 +4031,20 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   and `image`); `bearcad.body_stats(i)` (mesh
   volume/triangles/bbox); `bearcad.status()`; `bearcad.version()` (Help → About
   identity: release tag, or crate version + SHA); `bearcad.selection()`;
-  `bearcad.parameter_value` / `bearcad.parameter_expression`; **`bearcad.pickers()`** (#968) and
-  **`bearcad.picker(name)`** (#1879), the active tool's element pickers — per picker its `name`,
+  `bearcad.parameter_value` / `bearcad.parameter_expression`; **`bearcad.ui.pickers()`** (#968) and
+  **`bearcad.ui.picker(name)`** (#1879), the active tool's element pickers — per picker its `name`,
   whether it's `focused`, its `limit` (absent when unlimited), the element-kind names it
   `accepts`, and the `items` it holds. `picker(name)` returns that row or nil. This
   is the only way to tell an **accepted** pick from a **rejected** one: a body-set tool consumes
   the click either way, so `selection()` reads the same whether or not the pick landed. A test
-  asserting a `PickRule` (#953) needs it. **`bearcad.hovered()`** (#968) reports what the
+  asserting a `PickRule` (#953) needs it. **`bearcad.ui.hovered()`** (#968) reports what the
   viewport is hover-highlighting as `{ kind, index }` — the pick a click would take — or nil;
   a hovered region or curve with no element of its own reports nil, which is itself assertable.
   A hovered **face** also carries a **`label`** (#987), because every face reports kind `face`
   and index `0`: without a name for the face itself, a hover flickering between a body's near
   face and the one hidden behind it read as *unchanged* from a script, which is how it went
   unnoticed. `face_label` for an analytic face, body-and-centroid for a mesh one.
-  **`bearcad.exploder()`** (#968) reports the Selection Exploder's fanned leaves as
+  **`bearcad.ui.exploder()`** (#968) reports the Selection Exploder's fanned leaves as
   `{ kind, index }`, empty when it's closed — the crowd it is offering, which nothing else
   exposes, each with a `label` when it is a face (#988), for the same reason `hovered()` has one.
   Each leaf the current drill level shows as a loupe of its own also carries
@@ -4792,7 +4791,7 @@ The model in one place:
   shared block at the top of the tool's section (`Shared`) or in place among the tool's own
   controls (`Inline`) — the Move tool's point rows sit between the Rotation heading and the
   Angle-snap slider, so they can't be hoisted. Focus, hover, the tool-switch handoff, the
-  Exploder's fan and `bearcad.pickers()` all read that one list, and a picker missing from it is
+  Exploder's fan and `bearcad.ui.pickers()` all read that one list, and a picker missing from it is
   invisible to every one of them (#958). A tool pushes its **primary** picker first.
 - **Exactly one picker has focus.** A tool declares its pickers in order; focus walks to the
   first unfilled one, which is how a single-pick picker hands focus on the moment it's filled

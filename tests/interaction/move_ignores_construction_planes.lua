@@ -29,7 +29,7 @@ local function fan_kinds(x, y)
   bearcad.ui.key("space")
   bearcad.ui.wait(5)
   local seen = {}
-  for _, leaf in ipairs(bearcad.exploder()) do
+  for _, leaf in ipairs(bearcad.ui.exploder()) do
     seen[leaf.kind] = true
   end
   bearcad.ui.key("escape")
@@ -42,7 +42,7 @@ bearcad.ui.tool("select")
 bearcad.ui.wait(5)
 bearcad.ui.move_ground(70, 70)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(is_plane(h), "Select should hover the construction plane, got " .. tostring(h and h.kind))
 local seen = fan_kinds(70, 70)
 assert(seen["construction_plane"] or seen["plane"],
@@ -53,7 +53,7 @@ bearcad.ui.tool("move")
 bearcad.ui.wait(5)
 bearcad.ui.move_ground(70, 70)
 bearcad.ui.wait(8)
-h = bearcad.hovered()
+h = bearcad.ui.hovered()
 assert(not is_plane(h),
   "Move must not hover-highlight a construction plane, got " .. tostring(h and h.kind))
 
@@ -62,7 +62,7 @@ assert(not seen["construction_plane"] and not seen["plane"],
   "Move's fan must not offer a construction plane")
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
 end
@@ -80,7 +80,7 @@ bearcad.ui.tool_mode("face_snap")
 bearcad.ui.wait(5)
 bearcad.ui.move_ground(70, 70)
 bearcad.ui.wait(8)
-h = bearcad.hovered()
+h = bearcad.ui.hovered()
 assert(not is_plane(h),
   "Face Snap must not hover-highlight a construction plane, got " .. tostring(h and h.kind))
 seen = fan_kinds(70, 70)

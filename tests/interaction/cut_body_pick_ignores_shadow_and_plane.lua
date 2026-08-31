@@ -37,7 +37,7 @@ bearcad.ui.tool("line")
 bearcad.ui.wait(5)
 bearcad.ui.move_ground(25, 15)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h, "hovering a cut-body face with the Line tool should highlight something")
 assert(h.kind ~= "construction_plane" and h.kind ~= "plane",
   "Line tool must not arm the datum plane over a cut body, got " .. tostring(h.kind))

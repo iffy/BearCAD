@@ -27,7 +27,7 @@ bearcad.ui.wait(8)
 bearcad.ui.move_ground(0, 0)
 bearcad.ui.wait(8)
 
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h, "hovering the shell floor should highlight a face")
 assert(h.kind == "face", "expected a face hover, got " .. tostring(h.kind))
 assert(h.label, "hovered face should report a label, got nil")

@@ -22,7 +22,7 @@ bearcad.ui.wait(5)
 assert(bearcad.ui.tool_mode() == "point_snap", "Point Snap is a mode for an image (#1601)")
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
 end

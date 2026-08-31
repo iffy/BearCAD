@@ -19,17 +19,17 @@ bearcad.ui.wait(5)
 bearcad.ui.tool("move")
 bearcad.ui.tool_mode("free")
 bearcad.ui.wait(5)
-bearcad.begin_move{ bodies = {0} }
+bearcad.ui.begin_move{ bodies = {0} }
 bearcad.ui.wait(5)
 
 local rot = {}
-for _, g in ipairs(bearcad.gizmos()) do
+for _, g in ipairs(bearcad.ui.gizmos()) do
   if g.name:find("^move_r") then rot[g.name] = g end
 end
 assert(rot.move_rx and rot.move_rz, "Free Move should show rotation gizmos")
 
 local function gizmo(name)
-  return bearcad.gizmo(name)
+  return bearcad.ui.gizmo(name)
 end
 
 -- A point on the Z ring at ~45°, away from every handle, must not start a turn.

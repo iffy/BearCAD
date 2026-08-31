@@ -18,7 +18,7 @@ bearcad.ui.camera{ target = {0, 0, 0}, distance = 200 }
 bearcad.ui.wait(8)
 
 local function picker(name)
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == name then return p end
   end
   return nil

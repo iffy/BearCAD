@@ -331,15 +331,15 @@ bearcad.delete_parameter("Len")
 
 ## Editing dimensions while drawing
 
-`bearcad.set_dim(axis, value)` sets a dimension field while a shape is being drawn —
+`bearcad.ui.set_dim(axis, value)` sets a dimension field while a shape is being drawn —
 `axis` is `"width"`/`"height"` (rect), `"length"` (line), `"diameter"` (circle), or
 `"offset"`/`"angle"` (construction plane):
 
 ```lua
 bearcad.ui.tool("rectangle")
 bearcad.ui.click_ground(0, 0)
-bearcad.set_dim("width", "80")
-bearcad.set_dim("height", "50")
+bearcad.ui.set_dim("width", "80")
+bearcad.ui.set_dim("height", "50")
 bearcad.ui.key("enter")
 ```
 
@@ -347,9 +347,9 @@ bearcad.ui.key("enter")
 for a rectangle's sides, `"diameter"` for a circle. Then `set_dim` + `commit_dim`:
 
 ```lua
-bearcad.edit_dim("length")
-bearcad.set_dim("length", "100")
-bearcad.commit_dim()
+bearcad.ui.edit_dim("length")
+bearcad.ui.set_dim("length", "100")
+bearcad.ui.commit_dim()
 ```
 
 ## Reading state back
@@ -423,7 +423,7 @@ it. Visible views cut the model even in the modeling workbench; hide a view to l
 ```lua
 bearcad.section_plane{ plane = 1, offset = 5 }     -- on a construction plane's frame
 bearcad.section_plane{ origin = {0, 0, 10}, normal = {0, 0, 1}, flip = true }
-bearcad.begin_edit_section_plane{ cut = 0 }        -- the live edit draft (Esc/Enter ends it)
+bearcad.ui.begin_edit_section_plane{ cut = 0 }        -- the live edit draft (Esc/Enter ends it)
 bearcad.edit_section_plane{ cut = 0, offset = -2, roll = 30 }   -- slide and turn it
 bearcad.delete_section_plane{ cut = 1 }
 local cuts = bearcad.section_planes()              -- { origin, normal, offset, depth, roll,

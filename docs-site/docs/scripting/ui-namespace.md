@@ -110,11 +110,22 @@ bearcad.ui.report_issue("show")         -- DEV Report issue window
 bearcad.ui.key("`", { cmd = true })     -- next window (⌘` / Ctrl+`)
 ```
 
-## Dragging constrained geometry
+## Armed tools and widgets
+
+Live-tool verbs arm the GUI without committing (`combine` / `move_bodies` / `joint` stay
+top-level). Sketch-local `bearcad.drag_vertex` / `drag_line` are modeling, not ui.
 
 ```lua
-bearcad.ui.drag_vertex({ kind = "line", index = 0, endpoint = "end" }, u, v)
-bearcad.ui.drag_line({ kind = "line", index = 0 }, au, av, u, v)
+bearcad.ui.begin_move{ bodies = {0} }
+bearcad.ui.begin_combine{ op = "cut", a = {0}, b = {1} }
+bearcad.ui.begin_joint{ a = 0, b = 1, kind = "slider" }
+bearcad.ui.pickers()                    -- or picker("Targets")
+bearcad.ui.gizmos()                     -- or gizmo("move_rz")
+bearcad.ui.hovered()
+bearcad.ui.exploder()
+bearcad.ui.set_dim("length", "10")
+bearcad.ui.edit_dim("length")
+bearcad.ui.commit_dim()
 bearcad.ui.focus_dim("length")          -- focus a dimension input field
 bearcad.ui.focus_calibrate()            -- focus a selected image's Real length field
 ```

@@ -47,7 +47,7 @@ bearcad.ui.tool("extrude")
 bearcad.ui.wait(5)
 bearcad.ui.move_world(0, 0, 30)
 bearcad.ui.wait(8)
-local h = bearcad.hovered()
+local h = bearcad.ui.hovered()
 assert(h and h.kind == "face", "the circle should highlight as a face, got " .. tostring(h and h.kind))
 assert(h.label == "Circle face 0",
   "expected the circle under the cursor, got " .. tostring(h.label))
@@ -55,7 +55,7 @@ assert(h.label == "Circle face 0",
 bearcad.ui.click_world(0, 0, 30)
 bearcad.ui.wait(10)
 local faces = -1
-for _, p in ipairs(bearcad.pickers()) do
+for _, p in ipairs(bearcad.ui.pickers()) do
   if p.name == "Faces" then faces = #p.items end
 end
 assert(faces == 1, "clicking the circle should pick exactly one face, got " .. faces)

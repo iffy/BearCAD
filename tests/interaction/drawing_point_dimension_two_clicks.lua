@@ -76,7 +76,7 @@ assert(bearcad.status():find("horizontal"),
 
 -- Its label is a click target for the Select tool, so it can be re-measured or deleted later.
 local function selection_picker()
-  for _, p in ipairs(bearcad.pickers()) do
+  for _, p in ipairs(bearcad.ui.pickers()) do
     if p.name == "Selection" then return p end
   end
   return nil
