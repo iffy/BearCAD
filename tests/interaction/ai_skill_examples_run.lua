@@ -17,7 +17,7 @@ assert(bearcad.count("circle") == 1)
 
 -- `r` is a radius, which is the sort of thing an agent gets wrong.
 local circle = bearcad.get{ kind = "circle", index = 0 }
-assert(circle.r == 12 and circle.diameter == 24, "r is a radius, diameter is twice it")
+assert(circle.r == 12 and circle.radius == 12 and circle.diameter == 24, "r is a radius, diameter is twice it")
 
 -- The quickstart: sketch, extrude, check the volume.
 bearcad.new()

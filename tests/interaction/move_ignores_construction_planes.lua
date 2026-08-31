@@ -20,7 +20,7 @@ bearcad.ui.camera{
 bearcad.ui.wait(8)
 
 local function is_plane(h)
-  return h and (h.kind == "construction_plane" or h.kind == "plane")
+  return h and h.kind == "plane"
 end
 
 local function fan_kinds(x, y)

@@ -37,8 +37,8 @@ min and max set, a **slider** sits on the row below (same as this document's par
 Overridden values read gold; **✕** restores the part's own value.
 
 ```lua
-bearcad.unit_override{ instance = 0, name = "width", value = "20" }
-bearcad.unit_override{ instance = 0, name = "width" }   -- back to the part's value
+bearcad.set_unit_parameter{ instance = 0, name = "width", value = "20" }
+bearcad.set_unit_parameter{ instance = 0, name = "width" }   -- back to the part's value
 ```
 
 ## Expressions

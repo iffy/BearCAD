@@ -137,7 +137,7 @@ pub fn scene_element_from_kind(
 /// no flat `(kind, index)` handle.
 pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
     match element {
-        SceneElement::ConstructionPlane(_) => "construction_plane",
+        SceneElement::ConstructionPlane(_) => "plane",
         SceneElement::CrossSection(_) => "cross_section",
         SceneElement::SectionPlane { .. } => "section_plane",
         SceneElement::Sketch(_) => "sketch",
@@ -502,12 +502,8 @@ pub fn instruction_from_json(
             } else {
                 opt_f32(o, "angle")?.unwrap_or(360.0)
             };
-            // Helical pitch: `pitch`/`offset` is start-to-start; `gap` is clear gap (no axial
-            // extent correction here — scripts use pitch/offset for the stored value) (#1242).
-            let pitch_mm = opt_f32(o, "pitch")?
-                .or(opt_f32(o, "offset")?)
-                .or(opt_f32(o, "gap")?)
-                .unwrap_or(0.0);
+            // Helical pitch is `pitch` only (#1894).
+            let pitch_mm = opt_f32(o, "pitch")?.unwrap_or(0.0);
             let symmetric = opt_bool(o, "symmetric")?.unwrap_or(false);
             let bodies = usize_list(o, "bodies")?;
             let body = RevolveBodyChoice::from_script(opt_str(o, "body")?.as_deref())?;
@@ -2160,14 +2156,14 @@ fn mirror_op_args(
         Some(v) if !v.is_null() => {
             return Err(
                 "`plane` must be a construction-plane ordinal or a face spec table, \
-                 e.g. {kind=\"construction_plane\", index=0}"
+                 e.g. {kind=\"plane\", index=0}"
                     .into(),
             )
         }
         _ => {
             return Err(
                 "mirror `plane` is required (a construction-plane ordinal or a face spec table, \
-                 e.g. {kind=\"construction_plane\", index=0})"
+                 e.g. {kind=\"plane\", index=0})"
                     .into(),
             )
         }
@@ -2424,6 +2420,7 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             t.insert("x".into(), json!(circle.cx));
             t.insert("y".into(), json!(circle.cy));
             t.insert("r".into(), json!(circle.r));
+            t.insert("radius".into(), json!(circle.r));
             t.insert("diameter".into(), json!(circle.diameter()));
             t.insert("construction".into(), json!(circle.construction));
             if let Some(name) = &circle.name {
@@ -2539,7 +2536,7 @@ fn face_kind_name(face: &FaceId) -> &'static str {
     match face {
         FaceId::Circle(_) => "circle",
         FaceId::Polygon(_) => "polygon",
-        FaceId::ConstructionPlane(_) => "construction_plane",
+        FaceId::ConstructionPlane(_) => "plane",
         FaceId::ExtrudeCap { .. } => "extrude_cap",
         FaceId::ExtrudeSide { .. } => "extrude_side",
         FaceId::RevolveCap { .. } => "revolve_cap",
@@ -3318,7 +3315,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            err.contains("plane") && err.contains("construction_plane"),
+            err.contains("plane"),
             "{err}"
         );
     }

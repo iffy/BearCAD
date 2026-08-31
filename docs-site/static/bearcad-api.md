@@ -20,19 +20,25 @@ the index moves: chain off `bearcad.count("body") - 1` or use names.
 
 ## Shapes (no sketch)
 
-A cube/box/block is `cuboid`, not `box` or `cube`. It sits on the plane at `at` (the
-base centre, default origin) and grows along `normal` (default +Z, so on the ground).
-A 10 mm cube sitting on the ground, centred on the origin in XY:
+A cube/box/block is `cuboid` (`cube`/`box` alias it). `cube{ size = 10 }` is equal
+sides. It sits on the plane at `at` (the base centre, default origin) and grows along
+`normal` (default +Z, so on the ground).
 
 ```lua
+bearcad.cube{ size = 10 }
 bearcad.cuboid{ width = 10, depth = 10, height = 10 }
 ```
 
+`r` / `radius` / `diameter` are accepted on every radial size (circle, cylinder,
+sphere, fillet). Circle `get` returns `r`, `radius`, and `diameter`.
+
 ```
 bearcad.cuboid{ width, depth, height, at = {x,y,z}?, normal?, u_axis?, name? }
-bearcad.cylinder{ radius, height, at?, normal?, name? }
-bearcad.sphere{ radius, at?, name? }
-bearcad.edit_shape{ index, shape = "cuboid"|"cylinder"|"sphere"?, width?, depth?, height?, radius?, at?, normal?, u_axis?, name? }
+bearcad.cube{ size, width?, depth?, height?, at?, normal?, u_axis?, name? }
+bearcad.box{ width, depth, height, at?, normal?, u_axis?, name? }
+bearcad.cylinder{ r | radius | diameter, height, at?, normal?, name? }
+bearcad.sphere{ r | radius | diameter, at?, name? }
+bearcad.edit_shape{ index, shape = "cuboid"|"cylinder"|"sphere"?, width?, depth?, height?, size?, radius?, at?, normal?, u_axis?, name? }
 ```
 
 Every dimension takes a number or an expression string.
@@ -44,7 +50,7 @@ bearcad.rect{ width, height, x = 0?, y = 0?, name? }
 bearcad.line{ x, y, x1, y1, name?, dimension? }          -- or length + angle (degrees)
 bearcad.circle{ x, y, r | radius | diameter, name? }
 bearcad.text{ text, x, y, size?, font?, bold?, italic?, underline?, rotation?, wrap?, flip?, name? }
-bearcad.begin_sketch("construction_plane", i)
+bearcad.begin_sketch{ kind = "plane", index = i }
 bearcad.begin_sketch{ kind = "extrude_cap"|"extrude_side"|…, … }
 bearcad.open_sketch(i)
 bearcad.exit_sketch()
@@ -68,7 +74,7 @@ bearcad.slice{ bodies = {i, …}, cutters = {…}, extend?, name? }
 bearcad.shell{ bodies = {i, …}, faces = {…}?, thickness, name? }
 bearcad.move_bodies{ bodies = {i, …}, x?, y?, z?, rx?, ry?, rz?, name? }
 bearcad.mirror_bodies{ plane = i, bodies = {i, …}, output = "new"|"add"|"cut"?, name? }
-bearcad.repeat_bodies{ bodies = {i, …}, axis = "x"|"y"|"z", mode?, count?, spacing? | gap?, length?, around?, flip?, to?, name? }
+bearcad.repeat_bodies{ bodies = {i, …}, axis = "x"|"y"|"z", mode?, count?, spacing?, length?, around?, flip?, to?, name? }
 ```
 
 To cut a hole: sketch on a face, then `extrude{ …, body = "cut" }`. A cut pointing away
@@ -78,14 +84,14 @@ Rounding is one call per operation — a set of edges in a single call, never on
 edge (four calls would make four bodies):
 
 ```
-bearcad.fillet_edge{ extrusion = i, edges = { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, radius }
-bearcad.chamfer_edge{ extrusion = i, edges = { … }, distance }
+bearcad.fillet_edge{ extrusion = i | shape = i, edges = { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, r | radius | diameter }
+bearcad.chamfer_edge{ extrusion = i | shape = i, edges = { … }, distance }
 bearcad.extrude_edges(i)               -- the edge refs fillet/chamfer accept on extrusion i
-bearcad.fillet_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, radius }
+bearcad.fillet_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, r | radius | diameter }
 bearcad.chamfer_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, distance }
 ```
 
-Shape-tool cuboids use the same edge calls with `kind = "vertical"` etc. on the primitive.
+Shape-tool cuboids use the same edge calls with `shape = i` (`primitive` still accepted).
 
 ## Parameters and constraints
 
@@ -108,13 +114,13 @@ Anywhere a size is accepted, an expression string is too.
 
 ```
 bearcad.count(kind)                -- canonical: line, circle, sketch, constraint,
-bearcad.get{ kind, index }         --   construction_plane, extrusion, revolution, sweep,
+bearcad.get{ kind, index }         --   plane, extrusion, revolution, sweep,
                                    --   loft, combine, move, mirror, repeat, slice, shell,
                                    --   edge_treatment, sketch_offset, sketch_mirror,
                                    --   sketch_repeat, sketch_slice, sketch_chamfer, shape,
                                    --   body, drawing, cross_section, section_plane, parameter,
                                    --   sketch_text, component, image, joint, unit_instance.
-                                   --   aliases: plane, revolve, boolean, primitive, text,
+                                   --   aliases: construction_plane, revolve, boolean, primitive, text,
                                    --   tracing_image, sketch_fillet, unit, offset.
                                    --   not chamfer/fillet (use edge_treatment or sketch_chamfer).
                                    --   `count` and `get` take the same set.
@@ -216,9 +222,10 @@ bearcad.body_cylinders(index)
 bearcad.body_edges(index)
 bearcad.body_faces(index)
 bearcad.body_stats(index)
+bearcad.box{ width, depth, height, at?, normal?, u_axis?, name? }
 bearcad.calibrate_image{ image, from, to, length }
 bearcad.calibration_point{ image, index, x, y }
-bearcad.chamfer_edge{ edges, edge, extrusion, primitive, distance }
+bearcad.chamfer_edge{ edges, edge, extrusion, shape, distance }
 bearcad.chamfer_vertex{ points, point, distance }
 bearcad.circle{ x, y, r, radius, diameter, name }
 bearcad.clear()
@@ -234,6 +241,7 @@ bearcad.copy()
 bearcad.count(kind)
 bearcad.count_saved(kind)
 bearcad.cross_section{ name }
+bearcad.cube{ size, width, depth, height, at?, normal?, u_axis?, name? }
 bearcad.cuboid{ width, depth, height, at?, normal?, u_axis?, name? }
 bearcad.cylinder{ radius, height, at?, normal?, u_axis?, name? }
 bearcad.debug.mesh_cache()
@@ -290,13 +298,13 @@ bearcad.edit_mirror{ index, plane, bodies, output }
 bearcad.edit_move{ index, bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
 bearcad.edit_parameter{ name, private, min, max, step, rename }
 bearcad.edit_plane(index)
-bearcad.edit_repeat{ index, bodies, axis, around, flip, mode, count, spacing, gap, length, to }
+bearcad.edit_repeat{ index, bodies, axis, around, flip, mode, count, spacing, length, to }
 bearcad.edit_section_plane{ view, cut, offset, roll, depth, flip, bodies, exclude_bodies }
-bearcad.edit_shape{ index, shape, at, normal, u_axis, width, depth, height, radius, name }
+bearcad.edit_shape{ index, shape, at, normal, u_axis, width, depth, height, size, radius, name }
 bearcad.edit_shell{ index, bodies, faces, thickness }
 bearcad.edit_sketch_mirror{ index, sketch, line, lines, circles }
 bearcad.edit_sketch_offset{ index, sketch, lines, circles, distance, construction }
-bearcad.edit_sketch_repeat{ index, sketch, lines, circles, angle, dir, mode, count, spacing, gap, length }
+bearcad.edit_sketch_repeat{ index, sketch, lines, circles, angle, dir, mode, count, spacing, length }
 bearcad.edit_sketch_slice{ index, lines, circles, faces, cutters }
 bearcad.edit_slice{ index, bodies, cutters, extend }
 bearcad.element(kind, index)   -- or bearcad.element(id_or_name)
@@ -311,7 +319,7 @@ bearcad.export_stl(path, body?)
 bearcad.extrude{ distance, to, circle, circles, polygon, text, boolean, body, name, symmetric, taper, taper_mode }
 bearcad.extrude_edges(index)   -- edge refs fillet_edge/chamfer_edge accept: kind vertical|top|bottom
 bearcad.extrude_face{ to, distance, body, name }
-bearcad.fillet_edge{ edges, edge, extrusion, primitive, radius }
+bearcad.fillet_edge{ edges, edge, extrusion, shape, radius }
 bearcad.fillet_vertex{ points, point, radius }
 bearcad.find(name)
 bearcad.get{ kind, index }
@@ -357,13 +365,13 @@ bearcad.quit()
 bearcad.rebuild_geometry()
 bearcad.rect{ x, y, width, height, name }
 bearcad.remove_calibration_point{ image, index }
-bearcad.repeat_bodies{ bodies, axis, around, flip, mode, count, spacing, gap, length, to, name }
-bearcad.repeat_cut{ cuts, axis, around, flip, mode, count, spacing, gap, length, to }
-bearcad.repeat_sketch{ sketch, lines, circles, angle, dir, mode, count, spacing, gap, length }
-bearcad.repeat_sketches{ sketches, axis, around, flip, mode, count, spacing, gap, length, to }
+bearcad.repeat_bodies{ bodies, axis, around, flip, mode, count, spacing, length, to, name }
+bearcad.repeat_cut{ cuts, axis, around, flip, mode, count, spacing, length, to }
+bearcad.repeat_sketch{ sketch, lines, circles, angle, dir, mode, count, spacing, length }
+bearcad.repeat_sketches{ sketches, axis, around, flip, mode, count, spacing, length, to }
 bearcad.revert_joint(op)
 bearcad.revert_joints()
-bearcad.revolve{ circle, circles, polygon, axis, symmetric, bodies, body, line, revolutions, angle, pitch, offset, gap, name }
+bearcad.revolve{ circle, circles, polygon, axis, symmetric, bodies, body, revolutions, angle, pitch, name }
 bearcad.save(path?)
 bearcad.section_plane{ view, plane, origin, normal, offset, roll, depth, flip, bodies, exclude_bodies }   -- depth: how far the cut reaches; omitted or false cuts through
 bearcad.section_planes(view?)   -- view: cross-section index or name; omitted = the view being edited
@@ -511,7 +519,6 @@ bearcad.ui.workbench(name)
 bearcad.ui.zoom_fit()
 bearcad.undo()
 bearcad.unit_link(unit, mode)
-bearcad.unit_override{ instance, name, value, expression }
 bearcad.version()
 bearcad.visible(element)   -- effective visibility, component chain included
 ```

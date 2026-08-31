@@ -1,6 +1,6 @@
 //! The BearCAD Lua API, as one plaintext page (#1623/#1635).
 //!
-//! An agent that only reads prose invents calls that do not exist (`bearcad.box{ size = … }`).
+//! An agent that only reads prose invents calls that do not exist.
 //! This catalog is the real API: signatures for the modeling verbs, then **every** registered
 //! function, so a name that is not here is not a function.
 //!
@@ -46,19 +46,25 @@ the index moves: chain off `bearcad.count("body") - 1` or use names.
 
 ## Shapes (no sketch)
 
-A cube/box/block is `cuboid`, not `box` or `cube`. It sits on the plane at `at` (the
-base centre, default origin) and grows along `normal` (default +Z, so on the ground).
-A 10 mm cube sitting on the ground, centred on the origin in XY:
+A cube/box/block is `cuboid` (`cube`/`box` alias it). `cube{ size = 10 }` is equal
+sides. It sits on the plane at `at` (the base centre, default origin) and grows along
+`normal` (default +Z, so on the ground).
 
 ```lua
+bearcad.cube{ size = 10 }
 bearcad.cuboid{ width = 10, depth = 10, height = 10 }
 ```
 
+`r` / `radius` / `diameter` are accepted on every radial size (circle, cylinder,
+sphere, fillet). Circle `get` returns `r`, `radius`, and `diameter`.
+
 ```
 bearcad.cuboid{ width, depth, height, at = {x,y,z}?, normal?, u_axis?, name? }
-bearcad.cylinder{ radius, height, at?, normal?, name? }
-bearcad.sphere{ radius, at?, name? }
-bearcad.edit_shape{ index, shape = "cuboid"|"cylinder"|"sphere"?, width?, depth?, height?, radius?, at?, normal?, u_axis?, name? }
+bearcad.cube{ size, width?, depth?, height?, at?, normal?, u_axis?, name? }
+bearcad.box{ width, depth, height, at?, normal?, u_axis?, name? }
+bearcad.cylinder{ r | radius | diameter, height, at?, normal?, name? }
+bearcad.sphere{ r | radius | diameter, at?, name? }
+bearcad.edit_shape{ index, shape = "cuboid"|"cylinder"|"sphere"?, width?, depth?, height?, size?, radius?, at?, normal?, u_axis?, name? }
 ```
 
 Every dimension takes a number or an expression string.
@@ -70,7 +76,7 @@ bearcad.rect{ width, height, x = 0?, y = 0?, name? }
 bearcad.line{ x, y, x1, y1, name?, dimension? }          -- or length + angle (degrees)
 bearcad.circle{ x, y, r | radius | diameter, name? }
 bearcad.text{ text, x, y, size?, font?, bold?, italic?, underline?, rotation?, wrap?, flip?, name? }
-bearcad.begin_sketch("construction_plane", i)
+bearcad.begin_sketch{ kind = "plane", index = i }
 bearcad.begin_sketch{ kind = "extrude_cap"|"extrude_side"|…, … }
 bearcad.open_sketch(i)
 bearcad.exit_sketch()
@@ -94,7 +100,7 @@ bearcad.slice{ bodies = {i, …}, cutters = {…}, extend?, name? }
 bearcad.shell{ bodies = {i, …}, faces = {…}?, thickness, name? }
 bearcad.move_bodies{ bodies = {i, …}, x?, y?, z?, rx?, ry?, rz?, name? }
 bearcad.mirror_bodies{ plane = i, bodies = {i, …}, output = "new"|"add"|"cut"?, name? }
-bearcad.repeat_bodies{ bodies = {i, …}, axis = "x"|"y"|"z", mode?, count?, spacing? | gap?, length?, around?, flip?, to?, name? }
+bearcad.repeat_bodies{ bodies = {i, …}, axis = "x"|"y"|"z", mode?, count?, spacing?, length?, around?, flip?, to?, name? }
 ```
 
 To cut a hole: sketch on a face, then `extrude{ …, body = "cut" }`. A cut pointing away
@@ -104,14 +110,14 @@ Rounding is one call per operation — a set of edges in a single call, never on
 edge (four calls would make four bodies):
 
 ```
-bearcad.fillet_edge{ extrusion = i, edges = { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, radius }
-bearcad.chamfer_edge{ extrusion = i, edges = { … }, distance }
+bearcad.fillet_edge{ extrusion = i | shape = i, edges = { { kind = "vertical"|"top"|"bottom", face = i, edge = i }, … }, r | radius | diameter }
+bearcad.chamfer_edge{ extrusion = i | shape = i, edges = { … }, distance }
 bearcad.extrude_edges(i)               -- the edge refs fillet/chamfer accept on extrusion i
-bearcad.fillet_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, radius }
+bearcad.fillet_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, r | radius | diameter }
 bearcad.chamfer_vertex{ point = { kind = "line", index = i, endpoint = "start"|"end" }, distance }
 ```
 
-Shape-tool cuboids use the same edge calls with `kind = "vertical"` etc. on the primitive.
+Shape-tool cuboids use the same edge calls with `shape = i` (`primitive` still accepted).
 
 ## Parameters and constraints
 
@@ -134,13 +140,13 @@ Anywhere a size is accepted, an expression string is too.
 
 ```
 bearcad.count(kind)                -- canonical: line, circle, sketch, constraint,
-bearcad.get{ kind, index }         --   construction_plane, extrusion, revolution, sweep,
+bearcad.get{ kind, index }         --   plane, extrusion, revolution, sweep,
                                    --   loft, combine, move, mirror, repeat, slice, shell,
                                    --   edge_treatment, sketch_offset, sketch_mirror,
                                    --   sketch_repeat, sketch_slice, sketch_chamfer, shape,
                                    --   body, drawing, cross_section, section_plane, parameter,
                                    --   sketch_text, component, image, joint, unit_instance.
-                                   --   aliases: plane, revolve, boolean, primitive, text,
+                                   --   aliases: construction_plane, revolve, boolean, primitive, text,
                                    --   tracing_image, sketch_fillet, unit, offset.
                                    --   not chamfer/fillet (use edge_treatment or sketch_chamfer).
                                    --   `count` and `get` take the same set.
@@ -428,17 +434,10 @@ mod tests {
     fn cuboid_is_how_you_make_a_box() {
         let doc = document();
         assert!(doc.contains("bearcad.cuboid{"), "got: {}", &doc[..doc.len().min(400)]);
+        assert!(doc.contains("bearcad.cube{"), "cube aliases cuboid");
+        assert!(doc.contains("bearcad.box{"), "box aliases cuboid");
+        assert!(doc.contains("size = 10"));
         assert!(doc.contains("width = 10, depth = 10, height = 10"));
-        // The call that failed (#1623) — not a function, and not taught as one.
-        for (index, _) in doc.match_indices("bearcad.box") {
-            let rest = &doc[index..];
-            let next = rest["bearcad.box".len()..].chars().next();
-            assert!(
-                !matches!(next, Some('(') | Some('{')),
-                "the catalog must not present bearcad.box as a call: {}",
-                &rest[..rest.len().min(40)]
-            );
-        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

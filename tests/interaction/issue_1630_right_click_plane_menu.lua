@@ -22,7 +22,7 @@ bearcad.ui.wait(8)
 
 local menu = bearcad.ui.context_menu()
 assert(menu, "right-clicking the XY plane should open a context menu")
-assert(menu.kind == "construction_plane",
+assert(menu.kind == "plane",
   "the menu should act on the construction plane, got " .. tostring(menu.kind))
 local plane = bearcad.get{ kind = "construction_plane", index = menu.index }
 assert(plane, "the menu should name a real plane, index " .. tostring(menu.index))

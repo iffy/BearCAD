@@ -44,7 +44,7 @@ bearcad.ui.wait(6)
 -- say where to aim.
 local plane_leaf
 for _, leaf in ipairs(bearcad.exploder()) do
-  if leaf.kind == "construction_plane" and leaf.x then
+  if leaf.kind == "plane" and leaf.x then
     plane_leaf = leaf
     break
   end
@@ -58,7 +58,7 @@ bearcad.ui.wait(12)
 -- The click selects the plane...
 local picked = false
 for _, e in ipairs(bearcad.selection()) do
-  if e.kind == "construction_plane" and e.index == plane_leaf.index then picked = true end
+  if e.kind == "plane" and e.index == plane_leaf.index then picked = true end
 end
 assert(picked, "clicking a plane's loupe should select that plane")
 

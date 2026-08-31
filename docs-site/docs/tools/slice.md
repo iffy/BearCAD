@@ -57,13 +57,13 @@ an input: moving the path updates the fragments. A cutter that misses a body lea
 ## Scripting
 
 ```lua
-bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 1 }} }
+bearcad.slice{ bodies = {0}, cutters = {{ kind = "plane", index = 1 }} }
 bearcad.slice{ bodies = {0}, cutters = {{ kind = "line", index = 4 }} }
 bearcad.slice{ bodies = {0, 1},
-               cutters = {{ kind = "construction_plane", index = 1 }},
+               cutters = {{ kind = "plane", index = 1 }},
                extend = false, name = "Split" }
 bearcad.edit_slice{ index = 0, bodies = {0},
-                    cutters = {{ kind = "construction_plane", index = 2 }} }
+                    cutters = {{ kind = "plane", index = 2 }} }
 ```
 
 A planar cutter is a face-spec table (same shape `bearcad.begin_sketch` accepts). A line

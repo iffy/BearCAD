@@ -216,7 +216,7 @@ features in dependency order.
   and leaves the opposite one where it is (`Action::SetPlaneExtent`, one undo step per drag,
   minimum 5 mm a side). The extent is display only — a plane still extends infinitely for
   sketching, picking and extrude-to targets. Readable from scripts as the `extent` field of
-  `bearcad.get{ kind = "construction_plane", index = i }`.
+  `bearcad.get{ kind = "plane", index = i }`.
 
 ---
 
@@ -2310,7 +2310,7 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   and a **Gap/Offset** field (same icons as Repeat) sets the helical pitch — Offset is
   start-to-start after 360°, Gap is clear space between coils. Scriptable as
   `bearcad.revolve{ polygon|circles =, axis = "x"|"y"|"z"|{line = i}, angle = |
-  revolutions =, pitch|offset|gap =, symmetric =, body = "new"|"add"|"cut", bodies = {..} }`,
+  revolutions =, pitch =, symmetric =, body = "new"|"add"|"cut", bodies = {..} }`,
   and interactive revolves replay to the command log as the same call. Limitation: the
   profile must not cross its axis.
 - **Loft** *(implemented)* — blend a solid through two or more closed cross-section
@@ -2947,7 +2947,7 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   focuses Max so typing sets the max; Tab from Max focuses Step (#1576). Scripted as
   `bearcad.parameter_options(name[, open])`, `bearcad.parameter_edit(name, "min"|"max"|"step")`,
   `bearcad.parameter_editing()`. **Imported unit instances** cannot edit
-  these options; overrides (`SetUnitParameterOverride` / `unit_override`) are
+  these options; overrides (`SetUnitParameterOverride` / `set_unit_parameter`) are
   clamp-and-snapped to min/max/step (`clamp_and_snap_override_expression`). With both min
   and max resolved, a **slider** sits on the row below the parameter, spanning the name
   and value columns, and snaps to step — the same layout for this document's own
@@ -3819,7 +3819,7 @@ the tokenizer's `qualified_identifier_at` lexes `segment(.segment)?` with backti
 
 **Scripting (#736):** everything above is scriptable: `bearcad.import_unit{ path, link,
 name }`, `add_unit_instance{ unit, name }`, `set_unit_parameter{ instance, name,
-expression }` (alias `unit_override`; omit the value to clear), `unit_link(unit, mode)`,
+expression }` (omit the value to clear), `unit_link(unit, mode)`,
 `sync_unit(unit)` (index or `{ unit = n }`), `derive_parameter kind="unit_edge_length"`,
 and `select{ kind = "unit_instance", index }` / select-by-instance-name. Session-command
 export writes each as its replayable call. A unit's *children* are deliberately not
@@ -3893,7 +3893,7 @@ parameters at the top of the Parameters pane, headed by the instance name: the u
 primary parameters first, secondary ones behind an "Internals" eye toggle (off by
 default, ephemeral), the document's own parameters unmistakably below a separator. An
 edit writes that instance's `parameter_overrides` (`Action::SetUnitParameterOverride`,
-`bearcad.unit_override{ instance =, name =, value = }`; omitting `value` clears) — never
+`bearcad.set_unit_parameter{ instance =, name =, value = }`; omitting `value` clears) — never
 the source file, never other instances. Overrides are clamp-and-snapped to the unit
 parameter's min/max/step; with both min and max set a **slider** sits on the row below,
 spanning the name and value columns (same as this document's own parameters). The
@@ -4024,8 +4024,7 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   through the status bar. Options tables also **reject unrecognized keys (#403)** — a typo
   like `combine{ kind = … }` (the key is `op`) or `repeat_bodies{ gap = … }` errors
   immediately, naming the accepted keys, instead of being ignored and failing confusingly
-  downstream. `gap` is in fact accepted everywhere `spacing` is (it's the Repeat pane's name
-  for the field; passing both errors).
+  downstream. Repeat uses `spacing`; revolve helix uses `pitch`.
 - **Read-back / introspection (#107):** the API is not write-only — pure read getters (never
   recorded as instructions) let scripts assert what they built: `bearcad.count(kind)` /
   `bearcad.get{ kind, index }` over lines, circles, sketches, constraints, construction

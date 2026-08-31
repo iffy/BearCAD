@@ -31,7 +31,7 @@ bearcad.ui.wait(5)
 local bodies = picker("Bodies")
 assert(#bodies.items == 1,
   "the plane should land in the Repeat set, got " .. #bodies.items)
-assert(bodies.items[1].kind == "construction_plane",
+assert(bodies.items[1].kind == "plane",
   "and it should be the plane, got " .. bodies.items[1].kind)
 
 -- So is a sketch (#231).

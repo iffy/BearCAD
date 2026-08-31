@@ -2579,10 +2579,10 @@ impl Instruction {
             Instruction::SetUnitParameterOverride { instance, name, expression } => {
                 match expression {
                     Some(expression) => format!(
-                        "bearcad.unit_override{{ instance = {instance}, name = {name:?}, value = {expression:?} }}"
+                        "bearcad.set_unit_parameter{{ instance = {instance}, name = {name:?}, value = {expression:?} }}"
                     ),
                     None => format!(
-                        "bearcad.unit_override{{ instance = {instance}, name = {name:?} }}"
+                        "bearcad.set_unit_parameter{{ instance = {instance}, name = {name:?} }}"
                     ),
                 }
             }
@@ -2920,7 +2920,7 @@ fn element_script_tokens(
             }
         }
         SceneElement::ConstructionPlane(i) => ElementScriptTokens {
-            kind: "construction_plane",
+            kind: "plane",
             index: ordinal_or_slot(doc.map(|d| d.construction_planes.keys().position(|k| k == i)), i.index()),
             point: None,
         },
@@ -5069,7 +5069,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
 fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
     match face {
         FaceId::Circle(i) => ("circle", i.index() as usize),
-        FaceId::ConstructionPlane(i) => ("construction_plane", i.index() as usize),
+        FaceId::ConstructionPlane(i) => ("plane", i.index() as usize),
         // Cap/side faces aren't yet addressable from the two-argument script form.
         FaceId::ExtrudeCap { extrusion, .. } => ("extrude_cap", extrusion.index() as usize),
         FaceId::ExtrudeSide { extrusion, .. } => ("extrude_side", extrusion.index() as usize),
@@ -5396,7 +5396,7 @@ fn face_id_lua_ref(face: &FaceId, doc: Option<&crate::model::Document>) -> Strin
     match face {
         FaceId::Circle(i) => format!("{{ kind = \"circle\", index = {} }}", circle(*i)),
         FaceId::ConstructionPlane(i) => {
-            format!("{{ kind = \"construction_plane\", index = {} }}", plane(*i))
+            format!("{{ kind = \"plane\", index = {} }}", plane(*i))
         }
         FaceId::Polygon(lines) => format!(
             "{{ kind = \"polygon\", index = {} }}",
@@ -10332,7 +10332,7 @@ mod tests {
                 expression: Some("20".to_string()),
             }
             .as_lua(),
-            "bearcad.unit_override{ instance = 1, name = \"width\", value = \"20\" }"
+            "bearcad.set_unit_parameter{ instance = 1, name = \"width\", value = \"20\" }"
         );
         assert_eq!(Instruction::SyncUnit { unit: 2 }.as_lua(), "bearcad.sync_unit(2)");
         assert_eq!(
@@ -10664,7 +10664,7 @@ mod tests {
                 elements: vec![SceneElement::ConstructionPlane(pkey(2))],
             }
             .as_lua_in(Some(&crate::model::Document::default())),
-            "bearcad.project{ entities = { { kind = \"construction_plane\", index = 2 } } }"
+            "bearcad.project{ entities = { { kind = \"plane\", index = 2 } } }"
         );
     }
 
@@ -11031,16 +11031,16 @@ mod tests {
     }
 }
 
-/// Canonical kinds `bearcad.count` and `bearcad.get` accept (#1662, #1865). One list, so
+/// Canonical kinds `bearcad.count` and `bearcad.get` accept (#1662, #1865, #1883). One list, so
 /// the two inspection calls cannot drift. Aliases live only on the match arms below
-/// (`plane`, `revolve`, `primitive`, `text`, `unit`, …). `chamfer`/`fillet` are not
+/// (`construction_plane`, `revolve`, `primitive`, `text`, `unit`, …). `chamfer`/`fillet` are not
 /// aliases — they collide with sketch-vertex treatments.
 pub const INSPECT_KINDS: &[&str] = &[
     "line",
     "circle",
     "sketch",
     "constraint",
-    "construction_plane",
+    "plane",
     "extrusion",
     "revolution",
     "sweep",
@@ -11080,7 +11080,7 @@ pub fn count_kind(doc: &crate::model::Document, kind: &str) -> Option<usize> {
         "circle" => doc.circles.len(),
         "sketch" => doc.sketches.len(),
         "constraint" => doc.constraints.len(),
-        "construction_plane" | "plane" => doc.construction_planes.len(),
+        "plane" | "construction_plane" => doc.construction_planes.len(),
         "extrusion" => doc.extrusions.len(),
         "revolution" | "revolve" => doc.revolutions.len(),
         "sweep" => doc.sweeps.len(),
@@ -11120,7 +11120,7 @@ pub fn saved_table_for_kind(kind: &str) -> Option<&'static str> {
         "circle" => "circles",
         "sketch" => "sketches",
         "constraint" => "constraints",
-        "construction_plane" | "plane" => "construction_planes",
+        "plane" | "construction_plane" => "construction_planes",
         "extrusion" => "extrusions",
         "revolution" | "revolve" => "revolutions",
         "sweep" => "sweeps",
