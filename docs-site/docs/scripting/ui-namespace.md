@@ -48,7 +48,8 @@ bearcad.ui.view_home()
 bearcad.ui.toggle_projection()
 bearcad.ui.shading("solid_wireframe")   -- "wireframe" | "transparent" | "solid"
                                         -- "solid_wireframe" | "realistic"
-                                        -- "loose_pencil" | "color_pencil" | "watercolor"
+                                        -- "loose_pencil" | "dark_pencil"
+                                        -- "color_pencil" | "watercolor"
 bearcad.ui.ground("off")                -- ground plane: "grid" | "solid" | "off"
 ```
 
@@ -63,6 +64,7 @@ bearcad.ui.camera{ yaw = 45, distance = 200 }         -- angles are degrees
 bearcad.ui.camera{ target = {20, 15, 5}, pitch = -35 }
 bearcad.ui.zoom_fit()                   -- frame selection or document (short glide)
 bearcad.ui.animate_zoom_to_fit(false)   -- off = snap zoom_fit instantly
+bearcad.ui.auto_zoom(true)              -- keep geometry framed as it grows
 bearcad.ui.snapping(false)              -- snapping while drawing and placing shapes
 ```
 
@@ -79,9 +81,10 @@ local v = bearcad.ui.pane_scroll("ai")      -- {offset, content, viewport}, or n
 bearcad.ui.scroll_pane("ai", 200)           -- wheel over a pane; positive scrolls down
 bearcad.ui.ai_sections("open")              -- AI pane sections: "open" | "close"
 bearcad.ui.palette("view top")          -- run a command palette entry by name
-bearcad.ui.palette{ open = true }       -- the palette window
--- With a construction plane selected, the second value is the image path:
+bearcad.ui.palette{ open = true }       -- the palette window; open = false hides it
+-- A command that asks for something takes it as a second value:
 bearcad.ui.palette("import image on this plane", "drawing.png")
+bearcad.ui.palette("mcmaster", "socket head screw")
 bearcad.ui.elements_view("graph")       -- Elements-pane layout: "list" | "tree" | "graph"
 bearcad.ui.workbench()                  -- "model" | "sketch" | "drawing" | "view"
 bearcad.ui.workbench("view")            -- switch, opening the most recent view/drawing/sketch
@@ -174,6 +177,13 @@ With help mode on, each row of the Context pane gets a floating note beside it s
 it wants, and each toolbar tool that has a shortcut grows a small badge with that key.
 A pane screenshot widens to include the notes, which is how the annotated pane
 pictures in the tool pages are made.
+
+## Settings
+
+```lua
+bearcad.ui.settings("show")   -- "hide" / "toggle"
+bearcad.ui.update_channel("pre_release")  -- or "release"; no arg returns current
+```
 
 ## Viewport tool hints
 

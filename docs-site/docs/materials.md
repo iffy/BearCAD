@@ -39,14 +39,3 @@ plane has no source body, so its extrusion starts as Unobtainium.
 
 [3MF export](/docs/files#export) writes each body's color, so a multi-color model opens
 in Bambu Studio with one filament slot per color.
-
-## Scripting
-
-```lua
-bearcad.material{ name = "Brass", color = "#c88a4a", bodies = {0} }
-bearcad.material{ name = "Blue", bodies = {1} }   -- no color: applies the one already there
-bearcad.set_material{ body = 1, material = 0 }
-bearcad.set_material{ body = 1 }        -- back to the default material
-```
-
-`set_material` names a material by its order in the document. Unobtainium is `0`.

@@ -61,15 +61,3 @@ Hidden elements are suppressed in the viewport and faded in the pane, without to
 own show/hide toggles. Independent branches stay put, so this follows the element graph
 rather than the order things were created. While rolled back, a status line at the top of
 the pane shows where you are; click **Done** to roll forward again.
-
-## Scripting
-
-```lua
-local frame = bearcad.component{ name = "Frame" }          -- returns the index
-local legs  = bearcad.component{ name = "Legs", parent = frame }
-bearcad.move_to_component{ kind = "extrusion", index = 0, component = frame }
-bearcad.move_to_component{ kind = "body", index = 0, component = false }  -- back to root
-bearcad.set_units{ component = frame, length = "in" }
-bearcad.select{ kind = "component", index = frame }
-bearcad.count("component")
-```

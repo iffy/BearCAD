@@ -36,11 +36,6 @@ reveals the private ones. You can't edit the unit's min/max/step/private; you on
 min and max set, a **slider** sits on the row below (same as this document's parameters).
 Overridden values read gold; **✕** restores the part's own value.
 
-```lua
-bearcad.set_unit_parameter{ instance = 0, name = "width", value = "20" }
-bearcad.set_unit_parameter{ instance = 0, name = "width" }   -- back to the part's value
-```
-
 ## Expressions
 
 **Every value input accepts an expression**, not just a number:
@@ -92,46 +87,9 @@ it to see what's measured), while the name itself stays editable — and re-meas
 geometry changes. Focusing a derived parameter's row highlights the geometry that defines
 it; clicking into its **name** field draws that source geometry in **green** in the 3D view.
 
-```lua
-bearcad.derive_parameter{ kind = "line_length", a = 0, name = "leg" }
-bearcad.derive_parameter{ kind = "line_distance", a = 0, b = 1 }
-bearcad.derive_parameter{ kind = "line_angle", a = 0, b = 2 }
-bearcad.derive_parameter{ kind = "point_distance",
-  a = { kind = "line", index = 0, endpoint = "start" },
-  b = { kind = "line", index = 0, endpoint = "end" } }
--- Body geometry: a/b are mm points anywhere on the picked edge's ends or the corners.
-bearcad.derive_parameter{ kind = "body_edge_length", body = 0, a = {0, 0, 0}, b = {30, 0, 0} }
-bearcad.derive_parameter{ kind = "body_vertex_distance", body = 0,
-  a = {0, 0, 0}, b = {30, 40, 0} }
-```
-
 ## Display units
 
 The Context pane's **Default units** section (Select tool, nothing selected) sets the
 document-wide length and angle units used for dimension labels and the Elements pane. With
 exactly one **sketch** selected it becomes **Sketch units** — a per-sketch override, with a
 **Follow document** entry per axis to inherit the default again.
-
-## Scripting
-
-```lua
-local p = bearcad.add_parameter("A", "5mm")
-bearcad.set_parameter("A", "A + 5in")        -- name or handle
-bearcad.edit_parameter{ name = p, rename = "Len", private = true,
-  min = "1mm", max = "100mm", step = "0.5mm" }  -- min+max ⇒ slider
-bearcad.parameter_options("Len", true)       -- open the row's gear-options
-bearcad.parameter_edit("Len", "min")         -- focus a bound field (Tab → max → step)
-bearcad.parameter_editing()                  -- {name=, field="min"|"max"|"step"} or nil
-bearcad.parameter_slider("Len")              -- {min=, max=, value=, step?} or nil
-bearcad.parameter_slider("Len", 15)          -- set via the slider (mm / degrees, snapped)
-bearcad.edit_parameter{ name = "Len", min = false }  -- clear a bound
-bearcad.delete_parameter("Len")
-assert(bearcad.parameter_value("A") == 5)    -- evaluated (mm / degrees)
-bearcad.parameter_expression("A")            -- "5mm", as typed
-
-bearcad.set_units{ length = "in", angle = "deg" }          -- document defaults
-bearcad.set_units{ sketch = 0, length = "mm" }             -- per-sketch override
-```
-
-Sizes in scripting calls accept expression strings too — see
-[Declarative modeling](/docs/scripting/declarative-modeling).

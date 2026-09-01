@@ -38,8 +38,7 @@ keypad** — digits, units, operators, and your parameter names as one-tap chips
 whole model — with a short glide (faster than Home). Settings → **Animate zoom to fit** turns
 the glide off if you prefer an instant snap.
 
-**View → Tool Hints** hides the usage line at the bottom of the viewport. Scripts:
-`bearcad.ui.tool_hints(false)`.
+**View → Tool Hints** hides the usage line at the bottom of the viewport.
 
 **Auto-zoom** (the toggle next to Zoom to fit in the toolbar) keeps your geometry
 framed: type rectangle dimensions bigger than the view, or drag an extrusion past the
@@ -48,7 +47,6 @@ Committed results count too: confirm an extrusion taller than the view and the c
 glides out to show the whole body; undo it and the view glides back in. Selections too:
 pick a face that's half out of view and the camera glides out until all of it is on
 screen — only ever outward, so selecting something small never dives the camera in.
-Scripts: `bearcad.ui.auto_zoom(true)`.
 
 ## Keyboard shortcuts
 
