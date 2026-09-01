@@ -504,13 +504,16 @@ pub enum Instruction {
         center: (f32, f32, f32),
     },
     /// Set (or clear) a drawing edge dimension's label offset (#294/#1228).
-    /// `offset = None` restores the auto-placed default.
+    /// `offset = None` restores the auto-placed default. `angle` is the outward
+    /// `atan2` (#1916); omitted leaves a stored angle, `Some(None)` restores the
+    /// auto perpendicular.
     SetDrawingDimensionOffset {
         drawing: usize,
         view: usize,
         a: (f32, f32, f32),
         b: (f32, f32, f32),
         offset: Option<f32>,
+        angle: Option<Option<f32>>,
     },
     /// Set (or clear) a drawing circle Ø-label offset (#397/#1228).
     SetDrawingCircleDimOffset {
@@ -1838,14 +1841,20 @@ impl Instruction {
                 a,
                 b,
                 offset,
+                angle,
             } => {
                 let off = match offset {
                     Some(o) => format!("{o}"),
                     None => "nil".into(),
                 };
+                let ang = match angle {
+                    Some(Some(t)) => format!(", angle = {t}"),
+                    Some(None) => ", angle = nil".into(),
+                    None => String::new(),
+                };
                 format!(
                     "bearcad.drawing_dim_offset{{ drawing = {drawing}, view = {view}, \
-                     a = {{ {}, {}, {} }}, b = {{ {}, {}, {} }}, offset = {off} }}",
+                     a = {{ {}, {}, {} }}, b = {{ {}, {}, {} }}, offset = {off}{ang} }}",
                     a.0, a.1, a.2, b.0, b.1, b.2
                 )
             }
@@ -8120,6 +8129,7 @@ impl ScriptRunner {
                 a,
                 b,
                 offset,
+                angle,
             } => {
                 let Some(drawing) = drawing_key(&state.doc, drawing) else {
                     self.last_action_error = Some(format!("No drawing {drawing}"));
@@ -8134,6 +8144,7 @@ impl ScriptRunner {
                     a: q(a),
                     b: q(b),
                     offset,
+                    angle,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

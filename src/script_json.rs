@@ -1224,6 +1224,11 @@ pub fn instruction_from_json(
             a: xyz(o, "a")?,
             b: xyz(o, "b")?,
             offset: opt_f32(o, "offset")?,
+            angle: if o.get("angle").is_some() {
+                Some(opt_f32(o, "angle")?)
+            } else {
+                None
+            },
         }),
         "drawing_circle_dim_offset" => Ok(Instruction::SetDrawingCircleDimOffset {
             drawing: req_usize(o, "drawing", "drawing_circle_dim_offset")?,

@@ -2320,6 +2320,75 @@ pub fn dimension_outward(a: glam::Vec2, b: glam::Vec2, center: glam::Vec2) -> gl
     perp
 }
 
+/// The outward used to place an edge dimension: a stored snap angle (#1916) if the
+/// label was dragged onto one, otherwise [`dimension_outward`].
+pub fn effective_dimension_outward(
+    a: glam::Vec2,
+    b: glam::Vec2,
+    center: glam::Vec2,
+    stored_angle: Option<f32>,
+) -> glam::Vec2 {
+    match stored_angle {
+        Some(ang) => glam::Vec2::new(ang.cos(), ang.sin()),
+        None => dimension_outward(a, b, center),
+    }
+}
+
+/// Unique unit directions a dimension line can snap to while dragging (#1916): the
+/// edge's 2D perpendiculars, and the directions of other projected edges that share
+/// an endpoint (the two faces that make the edge). Both signs of each direction are
+/// included so the line can sit on either side.
+pub fn dimension_snap_dirs(
+    a: glam::Vec2,
+    b: glam::Vec2,
+    center: glam::Vec2,
+    edges: &[(glam::Vec2, glam::Vec2)],
+) -> Vec<glam::Vec2> {
+    let mut dirs: Vec<glam::Vec2> = Vec::new();
+    let push = |dirs: &mut Vec<glam::Vec2>, d: glam::Vec2| {
+        let n = d.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return;
+        }
+        if dirs.iter().any(|e| e.dot(n) > 0.999) {
+            return;
+        }
+        dirs.push(n);
+    };
+    let perp = dimension_outward(a, b, center);
+    push(&mut dirs, perp);
+    push(&mut dirs, -perp);
+    let along = (b - a).normalize_or_zero();
+    let same = |p: glam::Vec2, q: glam::Vec2| (p - q).length() < 0.2;
+    for &(p, q) in edges {
+        let shares = same(p, a) || same(p, b) || same(q, a) || same(q, b);
+        if !shares {
+            continue;
+        }
+        let d = (q - p).normalize_or_zero();
+        if d.length_squared() < 0.5 || d.dot(along).abs() > 0.999 {
+            continue;
+        }
+        push(&mut dirs, d);
+        push(&mut dirs, -d);
+    }
+    dirs
+}
+
+/// Snap `requested` (from the edge midpoint toward the pointer, projected mm) onto
+/// the nearest of `dirs`. Empty `dirs` or a near-zero request returns `requested`
+/// normalized, or +Y if that's zero too.
+pub fn snap_dimension_outward(requested: glam::Vec2, dirs: &[glam::Vec2]) -> glam::Vec2 {
+    let n = requested.normalize_or_zero();
+    if n.length_squared() < 0.5 {
+        return dirs.first().copied().unwrap_or(glam::Vec2::new(0.0, 1.0));
+    }
+    dirs.iter()
+        .copied()
+        .max_by(|a, b| a.dot(n).partial_cmp(&b.dot(n)).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(n)
+}
+
 /// Projected 2D geometry for a drawing view under its display style (#301), shared by the
 /// editor pane and the SVG/PDF export.
 pub struct StyledViewGeometry {
@@ -3826,7 +3895,12 @@ fn render_view_geometry<C: Canvas>(
         {
             continue;
         }
-        let outward = dimension_outward(*a, *b, bbox_center);
+        let stored_angle = view
+            .dimension_offset_angles
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, a)| *a);
+        let outward = effective_dimension_outward(*a, *b, bbox_center, stored_angle);
         let extra = view
             .dimension_offsets
             .iter()
@@ -5200,6 +5274,7 @@ mod tests {
             cross_section: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Top,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
+            dimension_offset_angles: Vec::new(),
             dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
 circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
@@ -5267,6 +5342,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             cross_section: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Front,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
+            dimension_offset_angles: Vec::new(),
             dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
 circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
@@ -5458,6 +5534,83 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         );
         assert!((g.line.0 - tip_a).length() < 1e-3);
         assert!((g.line.1 - tip_b).length() < 1e-3);
+    }
+
+    /// #1916: a dragged dimension line snaps to the measured edge's 2D perpendicular
+    /// and to the directions of the two faces that make that edge (adjacent projected
+    /// edges at its endpoints).
+    #[test]
+    fn dimension_outward_snaps_to_perp_and_adjacent_face_dirs() {
+        // Isometric-like: measured edge along a diagonal, faces along vertical and
+        // the other isometric axis.
+        let a = glam::Vec2::new(0.0, 0.0);
+        let b = glam::Vec2::new(8.0, -4.0);
+        let center = glam::Vec2::new(4.0, -12.0);
+        let vertical = glam::Vec2::new(0.0, 10.0);
+        let along_x = glam::Vec2::new(8.0, 4.0);
+        let edges = [
+            (a, b),
+            (a, a + vertical),
+            (b, b + vertical),
+            (a, a + along_x),
+            (b, b + along_x),
+        ];
+        let dirs = dimension_snap_dirs(a, b, center, &edges);
+        let perp = dimension_outward(a, b, center);
+        let align = |got: glam::Vec2, want: glam::Vec2| got.dot(want.normalize()).abs() > 0.999;
+        assert!(
+            dirs.iter().any(|d| align(*d, perp)),
+            "perp is a snap, dirs={dirs:?} perp={perp:?}"
+        );
+        assert!(
+            dirs.iter().any(|d| align(*d, vertical)),
+            "the vertical face is a snap, dirs={dirs:?}"
+        );
+        assert!(
+            dirs.iter().any(|d| align(*d, along_x)),
+            "the other face is a snap, dirs={dirs:?}"
+        );
+
+        let snap_to = |req: glam::Vec2| snap_dimension_outward(req, &dirs);
+        assert!(
+            align(snap_to(perp * 20.0), perp),
+            "a request along the perp stays on the perp"
+        );
+        assert!(
+            align(snap_to(vertical), vertical),
+            "a request along the vertical face snaps to it, got {:?}",
+            snap_to(vertical)
+        );
+        assert!(
+            align(snap_to(along_x), along_x),
+            "a request along the other face snaps to it, got {:?}",
+            snap_to(along_x)
+        );
+        // A pointer slightly off vertical still lands on vertical, not the perp.
+        let near_vertical = glam::Vec2::new(1.0, 20.0);
+        assert!(
+            align(snap_to(near_vertical), vertical),
+            "near-vertical drag snaps to the face, got {:?}",
+            snap_to(near_vertical)
+        );
+    }
+
+    /// #1916: a stored angle replaces the auto perpendicular when drawing the line.
+    #[test]
+    fn stored_angle_overrides_auto_perpendicular() {
+        let a = glam::Vec2::new(0.0, 0.0);
+        let b = glam::Vec2::new(10.0, 0.0);
+        let center = glam::Vec2::new(5.0, -5.0);
+        let auto = dimension_outward(a, b, center);
+        assert!((auto - glam::Vec2::new(0.0, 1.0)).length() < 1e-3);
+        let vertical = effective_dimension_outward(a, b, center, None);
+        assert!((vertical - auto).length() < 1e-3);
+        let angled = effective_dimension_outward(a, b, center, Some(std::f32::consts::FRAC_PI_4));
+        let want = glam::Vec2::new(1.0, 1.0).normalize();
+        assert!(
+            (angled - want).length() < 1e-3,
+            "stored 45° should be the outward, got {angled:?}"
+        );
     }
 
     /// #1716: the label clears the dimension stroke by the gap *plus* half a glyph, so a
@@ -5772,6 +5925,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
+                dimension_offset_angles: Vec::new(),
                 dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
 circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(),
                 aligned_parent: None,

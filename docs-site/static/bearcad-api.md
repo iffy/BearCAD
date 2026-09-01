@@ -284,7 +284,7 @@ bearcad.drawing_angle{ … }
 bearcad.drawing_circle_dim_offset{ … }
 bearcad.drawing_circle_dimension{ … }
 bearcad.drawing_curve_dimension{ drawing, view, points }
-bearcad.drawing_dim_offset{ … }
+bearcad.drawing_dim_offset{ drawing, view, a, b, offset, angle }
 bearcad.drawing_dimension{ … }
 bearcad.drawing_loupe{ drawing, view, at, radius, to, to_radius }
 bearcad.drawing_loupe_dimension{ drawing, view, index, a, b }

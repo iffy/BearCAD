@@ -6095,6 +6095,44 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         t.set("name", name.as_str())?;
                     }
                 }
+                "edge_dimension" => {
+                    // A drawing view's edge-length dimension (#1916): where its label was
+                    // dragged to, and the outward angle it snapped onto. `index` is the
+                    // ordinal among the view's shown edge dimensions.
+                    let opts = opts.as_ref().ok_or_else(|| {
+                        mlua::Error::external(
+                            "get{ kind = \"edge_dimension\", index, drawing, view }",
+                        )
+                    })?;
+                    let drawing: usize = opts.ordinal_req("drawing")?;
+                    let view: usize = opts.ordinal_req("view")?;
+                    let Some(v) = doc
+                        .drawings
+                        .values()
+                        .nth(drawing)
+                        .and_then(|d| d.views.get(view))
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    let Some(key) = v.dimensioned_edges.get(index).copied() else {
+                        return Ok(Value::Nil);
+                    };
+                    let offset = v
+                        .dimension_offsets
+                        .iter()
+                        .find(|(k, _)| *k == key)
+                        .map(|(_, o)| *o)
+                        .unwrap_or(0.0);
+                    t.set("offset", offset)?;
+                    if let Some((_, ang)) =
+                        v.dimension_offset_angles.iter().find(|(k, _)| *k == key)
+                    {
+                        t.set("angle", *ang)?;
+                    }
+                    let deq = |q: [i32; 3]| crate::hierarchy::dequantize_body_point(q);
+                    t.set("a", vec3_lua(lua, deq(key.0))?)?;
+                    t.set("b", vec3_lua(lua, deq(key.1))?)?;
+                }
                 "circle_dimension" => {
                     // A drawing view's circle Ø dimension (#1774): where its label was dragged
                     // to — `0.0` is the auto-placed default. `index` is the ordinal among the
@@ -11760,12 +11798,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Set (or clear) a drawing edge dim label's offset (#294/#1228).
-    // `bearcad.drawing_dim_offset{ drawing, view, a, b, offset }` — omit/nil `offset` clears.
+    // Set (or clear) a drawing edge dim label's offset (#294/#1228) and snap angle (#1916).
+    // `bearcad.drawing_dim_offset{ drawing, view, a, b, offset, angle }` — omit/nil `offset`
+    // clears; omit `angle` leaves a stored angle; `angle = nil` restores the auto perp.
     api.set(
         "drawing_dim_offset",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "drawing_dim_offset",
+                &["drawing", "view", "a", "b", "offset", "angle"],
+            )?;
             let drawing: usize = opts.ordinal_req("drawing")?;
             let view: usize = opts.ordinal_req("view")?;
             let point = |key: &str| -> mlua::Result<(f32, f32, f32)> {
@@ -11780,6 +11824,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let a = point("a")?;
             let b = point("b")?;
             let offset: Option<f32> = opts.get("offset")?;
+            let angle = if opts.contains_key("angle")? {
+                Some(opts.get::<Option<f32>>("angle")?)
+            } else {
+                None
+            };
             unsafe {
                 tick.exec(Instruction::SetDrawingDimensionOffset {
                     drawing,
@@ -11787,6 +11836,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     a,
                     b,
                     offset,
+                    angle,
                 })
             }
         })?,
@@ -24829,6 +24879,33 @@ pub mod tests {
                 .is_empty(),
             "omitting offset clears the override"
         );
+    }
+
+    /// #1916: `drawing_dim_offset` stores a snap angle, `get{kind="edge_dimension"}` reads it,
+    /// and omitting offset clears the angle too.
+    #[test]
+    fn lua_drawing_dim_offset_stores_a_snap_angle() {
+        let script = r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }
+            bearcad.drawing_dim_offset{
+                drawing = d, view = 0, a = {0,0,0}, b = {40,0,0},
+                offset = 6.5, angle = 1.5707963
+            }
+            local dim = bearcad.get{ kind = "edge_dimension", drawing = d, view = 0, index = 0 }
+            assert(math.abs(dim.offset - 6.5) < 1e-4, "offset round-trips, got " .. tostring(dim.offset))
+            assert(dim.angle ~= nil and math.abs(dim.angle - 1.5707963) < 1e-3,
+              "angle round-trips, got " .. tostring(dim.angle))
+            bearcad.drawing_dim_offset{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }
+            local cleared = bearcad.get{ kind = "edge_dimension", drawing = d, view = 0, index = 0 }
+            assert(cleared.offset == 0.0, "clearing drops the offset")
+            assert(cleared.angle == nil, "clearing drops the angle")
+        "#;
+        run_lua(script);
     }
 
     /// #373: `bearcad.drawing_circle_dimension{}` toggles a detected circle's diameter

@@ -5203,11 +5203,18 @@ pub struct DrawingView {
     pub angle_dims: Vec<(([i32; 3], [i32; 3]), ([i32; 3], [i32; 3]))>,
     /// Per-edge dimension-label offset overrides (#294), keyed by the same edge key as
     /// `dimensioned_edges`. The value is the label's signed offset (mm, in projected view
-    /// space) along the edge's outward perpendicular from the geometry centroid — a positive
+    /// space) along the edge's outward from the geometry centroid — a positive
     /// value pushes the label further out. Absent → the auto-placed default distance. A drag
     /// writes an override here; it survives rebuilds because the key is geometry-based.
     #[serde(default)]
     pub dimension_offsets: Vec<(([i32; 3], [i32; 3]), f32)>,
+    /// Per-edge dimension-line outward angle (#1916), keyed like `dimension_offsets`.
+    /// Radians of the outward unit vector in projected view space (`atan2(y, x)`).
+    /// Absent → the auto perpendicular away from the centroid. A drag snaps onto the
+    /// measured edge's perpendicular or a face that makes that edge and stores the
+    /// landed angle here.
+    #[serde(default)]
+    pub dimension_offset_angles: Vec<(([i32; 3], [i32; 3]), f32)>,
     /// Detected circles (holes, cylinders) whose **diameter** dimension is shown, keyed by the
     /// circle's quantized world centre (#342). Like `dimensioned_edges`, a new view starts empty
     /// and "Show all dimensions" populates it; "Hide all" clears it, so a circle's Ø dimension is
@@ -5374,6 +5381,7 @@ impl DrawingView {
             dimensioned_edges: Vec::new(),
             angle_dims: Vec::new(),
             dimension_offsets: Vec::new(),
+            dimension_offset_angles: Vec::new(),
             dimensioned_circles: Vec::new(),
             circle_dim_offsets: Vec::new(),
             dimensioned_curves: Vec::new(),
@@ -5404,6 +5412,7 @@ impl DrawingView {
             dimensioned_edges: Vec::new(),
             angle_dims: Vec::new(),
             dimension_offsets: Vec::new(),
+            dimension_offset_angles: Vec::new(),
             dimensioned_circles: Vec::new(),
             circle_dim_offsets: Vec::new(),
             dimensioned_curves: Vec::new(),
