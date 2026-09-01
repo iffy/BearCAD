@@ -571,6 +571,8 @@ pub enum Instruction {
         index: usize,
         shape: crate::model::Primitive,
     },
+    /// Reopen a committed shape in the Shape tool (#1901).
+    BeginEditShape { index: usize },
     /// Revolve profiles around an axis (SPEC §3.5 Revolve). Sketch inferred per face.
     /// `pitch_mm` is helical pitch (mm per full turn); 0 is a pure revolve (#1242).
     Revolve {
@@ -1920,6 +1922,9 @@ impl Instruction {
             // A shape replays as its own call, dimensions and frame spelled out (#909).
             Instruction::Shape { shape } => shape_lua_call(shape, None),
             Instruction::EditShape { index, shape } => shape_lua_call(shape, Some(*index)),
+            Instruction::BeginEditShape { index } => {
+                format!("bearcad.ui.begin_edit_shape{{ index = {index} }}")
+            }
             Instruction::Revolve {
                 faces,
                 axis,
@@ -8308,6 +8313,15 @@ impl ScriptRunner {
                     return StepResult::Continue;
                 };
                 let result = state.apply(Action::EditShape { index: key, shape });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::BeginEditShape { index } => {
+                let Some(key) = state.doc.primitives.keys().nth(index) else {
+                    self.last_action_error = Some(format!("No shape {index}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::BeginEditShape { index: key });
                 self.record_action_error(result);
                 StepResult::Continue
             }

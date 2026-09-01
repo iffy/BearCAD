@@ -10968,6 +10968,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             apply_optional_name(lua, SceneElement::Shape(index), Some(opts))
         })?,
     )?;
+    // Reopen a committed shape in the Shape tool (#1901): the Context pane's ValueInputs
+    // load the current dimensions so they can be edited. `bearcad.ui.begin_edit_shape{ index }`.
+    api.set(
+        "begin_edit_shape",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "begin_edit_shape", &["index"])?;
+            let ordinal: usize = opts.ordinal_req("index")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::BeginEditShape { index: ordinal }) }
+        })?,
+    )?;
 
     // Sweep profiles along a path of sketch lines (SPEC §3.5 Sweep):
     // `bearcad.sweep{ profiles = circle | {lines} | {…}, path = {line, ...},
@@ -12605,7 +12616,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "camera", "elements_view", "elements_graph", "workbench", "auto_zoom", "animate_joints", "animate_zoom_to_fit",
             "update_channel",
             "snapping", "picker_focus", "angle_snap",
-            "begin_combine", "begin_move", "begin_joint", "begin_edit_section_plane",
+            "begin_combine", "begin_move", "begin_joint", "begin_edit_section_plane", "begin_edit_shape",
             "set_dim", "edit_dim", "commit_dim", "set_dim_label_offset",
             "commit_plane", "edit_plane",
             "gizmos", "gizmo", "set_gizmo", "drag_gizmo", "move_preview",
@@ -15617,7 +15628,7 @@ pub mod tests {
             -- #1873: live-tool arm/preview verbs sit under ui so agents don't confuse them
             -- with the committing modeling twins.
             for _, name in ipairs({ "begin_combine", "begin_move", "begin_joint",
-                                    "begin_edit_section_plane" }) do
+                                    "begin_edit_section_plane", "begin_edit_shape" }) do
                 assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")
                 assert(bearcad[name] == nil, "bearcad." .. name .. " should move to bearcad.ui")
             end
@@ -21446,6 +21457,42 @@ pub mod tests {
             .and_then(|m| m.bounds())
             .expect("the cube meshes");
         assert!((stats.1.z - 30.0).abs() < 1e-3, "3 x side tall, got {}", stats.1.z);
+    }
+
+    /// #1901: a script can reopen a committed cuboid in the Shape tool with its
+    /// dimensions loaded, the GUI path a double-click on the Elements row takes.
+    #[test]
+    fn lua_begin_edit_shape_loads_the_cuboid() {
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 40, depth = 20, height = 10 }
+            bearcad.ui.begin_edit_shape{ index = 0 }
+            "#,
+        );
+        let creating = state
+            .creating_shape
+            .as_ref()
+            .expect("begin_edit_shape opens the edit draft");
+        assert!(creating.editing.is_some());
+        assert_eq!(creating.phase, crate::actions::ShapePhase::Done);
+        assert_eq!(creating.shape.width, "40");
+        assert_eq!(creating.shape.depth, "20");
+        assert_eq!(creating.shape.height, "10");
+        assert_eq!(state.tool, crate::actions::Tool::Shape);
+        let refused = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            local ok = pcall(bearcad.ui.begin_edit_shape, { index = 3 })
+            assert(not ok, "an unknown shape should error")
+            "#,
+        );
+        assert!(
+            refused
+                .creating_shape
+                .as_ref()
+                .is_none_or(|c| c.editing.is_none()),
+            "a bad index must not open an edit draft"
+        );
     }
 
     /// #909: deleting a shape takes its body with it, and a shape missing a dimension is

@@ -10950,20 +10950,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             // A committed shape reopens in the tool it was made with (#909). SetTool arms a
             // fresh shape, so the existing one is loaded after it.
             SE::Shape(op) => {
-                if let Some(existing) = self.state.doc.primitives.get(op).cloned() {
-                    let kind_placeholder = existing.kind;
-                    self.state.shape_kind = existing.kind;
-                    self.state.apply(Action::SetTool(Tool::Shape));
-                    self.state.creating_shape = Some(actions::CreatingShape {
-                        shape: existing,
-                        editing: Some(op),
-                        // An existing shape is fully placed: its pane edits it, its
-                        // dimensions don't chase the cursor.
-                        phase: actions::ShapePhase::Done,
-                        typed: [true; 4],
-                        ..actions::CreatingShape::new(kind_placeholder)
-                    });
-                }
+                let _ = self.state.apply(Action::BeginEditShape { index: op });
             }
             SE::Joint(op) => {
                 if let Some(existing) = self.state.doc.joints.get(op).cloned() {
@@ -13748,30 +13735,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
     /// #1094). This mirrors what a click in `handle_shape_placement` does, but driven
     /// by the Enter key in a ValueInput field.
     fn advance_shape_phase(&mut self) {
-        use actions::ShapePhase;
-        use model::PrimitiveKind as K;
-        let Some(creating) = self.state.creating_shape.as_mut() else { return };
-        match (creating.phase, creating.shape.kind) {
-            (ShapePhase::Base, K::Sphere) => {
-                creating.phase = ShapePhase::Done;
-            }
-            (ShapePhase::Base, _) => {
-                creating.phase = ShapePhase::Height;
-                creating.phase_screen = None;
-                creating.pending_focus = true;
-                self.state.status =
-                    "Drag off the plane in either direction to set the height, or type it"
-                        .to_string();
-            }
-            (ShapePhase::Height, _) => {
-                creating.phase = ShapePhase::Done;
-            }
-            _ => {}
-        }
-        // If the phase advanced to Done, commit the shape.
-        if creating.phase == ShapePhase::Done && creating.can_commit(&self.state.doc) {
-            self.state.apply(Action::CommitShape);
-        }
+        self.state.advance_shape_phase();
     }
 
     /// Snap a shape's placement point to the model (#913): with snapping on, the nearest
@@ -16564,6 +16528,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     typed: creating.typed,
                     pending_focus: creating.pending_focus,
                     editing: creating.editing.is_some(),
+                    phase: creating.phase,
                     can_commit: creating.can_commit(&self.state.doc),
                 }
             }),

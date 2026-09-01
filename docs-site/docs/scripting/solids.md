@@ -17,6 +17,7 @@ local block = bearcad.cuboid{ width = 40, depth = 20, height = 10, name = "Block
 bearcad.cylinder{ at = {100, 0, 0}, radius = 5, height = 20 }
 bearcad.sphere{ at = {200, 0, 0}, radius = 8 }
 bearcad.edit_shape{ index = block, height = "side * 3" }
+bearcad.ui.begin_edit_shape{ index = block }  -- reopen in the Shape tool
 ```
 
 ## Combine
