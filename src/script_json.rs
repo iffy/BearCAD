@@ -2720,10 +2720,10 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
                 return Ok(Value::Null);
             };
             let Some(mesh) = crate::extrude::body_solid_mesh(doc, index) else {
-                return Ok(Value::Null);
+                return Err(format!("body {ordinal} has no mesh"));
             };
             let Some((min, max)) = mesh.bounds() else {
-                return Ok(Value::Null);
+                return Err(format!("body {ordinal} has no mesh"));
             };
             Ok(json!({
                 "volume": crate::extrude::mesh_signed_volume(&mesh).abs(),
@@ -2745,6 +2745,8 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
             };
             t.insert("x0".into(), json!(line.x0));
             t.insert("y0".into(), json!(line.y0));
+            t.insert("x".into(), json!(line.x0));
+            t.insert("y".into(), json!(line.y0));
             t.insert("x1".into(), json!(line.x1));
             t.insert("y1".into(), json!(line.y1));
             t.insert("construction".into(), json!(line.construction));
@@ -2834,13 +2836,22 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
         }
         "extrusion" => {
             // The script's `index` is the extrusion's ordinal among the live ones (#1055).
-            let Some(extrusion) = doc.extrusions.keys().nth(index).map(|k| &doc.extrusions[k])
-            else {
+            let Some(key) = doc.extrusions.keys().nth(index) else {
                 return Ok(Value::Null);
             };
+            let extrusion = &doc.extrusions[key];
             t.insert("distance".into(), json!(extrusion.distance));
-            t.insert("sketch".into(), json!(extrusion.sketch));
+            t.insert(
+                "sketch".into(),
+                json!(doc.sketches.keys().position(|k| k == extrusion.sketch)),
+            );
             t.insert("faces".into(), json!(extrusion.faces.len()));
+            t.insert("symmetric".into(), json!(extrusion.symmetric));
+            t.insert("taper".into(), json!(extrusion.taper));
+            t.insert("taper_mode".into(), json!(extrusion.taper_mode.as_str()));
+            if !extrusion.expression.is_empty() {
+                t.insert("expression".into(), json!(extrusion.expression));
+            }
             if let Some(name) = &extrusion.name {
                 t.insert("name".into(), json!(name));
             }

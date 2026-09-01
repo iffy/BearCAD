@@ -132,18 +132,22 @@ bearcad.get{ kind, index }         --   plane, extrusion, revolution, sweep,
                                    --   tracing_image, sketch_fillet, unit, offset.
                                    --   not chamfer/fillet (use edge_treatment or sketch_chamfer).
                                    --   `count` and `get` take the same set.
-bearcad.find("name")
+                                   --   get returns create/edit keys plus evaluated numbers;
+                                   --   missing identity is nil (unknown kind errors).
+bearcad.find("name")               -- missing → nil
 bearcad.set_name(el, "name")
 bearcad.element("line", i)         -- or bearcad.element(id) / bearcad.element(name)
 bearcad.id(el)                     -- el:id(): a stable id, unique and never reused
-bearcad.line_endpoints(i)          -- x0, y0, x1, y1
+bearcad.line_endpoints(i)          -- x0, y0, x1, y1; missing → nil
 bearcad.image_corners(i)           -- tracing image quad in world mm, live Move included
 bearcad.body_stats(i)              -- volume, triangles, bbox = { min = {x,y,z}, max = {x,y,z} }
+                                   -- missing body → nil; body with no mesh → error
 bearcad.body_faces(i)              -- pass an entry to begin_sketch / extrude_face / fillet
 bearcad.drawing_views(i)           -- a drawing's page: orientation, style, dimensions
 bearcad.body_edges(i)              -- pass entries to fillet{ body, edges } / chamfer{ body, edges }
 bearcad.body_cylinders(i)
-bearcad.selection()
+bearcad.selection()                -- { kind, index, … } tables that work as handles;
+                                   -- point selections include index + endpoint
 bearcad.visible(el)                -- effective visibility, component chain included
 bearcad.set_visible(el, false)     -- handle, list, or { kind = "plane" }; boolean only
 bearcad.set_construction(el, true) -- same targets; selection forms are bearcad.ui.*
@@ -163,7 +167,8 @@ A creation call hands back what it made: one element, or a list of them.
 ```
 local sides = bearcad.rect{ x = 0, y = 0, width = 20, height = 10 }   -- four lines
 local box   = bearcad.extrude{ profiles = sides, distance = 5 }        -- the new body
-box:kind()  box:index()  box:id()  box:name()  box:exists()  box:delete()  tostring(box)
+box:kind()  box:index()  box:id()  box:name()  box:exists()  box:delete()
+box:get()   box:stats()  box:select()  tostring(box)
 bearcad.delete(box)                -- or a list; does not replace the scene selection
 bearcad.delete_selection()         -- whatever is selected (the GUI Delete)
 ```
