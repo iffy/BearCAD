@@ -20395,6 +20395,17 @@ fn drawing_view_remove_id(view: usize) -> egui::Id {
     egui::Id::new(("drawing_view_remove", view))
 }
 
+/// The id of a drawing view card's drag/click target (#1911). Explicit, like the Remove ✕,
+/// so a neighbour that mounts in one pass and not the other (the Dimension hint, hover
+/// chrome) cannot give the same card rect two ids.
+fn drawing_view_drag_id(drawing: model::DrawingKey, view: usize) -> egui::Id {
+    egui::Id::new(("drawing_view_drag", drawing, view))
+}
+
+fn drawing_page_bg_id(drawing: model::DrawingKey) -> egui::Id {
+    egui::Id::new(("drawing_page_bg", drawing))
+}
+
 /// Read a hand-drawn style's print color as **ink on paper**, for the editor's dark sheet
 /// (#1829).
 ///
@@ -27266,7 +27277,7 @@ impl App {
         // grabs the card instead (resolved in the loop below), suppressing the pan.
         let bg = ui.interact(
             area,
-            ui.make_persistent_id(("drawing_page_bg", drawing)),
+            drawing_page_bg_id(drawing),
             egui::Sense::click_and_drag(),
         );
         // Pan is applied after the card loop, once we know whether a card was grabbed. Use the
@@ -27435,12 +27446,19 @@ impl App {
 
         // Only the active Dimension tool gets a usage hint (#292): the idle prompt that used to
         // sit here was noise on every drawing.
-        if self.state.tool == Tool::Dimension {
-            ui.colored_label(
-                egui::Color32::from_gray(120),
-                "Dimension tool: click an edge for its length · Shift+click two edges for their angle",
-            );
-        }
+        // Always mount the slot (#1911): inserting the hint only on the Dimension tool
+        // shifted auto-ids of later widgets between the two egui passes of a tool switch.
+        ui.scope_builder(
+            egui::UiBuilder::new().id(egui::Id::new(("drawing_dim_hint", drawing))),
+            |ui| {
+                if self.state.tool == Tool::Dimension {
+                    ui.colored_label(
+                        egui::Color32::from_gray(120),
+                        "Dimension tool: click an edge for its length · Shift+click two edges for their angle",
+                    );
+                }
+            },
+        );
         // The sheet: each view is a cell with its caption and a projected wireframe of its body.
         let views = self
             .state
@@ -27585,7 +27603,7 @@ impl App {
                 // after this one, so it stays on top for clicks in the drawing area.
                 let drag = ui.interact(
                     cell,
-                    ui.make_persistent_id(("drawing_view_drag", drawing, vi)),
+                    drawing_view_drag_id(drawing, vi),
                     egui::Sense::click_and_drag(),
                 );
                 // A dim-label drag for this card owns the pointer: drop any earlier card grab
@@ -31245,8 +31263,18 @@ impl App {
     ) {
         self.handle_in_progress_object_keyboard(ui);
 
-        let (response, painter) =
-            ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
+        // Explicit id (#1911): `allocate_painter` takes the next auto-id, so a neighbour that
+        // mounts in one pass and not the other (a floating field, a tool hint) gave the
+        // same viewport rect two ids. Advance the cursor, then name the interact outright.
+        let (_, viewport_rect) = ui.allocate_space(ui.available_size());
+        let response = ui.interact(
+            viewport_rect,
+            egui::Id::new("3d_viewport"),
+            egui::Sense::click_and_drag(),
+        );
+        let painter = ui
+            .painter()
+            .with_clip_rect(ui.clip_rect().intersect(response.rect));
         let viewport = response.rect;
         self.last_viewport = Some(viewport);
         self.state.viewport_aspect = (viewport.width() / viewport.height().max(1.0)).max(0.01);
@@ -37748,6 +37776,37 @@ mod tests {
         );
     }
 
+    /// #1911: a view card's drag target is named outright, like its Remove ✕, so a
+    /// neighbour that only sometimes mounts cannot give the same card rect two ids.
+    #[test]
+    fn the_view_card_drag_id_does_not_depend_on_its_neighbours() {
+        let d0 = crate::model::drawing_key_for_slot(0);
+        let d1 = crate::model::drawing_key_for_slot(1);
+        assert_eq!(drawing_view_drag_id(d0, 0), drawing_view_drag_id(d0, 0));
+        assert_ne!(drawing_view_drag_id(d0, 0), drawing_view_drag_id(d0, 1));
+        assert_ne!(drawing_view_drag_id(d0, 0), drawing_view_drag_id(d1, 0));
+
+        let ctx = egui::Context::default();
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(80.0, 80.0));
+        let ids = |with_sibling: bool| {
+            let mut id = None;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                if with_sibling {
+                    let _ = ui.button("dimension hint that only sometimes mounts");
+                }
+                id = Some(
+                    ui.interact(rect, drawing_view_drag_id(d0, 0), egui::Sense::click_and_drag())
+                        .id,
+                );
+            });
+            id.expect("interacted")
+        };
+        assert_eq!(
+            ids(false),
+            ids(true),
+            "an explicit card id is the same whether a sibling mounts"
+        );
+    }
 
     /// One frame of the cutting-plane tilt-ring drag (#1766): the same composition the
     /// update path runs — cursor angle on the frozen grab-time ring frame, wrapped
