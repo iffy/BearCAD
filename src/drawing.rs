@@ -2347,7 +2347,9 @@ fn painter_order(flats: &[ShadedFace], right: Vec3, up: Vec3, toward: Vec3) -> V
             .then(|| (c - p.x * nrm.dot(right) - p.y * nrm.dot(up)) / denom)
     };
     /// Sample grid across the overlap of two flats' bounds. Coarse on purpose: it only has to
-    /// find *a* point the two share, not measure the overlap.
+    /// find *a* point the two share, not measure the overlap. Vertices and centroids of each
+    /// flat fill in what a regular grid misses — a thin isometric sliver of a big cut face
+    /// behind a smaller body in front (#1908).
     const GRID: usize = 6;
     // `before[i]` = the flats that must be painted before `i`.
     let mut edges: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -2362,23 +2364,37 @@ fn painter_order(flats: &[ShadedFace], right: Vec3, up: Vec3, toward: Vec3) -> V
             // (where they meet exactly) says nothing about which is in front.
             let mut best = 0.0f32;
             let mut front = i;
+            let consider = |p: glam::Vec2, best: &mut f32, front: &mut usize| {
+                if !inside(&flats[i].tris, p) || !inside(&flats[j].tris, p) {
+                    return;
+                }
+                let (Some(di), Some(dj)) =
+                    (depth_at(flats[i].plane, p), depth_at(flats[j].plane, p))
+                else {
+                    return;
+                };
+                if (di - dj).abs() > *best {
+                    *best = (di - dj).abs();
+                    *front = if di > dj { i } else { j };
+                }
+            };
             for gy in 0..=GRID {
                 for gx in 0..=GRID {
-                    let p = glam::Vec2::new(
-                        lo.x + (hi.x - lo.x) * gx as f32 / GRID as f32,
-                        lo.y + (hi.y - lo.y) * gy as f32 / GRID as f32,
+                    consider(
+                        glam::Vec2::new(
+                            lo.x + (hi.x - lo.x) * gx as f32 / GRID as f32,
+                            lo.y + (hi.y - lo.y) * gy as f32 / GRID as f32,
+                        ),
+                        &mut best,
+                        &mut front,
                     );
-                    if !inside(&flats[i].tris, p) || !inside(&flats[j].tris, p) {
-                        continue;
-                    }
-                    let (Some(di), Some(dj)) =
-                        (depth_at(flats[i].plane, p), depth_at(flats[j].plane, p))
-                    else {
-                        continue;
-                    };
-                    if (di - dj).abs() > best {
-                        best = (di - dj).abs();
-                        front = if di > dj { i } else { j };
+                }
+            }
+            for flat in [i, j] {
+                for t in &flats[flat].tris {
+                    consider((t[0] + t[1] + t[2]) / 3.0, &mut best, &mut front);
+                    for p in t {
+                        consider(*p, &mut best, &mut front);
                     }
                 }
             }
@@ -2571,16 +2587,17 @@ pub fn styled_view_geometry(
     // A sectioned view hatches the faces its planes opened (#1689). The hatch travels in its
     // own field rather than with the stroked edges (#1784) — it draws thinner — and apart
     // from `drawing_view_world_edges`, so dimensioning and circle detection still see only
-    // real geometry.
+    // real geometry. Hidden-line styles still run it through the same occlusion pass as
+    // the edges (#1908): otherwise the hash marks (and the cut they sit on) read through
+    // a body standing in front of the cut.
     // A pencil view's cut is drawn by the same hand as the rest of it (#1827): a perfectly
     // ruled hatch in the middle of a hand-drawn view reads as a machine drawing pasted in.
     // The wobble is held well under the hatch spacing, or the lines cross and the face fills
-    // in solid.
-    let hatch: Vec<(glam::Vec2, glam::Vec2)> = {
-        let ruled: Vec<(glam::Vec2, glam::Vec2)> = section_hatch_world_segments(doc, view)
-            .iter()
-            .map(|(a, b)| (project(*a), project(*b)))
-            .collect();
+    // in solid. Clip in world space first, then wobble the surviving runs.
+    let hatch_world = section_hatch_world_segments(doc, view);
+    let hatch_from = |segments: &[(Vec3, Vec3)]| -> Vec<(glam::Vec2, glam::Vec2)> {
+        let ruled: Vec<(glam::Vec2, glam::Vec2)> =
+            segments.iter().map(|(a, b)| (project(*a), project(*b))).collect();
         if view.style.is_pencil() {
             let wobble = crate::extrude::SECTION_HATCH_SPACING_MM
                 * crate::pencil::RULED_WOBBLE_OF_SPACING;
@@ -2598,6 +2615,7 @@ pub fn styled_view_geometry(
             ruled
         }
     };
+    let mut hatch = hatch_from(&hatch_world);
     let wireframe = || StyledViewGeometry {
         faces: Vec::new(),
         segments: edges.iter().map(|(a, b)| (project(*a), project(*b))).collect(),
@@ -2644,6 +2662,18 @@ pub fn styled_view_geometry(
             segments.push((project(a.lerp(*b, from)), project(a.lerp(*b, to))));
         }
     }
+    // Same pass for the hatch (#1908). It is a fill texture, not geometry, but it still
+    // sits in the world on the cut face — a body in front of that face has to hide it.
+    let visible_hatch: Vec<(Vec3, Vec3)> = hatch_world
+        .iter()
+        .flat_map(|(a, b)| {
+            occlusion
+                .visible_runs(*a, *b)
+                .into_iter()
+                .map(|(from, to)| (a.lerp(*b, from), a.lerp(*b, to)))
+        })
+        .collect();
+    hatch = hatch_from(&visible_hatch);
 
     // Shaded fills: front faces painted back-to-front, greyed by how squarely they face a
     // fixed key light up-and-left of the viewer. Coplanar triangles are gathered into one
@@ -5769,6 +5799,312 @@ label_hidden: false,
             );
         }
         assert!(HATCH_STROKE < MODEL_STROKE, "the hatch draws thinner than edges");
+    }
+
+    /// Two cuboids and a Colorful isometric drawing: the back one is sectioned, the front
+    /// one is not. Used by [#1908] — hatch and cut-face fill must not show through the
+    /// occluding body.
+    fn colorful_section_occluded_by_a_front_body() -> (crate::actions::AppState, crate::model::DrawingKey)
+    {
+        let mut state = crate::actions::AppState::default();
+        let mut back = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        // Origin is the base centre: the block occupies x,y ∈ [-20, 20], z ∈ [0, 80].
+        back.origin = [0.0, 0.0, 0.0];
+        back.width = "40".into();
+        back.depth = "40".into();
+        back.height = "80".into();
+        state.apply(crate::actions::Action::CreateShape { shape: back });
+        // Sit the uncut body on the isometric toward-camera ray from the cut-face centre,
+        // with a gap so the solids don't interpenetrate.
+        let mut front = crate::model::Primitive::new(crate::model::PrimitiveKind::Cuboid);
+        front.origin = [15.0, 15.0, 45.0];
+        front.width = "20".into();
+        front.depth = "20".into();
+        front.height = "20".into();
+        state.apply(crate::actions::Action::CreateShape { shape: front });
+        let material = |state: &crate::actions::AppState, name: &str| {
+            state
+                .doc
+                .materials
+                .iter()
+                .find(|(_, m)| m.name == name)
+                .map(|(k, _)| k)
+                .unwrap_or_else(|| panic!("built-in material {name}"))
+        };
+        let blue = material(&state, "Blue");
+        let red = material(&state, "Red");
+        state.apply(crate::actions::Action::SetBodyMaterial {
+            body: bkey(0),
+            material: Some(blue),
+        });
+        state.apply(crate::actions::Action::SetBodyMaterial {
+            body: bkey(1),
+            material: Some(red),
+        });
+        state.apply(crate::actions::Action::CreateCrossSection { name: None });
+        let section = state.doc.cross_sections.keys().next().expect("the view");
+        state.apply(crate::actions::Action::AddCrossSectionCut {
+            view: Some(section),
+            cut: crate::model::CrossSectionCut {
+                origin: glam::Vec3::ZERO,
+                normal: -glam::Vec3::X,
+                cut_bodies: Some(vec![bkey(0)]),
+                ..Default::default()
+            },
+        });
+        state.apply(crate::actions::Action::CreateDrawing { name: None });
+        let drawing = state.doc.drawings.keys().next().expect("the drawing");
+        state.apply(crate::actions::Action::AddDrawingView {
+            drawing,
+            bodies: vec![bkey(0), bkey(1)],
+            orientation: crate::model::DrawingOrientation::Isometric,
+        });
+        state.apply(crate::actions::Action::SetDrawingViewCrossSection {
+            drawing,
+            view: 0,
+            cross_section: Some(section),
+        });
+        state.apply(crate::actions::Action::SetDrawingViewStyle {
+            drawing,
+            view: 0,
+            style: crate::model::DrawingViewStyle::Colorful,
+        });
+        (state, drawing)
+    }
+
+    fn point_on_segment_2d(a: glam::Vec2, b: glam::Vec2, p: glam::Vec2, tol: f32) -> bool {
+        let ab = b - a;
+        let len2 = ab.length_squared();
+        if len2 < 1e-12 {
+            return (a - p).length() < tol;
+        }
+        let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+        (a + ab * t - p).length() < tol
+    }
+
+    /// #1908: a Colorful drawing's section hatch is a fill texture, but it still has to
+    /// lose to whatever solid stands in front of the cut — otherwise the hash marks (and the
+    /// cut body's color) read through an occluding body.
+    #[test]
+    fn colorful_section_hatch_does_not_show_through_a_body_in_front() {
+        let (state, drawing) = colorful_section_occluded_by_a_front_body();
+        let views = state.doc.drawings[drawing].views.clone();
+        let view = &views[0];
+        let (right, up) = resolved_view_axes(&views, view);
+        let toward = right.cross(up);
+        let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+        let occlusion = ViewOcclusion::for_view(&state.doc, &views, view).expect("a solid");
+        let world_hatch = section_hatch_world_segments(&state.doc, view);
+        assert!(!world_hatch.is_empty(), "the cut face is hatched");
+        let geo = styled_view_geometry(&state.doc, &views, view);
+        assert!(!geo.hatch.is_empty(), "some hatch remains on the exposed cut");
+        assert!(
+            geo.faces.iter().any(|f| f.tint == [232, 97, 92]),
+            "the front body still paints red"
+        );
+
+        let on_hatch = |q: glam::Vec2, tol: f32| {
+            geo.hatch.iter().any(|(ha, hb)| point_on_segment_2d(*ha, *hb, q, tol))
+        };
+
+        // A point on the cut face whose isometric ray hits the front cube's interior.
+        let behind = Vec3::new(0.0, 0.0, 40.0);
+        assert!(occlusion.hides(behind), "the front cube stands in front of the cut");
+        assert!(
+            !on_hatch(project(behind), 1.0),
+            "hatch must not run through the body that occludes the cut"
+        );
+
+        let mut hidden = 0usize;
+        let mut leaked = 0usize;
+        for (a, b) in &world_hatch {
+            for i in 1..6 {
+                let t = i as f32 / 6.0;
+                let p = a.lerp(*b, t);
+                if !occlusion.hides(p) {
+                    continue;
+                }
+                hidden += 1;
+                if on_hatch(project(p), 0.4) {
+                    leaked += 1;
+                }
+            }
+        }
+        assert!(
+            hidden >= 8,
+            "the front body should hide a stretch of hatch, hid {hidden} samples"
+        );
+        assert!(
+            leaked * 5 < hidden,
+            "too much occluded hatch still stroked: {leaked}/{hidden}"
+        );
+
+        // The cut body's blue fill must not paint over the red where the red is nearer.
+        let inside = |tris: &[[glam::Vec2; 3]], p: glam::Vec2| {
+            tris.iter().any(|t| {
+                let area2 = (t[1] - t[0]).perp_dot(t[2] - t[0]);
+                if area2.abs() < 1e-9 {
+                    return false;
+                }
+                let w0 = (t[1] - p).perp_dot(t[2] - p) / area2;
+                let w1 = (t[2] - p).perp_dot(t[0] - p) / area2;
+                let w2 = 1.0 - w0 - w1;
+                w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0
+            })
+        };
+        let depth_at = |(n, c): (Vec3, f32), p: glam::Vec2| {
+            (c - p.x * n.dot(right) - p.y * n.dot(up)) / n.dot(toward)
+        };
+        let mut checked = 0usize;
+        // Front cuboid: base centre (15, 15, 45), 20³ — sample its interior in world xy at
+        // mid-height and project.
+        for gy in 0..20 {
+            for gx in 0..20 {
+                let q = project(Vec3::new(
+                    7.0 + 16.0 * (gx as f32 + 0.5) / 20.0,
+                    7.0 + 16.0 * (gy as f32 + 0.5) / 20.0,
+                    55.0,
+                ));
+                let covering: Vec<usize> = (0..geo.faces.len())
+                    .filter(|&i| inside(&geo.faces[i].tris, q))
+                    .collect();
+                let Some(&painted) = covering.last() else {
+                    continue;
+                };
+                let shown = depth_at(geo.faces[painted].plane, q);
+                let nearest = covering
+                    .iter()
+                    .copied()
+                    .max_by(|&i, &j| {
+                        depth_at(geo.faces[i].plane, q)
+                            .total_cmp(&depth_at(geo.faces[j].plane, q))
+                    })
+                    .unwrap();
+                if (depth_at(geo.faces[nearest].plane, q) - shown).abs() > 1e-2 {
+                    continue;
+                }
+                if geo.faces[nearest].tint != [232, 97, 92] {
+                    continue;
+                }
+                checked += 1;
+                assert_eq!(
+                    geo.faces[painted].tint,
+                    [232, 97, 92],
+                    "at {q:?} the red body is in front but the page shows {:?}",
+                    geo.faces[painted].tint
+                );
+            }
+        }
+        assert!(checked >= 10, "should sample the red body, hit {checked}");
+    }
+
+    /// #1908: the reporter's drawing — a Colorful isometric of a blue sectioned shell with
+    /// a red body in front of the cut. The hatch (and the blue of the opened face) must not
+    /// read through the red.
+    #[test]
+    fn colorful_section_hatch_does_not_peek_through_the_reported_drawing() {
+        let bytes = std::fs::read("tests/fixtures/issue_1908.json").expect("fixture");
+        let doc = crate::storage::from_json_bytes(&bytes).expect("load");
+        let d = doc.drawings.values().next().expect("the drawing");
+        let view = d.views.first().expect("the projection");
+        assert_eq!(view.style, crate::model::DrawingViewStyle::Colorful);
+        let (right, up) = resolved_view_axes(&d.views, view);
+        let toward = right.cross(up);
+        let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+        let occlusion = ViewOcclusion::for_view(&doc, &d.views, view).expect("a solid");
+        let world_hatch = section_hatch_world_segments(&doc, view);
+        assert!(!world_hatch.is_empty(), "the cut face is hatched");
+        let geo = styled_view_geometry(&doc, &d.views, view);
+        let on_hatch = |q: glam::Vec2| {
+            geo.hatch.iter().any(|(ha, hb)| point_on_segment_2d(*ha, *hb, q, 0.4))
+        };
+        let mut hidden = 0usize;
+        let mut leaked = 0usize;
+        for (a, b) in &world_hatch {
+            for i in 1..8 {
+                let p = a.lerp(*b, i as f32 / 8.0);
+                if !occlusion.hides(p) {
+                    continue;
+                }
+                hidden += 1;
+                if on_hatch(project(p)) {
+                    leaked += 1;
+                }
+            }
+        }
+        assert!(
+            hidden >= 8,
+            "the red body hides some of the cut hatch, hid {hidden} samples"
+        );
+        assert!(
+            leaked * 5 < hidden,
+            "occluded hatch still stroked on the reported drawing: {leaked}/{hidden}"
+        );
+
+        let inside = |tris: &[[glam::Vec2; 3]], p: glam::Vec2| {
+            tris.iter().any(|t| {
+                let area2 = (t[1] - t[0]).perp_dot(t[2] - t[0]);
+                if area2.abs() < 1e-9 {
+                    return false;
+                }
+                let w0 = (t[1] - p).perp_dot(t[2] - p) / area2;
+                let w1 = (t[2] - p).perp_dot(t[0] - p) / area2;
+                let w2 = 1.0 - w0 - w1;
+                w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0
+            })
+        };
+        let depth_at = |(n, c): (Vec3, f32), p: glam::Vec2| {
+            (c - p.x * n.dot(right) - p.y * n.dot(up)) / n.dot(toward)
+        };
+        let red = [232u8, 97, 92];
+        let mut checked = 0usize;
+        let (mut lo, mut hi) = (glam::Vec2::splat(f32::INFINITY), glam::Vec2::splat(f32::NEG_INFINITY));
+        for f in geo.faces.iter().filter(|f| f.tint == red) {
+            for t in &f.tris {
+                for p in t {
+                    lo = lo.min(*p);
+                    hi = hi.max(*p);
+                }
+            }
+        }
+        assert!(lo.is_finite(), "the red body paints at least one face");
+        for gy in 0..40 {
+            for gx in 0..40 {
+                let q = glam::Vec2::new(
+                    lo.x + (hi.x - lo.x) * (gx as f32 + 0.5) / 40.0,
+                    lo.y + (hi.y - lo.y) * (gy as f32 + 0.5) / 40.0,
+                );
+                let covering: Vec<usize> = (0..geo.faces.len())
+                    .filter(|&i| inside(&geo.faces[i].tris, q))
+                    .collect();
+                let Some(&painted) = covering.last() else {
+                    continue;
+                };
+                let nearest = covering
+                    .iter()
+                    .copied()
+                    .max_by(|&i, &j| {
+                        depth_at(geo.faces[i].plane, q)
+                            .total_cmp(&depth_at(geo.faces[j].plane, q))
+                    })
+                    .unwrap();
+                if geo.faces[nearest].tint != red {
+                    continue;
+                }
+                checked += 1;
+                assert_eq!(
+                    geo.faces[painted].tint,
+                    red,
+                    "at {q:?} the red body is in front but the page shows {:?}",
+                    geo.faces[painted].tint
+                );
+                assert!(
+                    !on_hatch(q),
+                    "hatch still strokes over the red body at {q:?}"
+                );
+            }
+        }
+        assert!(checked >= 20, "should land on the red body, hit {checked}");
     }
 
     /// #1854: extruding onto a body consumes it and produces a new one. A drawing view of
