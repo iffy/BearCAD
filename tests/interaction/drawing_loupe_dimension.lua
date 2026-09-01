@@ -42,6 +42,9 @@ bearcad.ui.wait(10)
 
 local dims = bearcad.drawing_loupes{ drawing = d, view = 0 }[1].dimensions
 assert(#dims == 1, "clicking a magnified edge dimensions it on the loupe, got " .. #dims)
+-- The 60 mm edge runs through a 6 mm ring, so both ends continue past the crop (#1913).
+assert(dims[1].open_a and dims[1].open_b,
+  "a dimension whose edge leaves the loupe reports both ends open")
 -- It went on the loupe, not on the card: the view's own dimension list is untouched.
 assert(bearcad.drawing_views(d)[1].dimensions == 0,
   "the card keeps its own dimensions, got " .. bearcad.drawing_views(d)[1].dimensions)

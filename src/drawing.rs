@@ -1998,6 +1998,98 @@ pub fn dimension_line_geometry(
     }
 }
 
+/// Whether a projected point sits inside a loupe's detail circle, so a dimension end can
+/// close with an arrow there. An end outside means the measured edge continues past what
+/// the loupe shows (#1913).
+pub fn loupe_contains_point(p: glam::Vec2, center: glam::Vec2, r: f32) -> bool {
+    (p - center).length_squared() <= r * r + 1e-3
+}
+
+/// `true` at each end of projected edge `(a, b)` that lies inside the detail circle.
+pub fn loupe_dim_closed_ends(
+    a: glam::Vec2,
+    b: glam::Vec2,
+    center: glam::Vec2,
+    r: f32,
+) -> [bool; 2] {
+    [loupe_contains_point(a, center, r), loupe_contains_point(b, center, r)]
+}
+
+/// An architectural dimension drawn on a zoom loupe (#1849/#1913). Same layout as
+/// [`DimLineGeometry`], except a measured end that is **not** inside the detail circle
+/// has no arrow and no extension line: ISO 129 keeps arrows only at shown feature ends,
+/// and the open end finishes in dashes so the cropped bit is not read as the whole
+/// measurement.
+pub struct LoupeDimGeometry {
+    pub extensions: Vec<(glam::Vec2, glam::Vec2)>,
+    /// Full dimension line (for the length label), from the visible clipped segment.
+    pub line: (glam::Vec2, glam::Vec2),
+    /// Solid interior of the dimension line. `None` when the whole stroke is dashed.
+    pub solid: Option<(glam::Vec2, glam::Vec2)>,
+    /// Ends that continue past the loupe — stroke these dashed, with no arrow.
+    pub dashes: Vec<(glam::Vec2, glam::Vec2)>,
+    pub arrows: Vec<[glam::Vec2; 3]>,
+}
+
+/// Build [`LoupeDimGeometry`] for the magnified clipped edge `(a, b)`. `closed` is
+/// [`loupe_dim_closed_ends`] on the **unclipped** projected edge against the detail circle.
+pub fn loupe_dimension_geometry(
+    a: glam::Vec2,
+    b: glam::Vec2,
+    outward: glam::Vec2,
+    offset: f32,
+    arrow: f32,
+    closed: [bool; 2],
+) -> LoupeDimGeometry {
+    let full = dimension_line_geometry(a, b, outward, offset, arrow);
+    if closed == [true, true] {
+        return LoupeDimGeometry {
+            extensions: full.extensions.to_vec(),
+            line: full.line,
+            solid: Some(full.line),
+            dashes: Vec::new(),
+            arrows: full.arrows.to_vec(),
+        };
+    }
+    let (da, db) = full.line;
+    let along = (db - da).normalize_or_zero();
+    let len = (db - da).length();
+    // Long enough to read as "this continues", short enough to leave a solid middle
+    // for the label. A tiny cropped segment dashes almost to the remaining arrow.
+    let dash_span = if len < 1e-4 {
+        0.0
+    } else {
+        (arrow * 2.5).clamp(0.0, len * 0.4)
+    };
+    let mut extensions = Vec::new();
+    let mut arrows = Vec::new();
+    let mut dashes = Vec::new();
+    let mut solid_a = da;
+    let mut solid_b = db;
+    if closed[0] {
+        extensions.push(full.extensions[0]);
+        arrows.push(full.arrows[0]);
+    } else if dash_span > 1e-4 {
+        dashes.push((da, da + along * dash_span));
+        solid_a = da + along * dash_span;
+    }
+    if closed[1] {
+        extensions.push(full.extensions[1]);
+        arrows.push(full.arrows[1]);
+    } else if dash_span > 1e-4 {
+        dashes.push((db - along * dash_span, db));
+        solid_b = db - along * dash_span;
+    }
+    let solid = ((solid_b - solid_a).dot(along) > 1e-4).then_some((solid_a, solid_b));
+    LoupeDimGeometry {
+        extensions,
+        line: full.line,
+        solid,
+        dashes,
+        arrows,
+    }
+}
+
 /// The drawn form of an angle dimension (#1652): an arc centred on the corner the two edges
 /// make, sweeping from one edge to the other, with an arrowhead at each end and the degree
 /// label just outside it. Everything is in the view's projected 2D mm space — the angle is
@@ -3544,8 +3636,9 @@ fn render_view_geometry<C: Canvas>(
             let (sa, sb) = (to_screen(*a), to_screen(*b));
             canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, HATCH_STROKE);
         }
-        // Dimensions the loupe carries (#1849): drawn against the magnified copy of the
-        // edge, labelled with its real length.
+        // Dimensions the loupe carries (#1849/#1913): drawn against the magnified copy of
+        // the edge, labelled with its real length. A cropped end dashes instead of closing
+        // with an arrow.
         {
             let (c1, c2) = (d.detail.0, d.magnified.0);
             let zoom = loupe_zoom(loupe);
@@ -3567,16 +3660,27 @@ fn render_view_geometry<C: Canvas>(
                 // Same sizes the card's own dimensions use (they are set further down, where
                 // the view's dimensions are drawn; a loupe's are the same page distances).
                 let diag = extent.length().max(1.0);
-                let geom =
-                    dimension_line_geometry(ma, mb, outward, diag * 0.05, diag * 0.025);
+                let closed = loupe_dim_closed_ends(*a, *b, c1, loupe.radius.abs());
+                let geom = loupe_dimension_geometry(
+                    ma, mb, outward, diag * 0.05, diag * 0.025, closed,
+                );
                 let stroke_line = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
                     let (sp, sq) = (to_screen(p), to_screen(q));
                     canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, DIM_STROKE);
                 };
+                let stroke_dashed = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
+                    let (sp, sq) = (to_screen(p), to_screen(q));
+                    canvas.line_dashed(sp.x, sp.y, sq.x, sq.y, BLACK, DIM_STROKE);
+                };
                 for (p, q) in geom.extensions {
                     stroke_line(canvas, p, q);
                 }
-                stroke_line(canvas, geom.line.0, geom.line.1);
+                if let Some((p, q)) = geom.solid {
+                    stroke_line(canvas, p, q);
+                }
+                for (p, q) in geom.dashes {
+                    stroke_dashed(canvas, p, q);
+                }
                 for tri in geom.arrows {
                     let pts: Vec<(f32, f32)> = tri
                         .iter()
@@ -4371,6 +4475,62 @@ mod loupe_tests {
             ((end - c2).length() - l.to_radius).abs() < 1e-3,
             "a segment leaving the detail circle stops on the magnified rim, got {end:?}"
         );
+    }
+
+    /// #1913: an edge wholly inside the detail circle still gets a complete dimension —
+    /// arrows and extension lines at both ends, no dashes.
+    #[test]
+    fn loupe_dimension_stays_complete_when_the_edge_fits() {
+        let c = glam::Vec2::new(10.0, 5.0);
+        let a = glam::Vec2::new(8.0, 5.0);
+        let b = glam::Vec2::new(12.0, 5.0);
+        let closed = loupe_dim_closed_ends(a, b, c, 4.0);
+        assert_eq!(closed, [true, true]);
+        let g = loupe_dimension_geometry(a, b, glam::Vec2::new(0.0, 1.0), 2.0, 1.0, closed);
+        assert_eq!(g.arrows.len(), 2, "both arrows");
+        assert_eq!(g.extensions.len(), 2, "both witness lines");
+        assert!(g.dashes.is_empty(), "no dashes on a complete measurement");
+        assert_eq!(g.solid, Some(g.line));
+    }
+
+    /// #1913: an edge that crosses the circle is not a complete measurement of the cropped
+    /// bit. ISO 129 keeps arrows only at shown feature ends; the open end finishes in dashes
+    /// instead of an arrow.
+    #[test]
+    fn loupe_dimension_dashes_the_end_that_leaves_the_circle() {
+        let c = glam::Vec2::new(10.0, 5.0);
+        let r = 4.0;
+        let a = glam::Vec2::new(10.0, 5.0); // inside
+        let b = glam::Vec2::new(30.0, 5.0); // well outside
+        let closed = loupe_dim_closed_ends(a, b, c, r);
+        assert_eq!(closed, [true, false]);
+        let (ca, cb) = clip_segment_to_circle(a, b, c, r).expect("it crosses");
+        let g = loupe_dimension_geometry(ca, cb, glam::Vec2::new(0.0, 1.0), 2.0, 1.0, closed);
+        assert_eq!(g.arrows.len(), 1, "arrow only at the end that's in the loupe");
+        assert_eq!(g.extensions.len(), 1, "no witness line at the crop");
+        assert_eq!(g.dashes.len(), 1, "the open end finishes in dashes");
+        // The dash occupies the open end of the dimension line, not the closed one.
+        let (da, db) = g.line;
+        let (s, e) = g.dashes[0];
+        assert!((e - db).length() < 1e-3, "dashes meet the open end: {e:?} vs {db:?}");
+        assert!((s - da).length() > 1e-3, "dashes do not eat the closed end");
+    }
+
+    /// #1913: a long edge through the middle of the loupe continues both ways — dashes at
+    /// both ends, no arrows, so the label is not read as the length of the visible bit.
+    #[test]
+    fn loupe_dimension_dashes_both_ends_when_the_edge_crosses_through() {
+        let c = glam::Vec2::new(10.0, 5.0);
+        let a = glam::Vec2::new(-20.0, 5.0);
+        let b = glam::Vec2::new(40.0, 5.0);
+        let closed = loupe_dim_closed_ends(a, b, c, 4.0);
+        assert_eq!(closed, [false, false]);
+        let (ca, cb) = clip_segment_to_circle(a, b, c, 4.0).expect("it crosses");
+        let g = loupe_dimension_geometry(ca, cb, glam::Vec2::new(0.0, 1.0), 2.0, 1.0, closed);
+        assert!(g.arrows.is_empty(), "no arrows: neither end is in the loupe");
+        assert!(g.extensions.is_empty(), "no witness lines at the crop");
+        assert_eq!(g.dashes.len(), 2, "both ends finish in dashes");
+        assert!(g.solid.is_some(), "a solid middle remains for the label");
     }
 }
 
