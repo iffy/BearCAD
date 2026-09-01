@@ -16,12 +16,12 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.circle{ x = 0, y = 0, r = 10 }
-bearcad.plane{ offset = 15 }
-bearcad.begin_sketch{ kind = "plane", index = 3 }
-bearcad.circle{ x = 3, y = 0, r = 4 }
+local base = bearcad.circle{ x = 0, y = 0, r = 10 }
+local up = bearcad.plane{ offset = 15 }
+bearcad.begin_sketch{ kind = "plane", index = up }
+local top = bearcad.circle{ x = 3, y = 0, r = 4 }
 bearcad.exit_sketch()
-bearcad.loft{ circles = {0, 1}, name = "Horn" }
+bearcad.loft{ profiles = {base, top}, name = "Horn" }
 
 -- Hide the three datum planes a new document opens with.
 bearcad.set_visible({ kind = "plane" }, false)

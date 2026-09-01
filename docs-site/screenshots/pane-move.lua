@@ -17,12 +17,12 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("parameters", "hide")
 bearcad.ui.help(true)
 
-bearcad.rect{ width = 20, height = 14, name = "Block" }
+local sides = bearcad.rect{ width = 20, height = 14, name = "Block" }
 bearcad.exit_sketch()
-bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 8, name = "Block" }
+local box = bearcad.extrude{ profiles = sides, distance = 8, name = "Block" }
 
 bearcad.ui.tool("move")
-bearcad.select({ kind = "body", index = 0 })
+bearcad.select(box)
 bearcad.ui.wait(6)
 -- Snap is the mode the tool starts in.
 bearcad.ui.screenshot(out .. "-snap.png", "context")

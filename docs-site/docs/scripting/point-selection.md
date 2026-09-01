@@ -20,11 +20,12 @@ A line handle names the same points: `line:start()` or `line:endpoint("end")`.
 ## Selecting a rectangle corner
 
 A rect is four separate lines, so a corner is a line endpoint. Lines run
-counterclockwise from the `(x, y)` origin corner — 0 bottom, 1 right, 2 top, 3 left —
-and each corner is the `start` of the line with the same number:
+counterclockwise from the `(x, y)` origin corner — bottom, right, top, left —
+and each corner is the `start` of that side:
 
 ```lua
-bearcad.select{ kind = "line", index = 2, endpoint = "start" }  -- the third corner (top-right)
+local sides = bearcad.rect{ width = 80, height = 50 }
+bearcad.select(sides[3]:start())  -- the third corner (top-right)
 ```
 
 ## Selecting a circle's center
@@ -69,7 +70,7 @@ it's drawn on:
 ```lua
 bearcad.select{
     kind = "face",
-    face = { kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = { 0, 1, 2, 3 }, top = true },
+    face = { kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = sides, top = true },
     index = 2,
 }
 ```
@@ -81,7 +82,7 @@ edge from that corner to the next:
 ```lua
 bearcad.select{
     kind = "face",
-    face = { kind = "extrude_side", extrusion = 0, profile = "polygon", profile_lines = { 0, 1, 2, 3 }, edge = 0 },
+    face = { kind = "extrude_side", extrusion = 0, profile = "polygon", profile_lines = sides, edge = 0 },
     index = 0,
     edge = true,
 }
@@ -140,5 +141,5 @@ bearcad.constrain("coincident", a:endpoint("end"), b:start())
 ```
 
 Combine with
-[`bearcad.extrude{ polygon = {...} }`](./declarative-modeling#a-closed-polygon-from-plain-lines-extruded)
+[`bearcad.extrude{ profiles = {a, b, c} }`](./declarative-modeling#a-closed-polygon-from-plain-lines-extruded)
 to build and extrude an arbitrary closed profile without any GUI interaction.

@@ -3,8 +3,8 @@
 
 bearcad.new()
 
-local box = bearcad.rect{ width = 80, height = 50, name = "Base" }
-bearcad.extrude{ profiles = box, distance = 20, name = "Block" }
+local sides = bearcad.rect{ width = 80, height = 50, name = "Base" }
+local box = bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
 
 bearcad.export_step("block.step")
 

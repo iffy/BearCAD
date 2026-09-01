@@ -5,6 +5,7 @@ bearcad.new()
 
 -- One call: enters a sketch on the default (XY) ground plane if needed, then creates an
 -- 80 x 50 mm rectangle with locked dimensions and names it.
-bearcad.rect{ width = 80, height = 50, name = "Preview box" }
+local sides = bearcad.rect{ width = 80, height = 50, name = "Preview box" }
+assert(#sides == 4)
 
 bearcad.quit()

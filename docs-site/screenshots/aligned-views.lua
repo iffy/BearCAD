@@ -13,23 +13,23 @@ local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/aligned-views.png"
 bearcad.ui.tool_hints(false)
 bearcad.new()
 -- An L-profile so the top/bottom view reads as a clearly different shape from the front.
-bearcad.line{ x = 0,  y = 0,  x1 = 40, y1 = 0 }
-bearcad.line{ x = 40, y = 0,  x1 = 40, y1 = 12 }
-bearcad.line{ x = 40, y = 12, x1 = 12, y1 = 12 }
-bearcad.line{ x = 12, y = 12, x1 = 12, y1 = 30 }
-bearcad.line{ x = 12, y = 30, x1 = 0,  y1 = 30 }
-bearcad.line{ x = 0,  y = 30, x1 = 0,  y1 = 0 }
-for i = 0, 5 do
-  local j = (i + 1) % 6
-  bearcad.constrain("coincident",
-    { kind = "line", index = i, endpoint = "end" },
-    { kind = "line", index = j, endpoint = "start" })
+local loop = {
+  bearcad.line{ x = 0,  y = 0,  x1 = 40, y1 = 0 },
+  bearcad.line{ x = 40, y = 0,  x1 = 40, y1 = 12 },
+  bearcad.line{ x = 40, y = 12, x1 = 12, y1 = 12 },
+  bearcad.line{ x = 12, y = 12, x1 = 12, y1 = 30 },
+  bearcad.line{ x = 12, y = 30, x1 = 0,  y1 = 30 },
+  bearcad.line{ x = 0,  y = 30, x1 = 0,  y1 = 0 },
+}
+for i = 1, #loop do
+  local nxt = loop[i % #loop + 1]
+  bearcad.constrain("coincident", loop[i]:endpoint("end"), nxt:start())
 end
 bearcad.exit_sketch()
-bearcad.extrude{ polygon = { 0, 1, 2, 3, 4, 5 }, distance = 20, name = "Bracket" }
+local bracket = bearcad.extrude{ profiles = loop, distance = 20, name = "Bracket" }
 
 local d = bearcad.drawing{ name = "Bracket" }
-bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }   -- view 0: shows the L
+bearcad.drawing_view{ drawing = d, body = bracket, orientation = "top" }   -- view 0: shows the L
 bearcad.drawing_move_view{ drawing = d, view = 0, x = 0.32, y = 0.38 }
 bearcad.drawing_align_view{ drawing = d, parent = 0, dir = "right" } -- view 1
 bearcad.drawing_move_view{ drawing = d, view = 1, x = 0.66, y = 0.38 }

@@ -1311,7 +1311,12 @@ fn parse_extrude_profile(lua: &Lua, table: &Table) -> mlua::Result<crate::model:
             profile_index,
         )?)),
         "polygon" => {
-            let lines: Vec<usize> = table.get("profile_lines").or_else(|_| table.get("lines"))?;
+            let lines = table
+                .ordinal_list_opt("profile_lines")?
+                .or(table.ordinal_list_opt("lines")?)
+                .ok_or_else(|| {
+                    mlua::Error::external("polygon profile requires `profile_lines`")
+                })?;
             Ok(crate::model::ExtrudeFace::Polygon(line_keys_from_ordinals(
                 lua, lines,
             )?))
@@ -2972,7 +2977,7 @@ fn parse_move_point(
             })?;
         return Ok(Some(crate::model::MovePointRef::ImageAnchor { image, anchor }));
     }
-    let body = body_key_from_ordinal(lua, t.get("body")?)?;
+    let body = body_key_from_ordinal(lua, t.ordinal_req("body")?)?;
     let mm = |v: Vec<f32>| -> mlua::Result<[i32; 3]> {
         if v.len() != 3 {
             return Err(mlua::Error::external(format!(
@@ -3068,7 +3073,7 @@ fn parse_mate_ref(
     }
     // A hole's or a shaft's centre line (#1013).
     if let Some(v) = t.get::<Option<Vec<f32>>>("hole_axis")? {
-        let body = body_key_from_ordinal(lua, t.get("body")?)?;
+        let body = body_key_from_ordinal(lua, t.ordinal_req("body")?)?;
         let d: Vec<f32> = t
             .get("direction")
             .map_err(|_| mlua::Error::external(format!("`{what}.hole_axis` needs a `direction`")))?;
@@ -3092,7 +3097,7 @@ fn parse_mate_ref(
         return Ok(Some(crate::model::MateRef::Axis(axis)));
     }
     if let Some(v) = t.get::<Option<Vec<f32>>>("face")? {
-        let body = body_key_from_ordinal(lua, t.get("body")?)?;
+        let body = body_key_from_ordinal(lua, t.ordinal_req("body")?)?;
         let n: Vec<f32> = t
             .get("normal")
             .map_err(|_| mlua::Error::external(format!("`{what}.face` needs a `normal`")))?;
@@ -3103,7 +3108,7 @@ fn parse_mate_ref(
         }));
     }
     if let Some(ends) = t.get::<Option<Vec<Vec<f32>>>>("edge")? {
-        let body = body_key_from_ordinal(lua, t.get("body")?)?;
+        let body = body_key_from_ordinal(lua, t.ordinal_req("body")?)?;
         if ends.len() != 2 {
             return Err(mlua::Error::external(format!(
                 "`{what}.edge` must be two {{x, y, z}} points"
@@ -3116,7 +3121,7 @@ fn parse_mate_ref(
         }));
     }
     if let Some(ends) = t.get::<Option<Vec<Vec<f32>>>>("midpoint")? {
-        let body = body_key_from_ordinal(lua, t.get("body")?)?;
+        let body = body_key_from_ordinal(lua, t.ordinal_req("body")?)?;
         if ends.len() != 2 {
             return Err(mlua::Error::external(format!(
                 "`{what}.midpoint` must be two {{x, y, z}} points"
@@ -10862,7 +10867,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             };
             // A view projects a body, several bodies, a component, or a sketch (#278/#403/#1190/#1191).
             let body: Option<usize> = opts.ordinal_opt("body")?;
-            let bodies: Option<Vec<usize>> = opts.get("bodies")?;
+            let bodies: Option<Vec<usize>> = opts.ordinal_list_opt("bodies")?;
             let component: Option<usize> = opts.ordinal_opt("component")?;
             let sketch: Option<usize> = opts.ordinal_opt("sketch")?;
             // A whole cross-section view can be imported too (#1689): the model's bodies, cut.
@@ -10962,7 +10967,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let drawing: usize = opts.ordinal_req("drawing")?;
             let view: usize = opts.ordinal_req("view")?;
             let body: Option<usize> = opts.ordinal_opt("body")?;
-            let bodies: Option<Vec<usize>> = opts.get("bodies")?;
+            let bodies: Option<Vec<usize>> = opts.ordinal_list_opt("bodies")?;
             let component: Option<usize> = opts.ordinal_opt("component")?;
             let source_count = usize::from(body.is_some())
                 + usize::from(bodies.is_some())
@@ -15056,6 +15061,13 @@ pub mod tests {
             local box = bearcad.extrude{ polygon = sides, distance = 5 }
             assert(box:kind() == "body", "extrude returns the body, got " .. box:kind())
             assert(box:index() == 0, "the only body is ordinal 0")
+
+            -- Face specs take the same line handles (not {0,1,2,3}).
+            bearcad.begin_sketch{
+              kind = "extrude_cap", extrusion = 0,
+              profile = "polygon", profile_lines = sides, top = true,
+            }
+            bearcad.exit_sketch()
 
             -- Ordinals shift under your feet; the handle does not.
             local plate = bearcad.cuboid{ width = 4, depth = 4, height = 4 }

@@ -44,25 +44,20 @@ local kinds = {
   { kind = "screw", label = "Screw", rod = true, lead = 4, position = 720 },
 }
 
--- Build one kind's pair at (ox, oy) — the base body first, then the moveable one —
--- advancing the sketch's line/circle counters in `idx`. Returns the mate that places the
--- moveable body `b` against the base `a`: a face on a face, plus a line-up row where the
--- kind needs a direction to travel in.
-local function build_pair(spec, ox, oy, idx, a, b)
+-- Build one kind's pair at (ox, oy) — the base body first, then the moveable one.
+-- Returns the mate that places the moveable body against the base: a face on a face,
+-- plus a line-up row where the kind needs a direction to travel in — and the two bodies.
+local function build_pair(spec, ox, oy)
   if spec.rod then
-    bearcad.rect{ x = ox, y = oy, width = 30, height = 20 }
-    local plate = { idx.line, idx.line + 1, idx.line + 2, idx.line + 3 }
-    idx.line = idx.line + 4
-    bearcad.circle{ x = ox + 15, y = oy + 10, r = 4 }
-    bearcad.circle{ x = ox + 15, y = oy + 10, r = 3.5 }
-    local hole, rod = idx.circle, idx.circle + 1
-    idx.circle = idx.circle + 2
+    local plate = bearcad.rect{ x = ox, y = oy, width = 30, height = 20 }
+    local hole = bearcad.circle{ x = ox + 15, y = oy + 10, r = 4 }
+    local rod = bearcad.circle{ x = ox + 15, y = oy + 10, r = 3.5 }
     -- The plate is the rectangle minus the hole; the rod passes through it.
-    bearcad.extrude{
+    local a = bearcad.extrude{
       boolean = { op = "difference", a = { polygon = plate }, b = { circle = hole } },
       distance = 5,
     }
-    bearcad.extrude{ circle = rod, distance = 24, symmetric = true }
+    local b = bearcad.extrude{ profiles = rod, distance = 24, symmetric = true }
     -- The rod's lower cap onto the plate's underside, both facing the same way, so the rod
     -- stands through the hole it was cut for and screws along that face's normal.
     return {
@@ -71,15 +66,12 @@ local function build_pair(spec, ox, oy, idx, a, b)
         fixed  = face_facing(a, {0, 0, -1}),
         flip = true,
       },
-    }
+    }, a, b
   end
-  bearcad.rect{ x = ox, y = oy, width = 30, height = 20 }
-  local slab = { idx.line, idx.line + 1, idx.line + 2, idx.line + 3 }
-  bearcad.rect{ x = ox + 40, y = oy, width = 25, height = 8 }
-  local arm = { idx.line + 4, idx.line + 5, idx.line + 6, idx.line + 7 }
-  idx.line = idx.line + 8
-  bearcad.extrude{ polygon = slab, distance = 5 }
-  bearcad.extrude{ polygon = arm, distance = 5 }
+  local slab = bearcad.rect{ x = ox, y = oy, width = 30, height = 20 }
+  local arm = bearcad.rect{ x = ox + 40, y = oy, width = 25, height = 8 }
+  local a = bearcad.extrude{ profiles = slab, distance = 5 }
+  local b = bearcad.extrude{ profiles = arm, distance = 5 }
   -- The arm's inner face onto the slab's outer one, so it stands against the slab.
   local mate = {
     face = { moving = face_facing(b, {-1, 0, 0}), fixed = face_facing(a, {1, 0, 0}) },
@@ -92,7 +84,7 @@ local function build_pair(spec, ox, oy, idx, a, b)
       },
     }
   end
-  return mate
+  return mate, a, b
 end
 
 for _, spec in ipairs(kinds) do
@@ -101,11 +93,11 @@ for _, spec in ipairs(kinds) do
   bearcad.ui.pane("context", "hide")
   bearcad.ui.pane("parameters", "hide")
 
-  local mate = build_pair(spec, 0, 0, { line = 0, circle = 0 }, 0, 1)
+  local mate, base, moveable = build_pair(spec, 0, 0)
   bearcad.exit_sketch()
 
   bearcad.joint{
-    a = 0, b = 1, kind = spec.kind, lead = spec.lead,
+    a = base, b = moveable, kind = spec.kind, lead = spec.lead,
     face = mate.face, line_up = mate.line_up,
     position = spec.position, position2 = spec.position2, position3 = spec.position3,
   }
@@ -127,19 +119,17 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-local idx = { line = 0, circle = 0 }
 for i, spec in ipairs(kinds) do
   local col = (i - 1) % 4
   local row = math.floor((i - 1) / 4)
   local ox = col * 100
   local oy = row * -70
-  local base = (i - 1) * 2
-  local mate = build_pair(spec, ox, oy, idx, base, base + 1)
+  local mate, base, moveable = build_pair(spec, ox, oy)
   -- Named after their joint, so the linked document reads as eight labelled pairs.
-  bearcad.set_name(bearcad.element("body", base), spec.label .. " Base")
-  bearcad.set_name(bearcad.element("body", base + 1), spec.label .. " Moveable")
+  bearcad.set_name(base, spec.label .. " Base")
+  bearcad.set_name(moveable, spec.label .. " Moveable")
   bearcad.joint{
-    a = base, b = base + 1, kind = spec.kind, lead = spec.lead,
+    a = base, b = moveable, kind = spec.kind, lead = spec.lead,
     face = mate.face, line_up = mate.line_up,
     position = spec.position, position2 = spec.position2, position3 = spec.position3,
   }

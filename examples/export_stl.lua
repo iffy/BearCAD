@@ -4,10 +4,10 @@
 bearcad.new()
 
 -- 80 x 50 mm rectangle on the default ground plane...
-local box = bearcad.rect{ width = 80, height = 50, name = "Base" }
+local sides = bearcad.rect{ width = 80, height = 50, name = "Base" }
 
 -- ...extruded 20 mm into a solid body.
-bearcad.extrude{ profiles = box, distance = 20, name = "Block" }
+local box = bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
 
 -- Export every body in the document to an STL file.
 bearcad.export_stl("block.stl")

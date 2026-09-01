@@ -17,18 +17,18 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("parameters", "hide")
 bearcad.ui.help(true)
 
-bearcad.rect{ width = 40, height = 30, name = "Profile" }
+local sides = bearcad.rect{ width = 40, height = 30, name = "Profile" }
 
 -- In a sketch: one corner picked, so the picker shows a filled count.
 bearcad.ui.tool("fillet")
-bearcad.select({ kind = "line", index = 1, endpoint = "end" })
+bearcad.select(sides[2]:endpoint("end"))
 bearcad.ui.wait(6)
 bearcad.ui.screenshot(out .. "-sketch.png", "context")
 
 -- On a solid: the edge set, empty as the tool starts.
 bearcad.ui.tool("select")
 bearcad.clear_selection()
-bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
+bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
 bearcad.exit_sketch()
 bearcad.clear_selection()
 bearcad.ui.tool("fillet")

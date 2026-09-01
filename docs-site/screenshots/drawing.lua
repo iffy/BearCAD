@@ -16,12 +16,12 @@ local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/drawing.png"
 bearcad.ui.tool_hints(false)
 
 bearcad.new()
-bearcad.rect{ width = 60, height = 35, name = "Plate" }
-bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 12, name = "Block" }
+local sides = bearcad.rect{ width = 60, height = 35, name = "Plate" }
+local box = bearcad.extrude{ profiles = sides, distance = 12, name = "Block" }
 
 local d = bearcad.drawing{ name = "Plate" }
-bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
-bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
+bearcad.drawing_view{ drawing = d, body = box, orientation = "front" }
+bearcad.drawing_view{ drawing = d, body = box, orientation = "top" }
 bearcad.drawing_move_view{ drawing = d, view = 0, x = 0.3, y = 0.62 }
 bearcad.drawing_move_view{ drawing = d, view = 1, x = 0.7, y = 0.35 }
 

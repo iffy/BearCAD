@@ -16,17 +16,20 @@ bearcad.new()
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.rect{ x = 0, y = 0, width = 30, height = 20, name = "Block" }
+local sides = bearcad.rect{ x = 0, y = 0, width = 30, height = 20, name = "Block" }
 bearcad.exit_sketch()
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 16, name = "Block" }
+local box = bearcad.extrude{ profiles = sides, distance = 16, name = "Block" }
 
 -- A cutting plane parallel to the ground, halfway up the block.
-bearcad.plane{ offset = 8 }
-bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 3 }},
-               name = "Halved" }
+local cutter = bearcad.plane{ offset = 8 }
+local parts = bearcad.slice{
+  bodies = {box},
+  cutters = {{ kind = "construction_plane", index = cutter }},
+  name = "Halved",
+}
 
 -- Nudge the two fragments apart so the cut is visible.
-bearcad.move_bodies{ bodies = {1}, z = 6 }
+bearcad.move_bodies{ bodies = {parts[1]}, z = 6 }
 
 -- Hide the three datum planes a new document opens with.
 bearcad.set_visible({ kind = "plane" }, false)

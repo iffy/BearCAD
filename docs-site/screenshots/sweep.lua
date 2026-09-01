@@ -19,18 +19,18 @@ bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
 -- Profile: a circle on the ground plane.
-bearcad.circle{ x = 0, y = 0, r = 5, name = "Profile" }
+local profile = bearcad.circle{ x = 0, y = 0, r = 5, name = "Profile" }
 bearcad.exit_sketch()
 
 -- Path: on a vertical plane through the origin — straight up 20 mm, then a curve
 -- bending over to the side.
-bearcad.plane{ origin = { 0, 0, 0 }, normal = { 0, 1, 0 }, name = "Path plane" }
-bearcad.begin_sketch{ kind = "plane", index = 3 }
-bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 20 }
-bearcad.line{ x = 0, y = 20, x1 = 25, y1 = 38, bezier = { { 0, 30 }, { 14, 38 } } }
+local path_plane = bearcad.plane{ origin = { 0, 0, 0 }, normal = { 0, 1, 0 }, name = "Path plane" }
+bearcad.begin_sketch{ kind = "plane", index = path_plane }
+local up = bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 20 }
+local over = bearcad.line{ x = 0, y = 20, x1 = 25, y1 = 38, bezier = { { 0, 30 }, { 14, 38 } } }
 bearcad.exit_sketch()
 
-bearcad.sweep{ circle = 0, path = { 0, 1 }, name = "Tube" }
+bearcad.sweep{ profiles = profile, path = { up, over }, name = "Tube" }
 
 -- Hide the three datum planes a new document opens with.
 bearcad.set_visible({ kind = "plane" }, false)

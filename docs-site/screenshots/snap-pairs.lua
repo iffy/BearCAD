@@ -45,15 +45,16 @@ local function scene()
   bearcad.ui.pane("context", "hide")
   bearcad.ui.pane("parameters", "hide")
 
-  bearcad.rect{ x = 0, y = 0, width = 40, height = 30, name = "Plate" }
+  local plate_sides = bearcad.rect{ x = 0, y = 0, width = 40, height = 30, name = "Plate" }
   bearcad.exit_sketch()
-  bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = TOP, name = "Plate" }
+  local plate = bearcad.extrude{ profiles = plate_sides, distance = TOP, name = "Plate" }
 
-  bearcad.plane{ offset = PARK, name = "Park" }
-  bearcad.begin_sketch{ kind = "plane", index = 3 }
-  bearcad.rect{ x = 46, y = 2, width = 22, height = 9, name = "Slab" }
+  local park = bearcad.plane{ offset = PARK, name = "Park" }
+  bearcad.begin_sketch{ kind = "plane", index = park }
+  local slab_sides = bearcad.rect{ x = 46, y = 2, width = 22, height = 9, name = "Slab" }
   bearcad.exit_sketch()
-  bearcad.extrude{ polygon = { 4, 5, 6, 7 }, distance = 5, name = "Slab" }
+  local slab = bearcad.extrude{ profiles = slab_sides, distance = 5, name = "Slab" }
+  return plate, slab
 end
 
 -- Same framing for all three, so only the ghost's pose changes between them: a clean stage
@@ -75,36 +76,36 @@ local function shoot(name)
 end
 
 -- A alone: the ghost sits where start A meets end A, facing exactly as the slab does.
-scene()
+local plate, slab = scene()
 bearcad.ui.begin_move{
-  bodies = { 1 },
-  from = { body = 1, vertex = START_A },
-  to   = { body = 0, on_edge = END_A },
+  bodies = { slab },
+  from = { body = slab, vertex = START_A },
+  to   = { body = plate, on_edge = END_A },
 }
 shoot("snap-pairs-a")
 
 -- A and B: the ghost also turns about end A until start B points at end B.
-scene()
+plate, slab = scene()
 bearcad.ui.begin_move{
-  bodies = { 1 },
-  from   = { body = 1, vertex = START_A },
-  to     = { body = 0, on_edge = END_A },
-  from_b = { body = 1, vertex = START_B },
-  to_b   = { body = 0, on_edge = END_B },
+  bodies = { slab },
+  from   = { body = slab, vertex = START_A },
+  to     = { body = plate, on_edge = END_A },
+  from_b = { body = slab, vertex = START_B },
+  to_b   = { body = plate, on_edge = END_B },
 }
 shoot("snap-pairs-ab")
 
 -- A, B and C: the ghost also spins about the end A → end B line until start C points at
 -- end C, standing it on its long edge. Nothing is left to choose.
-scene()
+plate, slab = scene()
 bearcad.ui.begin_move{
-  bodies = { 1 },
-  from   = { body = 1, vertex = START_A },
-  to     = { body = 0, on_edge = END_A },
-  from_b = { body = 1, vertex = START_B },
-  to_b   = { body = 0, on_edge = END_B },
-  from_c = { body = 1, vertex = START_C },
-  to_c   = { body = 0, on_edge = END_C },
+  bodies = { slab },
+  from   = { body = slab, vertex = START_A },
+  to     = { body = plate, on_edge = END_A },
+  from_b = { body = slab, vertex = START_B },
+  to_b   = { body = plate, on_edge = END_B },
+  from_c = { body = slab, vertex = START_C },
+  to_c   = { body = plate, on_edge = END_C },
 }
 shoot("snap-pairs-abc")
 

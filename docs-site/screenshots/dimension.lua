@@ -16,14 +16,12 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }   -- 0 base
-bearcad.line{ x = 0, y = 0, x1 = 30, y1 = 22 }  -- 1 tilted leg
-bearcad.constrain("coincident",
-  { kind = "line", index = 0, endpoint = "start" },
-  { kind = "line", index = 1, endpoint = "start" })
-bearcad.dimension{ kind = "line", index = 0, value = "40mm" }
-bearcad.dimension{ kind = "line", index = 1, value = "37mm" }
-bearcad.dimension{ kind = "angle", a = 0, b = 1, value = "36deg", sign = 1 }
+local base = bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
+local leg = bearcad.line{ x = 0, y = 0, x1 = 30, y1 = 22 }
+bearcad.constrain("coincident", base:start(), leg:start())
+bearcad.dimension{ kind = "line", index = base, value = "40mm" }
+bearcad.dimension{ kind = "line", index = leg, value = "37mm" }
+bearcad.dimension{ kind = "angle", a = base, b = leg, value = "36deg", sign = 1 }
 
 bearcad.clear_selection()
 bearcad.ui.tool("dimension")

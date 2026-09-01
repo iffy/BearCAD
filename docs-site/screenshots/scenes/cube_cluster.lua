@@ -49,24 +49,20 @@ for z = 0, 1 do
         height = size,
         name = spec.name,
       }
-      bearcad.set_material{ body = i - 1, material = spec.material }
+      bearcad.set_material{ body = cubes[i], material = spec.material }
     end
   end
 end
 
 -- Same size as the corners, centred in the cluster so it overlaps all eight.
-bearcad.cuboid{
+local centre = bearcad.cuboid{
   at = { 0, 0, step / 2 },
   width = size,
   depth = size,
   height = size,
   name = "Centre",
 }
-bearcad.set_material{ body = 8, material = 9 }
-
-local function last_body()
-  return bearcad.count("body") - 1
-end
+bearcad.set_material{ body = centre, material = 9 }
 
 local function vertical_sides()
   return {
@@ -80,8 +76,8 @@ end
 -- Orange (right-front-top): a circle through the centre of the top face, cut
 -- down through the cube. Sketch (0, 0) is the top face's −u −v corner.
 bearcad.begin_sketch(cubes[6]:face("top"))
-bearcad.circle{ x = size / 2, y = size / 2, r = 5, name = "Hole" }
-bearcad.extrude{ circle = 0, distance = -(size + 2), body = "cut" }
+local hole = bearcad.circle{ x = size / 2, y = size / 2, r = 5, name = "Hole" }
+bearcad.extrude{ profiles = hole, distance = -(size + 2), body = "cut" }
 bearcad.exit_sketch()
 bearcad.set_visible({ kind = "sketch", index = 0 }, false)
 
@@ -91,26 +87,26 @@ bearcad.set_visible({ kind = "sketch", index = 0 }, false)
 -- as a circle inside the wall.
 local green = at[2]
 local bite_r = size / 2 + 1
-bearcad.sphere{
+local bite = bearcad.sphere{
   at = { green[1] + size / 2, green[2], green[3] + size / 2 - bite_r },
   radius = bite_r,
   name = "Bite",
 }
-bearcad.combine{ op = "cut", a = {1}, b = { last_body() } }
-bearcad.set_material{ body = last_body(), material = 2 }
+local cut = bearcad.combine{ op = "cut", a = { cubes[2] }, b = { bite } }
+bearcad.set_material{ body = cut, material = 2 }
 
 -- Purple (left-front-top): chamfer the four vertical sides.
-bearcad.chamfer{
+local chamfered = bearcad.chamfer{
   body = cubes[5],
   edges = vertical_sides(),
   distance = 4,
 }
-bearcad.set_material{ body = last_body(), material = 5 }
+bearcad.set_material{ body = chamfered, material = 5 }
 
 -- Pink (right-back-top): fillet the four vertical sides.
-bearcad.fillet{
+local filleted = bearcad.fillet{
   body = cubes[8],
   edges = vertical_sides(),
   radius = 4,
 }
-bearcad.set_material{ body = last_body(), material = 8 }
+bearcad.set_material{ body = filleted, material = 8 }

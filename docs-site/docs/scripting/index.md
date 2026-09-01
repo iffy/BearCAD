@@ -27,7 +27,7 @@ is the point.
 ```lua
 -- Declarative (preferred): describe the geometry directly.
 bearcad.new()
-bearcad.rect{ width = 80, height = 50, name = "Main box" }
+local sides = bearcad.rect{ width = 80, height = 50, name = "Main box" }
 
 -- Simulated interaction (bearcad.ui.*): only when the interaction matters.
 bearcad.ui.tool("rectangle")

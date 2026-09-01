@@ -17,21 +17,18 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
--- Plate (blue) with a hole through it. A cut makes a new body, so read the index back
--- rather than assuming it.
-bearcad.cuboid{ width = 60, depth = 40, height = 10, name = "Plate" }
+-- Plate (blue) with a hole through it. A cut makes a new body; hold the handle it returns.
+local plate = bearcad.cuboid{ width = 60, depth = 40, height = 10, name = "Plate" }
 bearcad.begin_sketch{ kind = "primitive_face", primitive = 0, face = "top" }
-bearcad.circle{ x = 18, y = 20, r = 7, name = "Hole" }
-bearcad.extrude{ circle = 0, distance = -14, body = "cut" }
+local hole = bearcad.circle{ x = 18, y = 20, r = 7, name = "Hole" }
+plate = bearcad.extrude{ profiles = hole, distance = -14, body = "cut" }
 bearcad.exit_sketch()
 bearcad.set_visible({ kind = "sketch", index = 0 }, false)
-local plate = bearcad.count("body") - 1
 bearcad.set_material{ body = plate, material = 1 }
 
 -- A smaller block (orange) standing on it, so the styles that keep material color have two
 -- to hold rather than one flat tone.
-bearcad.cuboid{ at = { 14, 0, 10 }, width = 20, depth = 20, height = 18, name = "Boss" }
-local boss = bearcad.count("body") - 1
+local boss = bearcad.cuboid{ at = { 14, 0, 10 }, width = 20, depth = 20, height = 18, name = "Boss" }
 bearcad.set_material{ body = boss, material = 6 }
 
 local d = bearcad.drawing{}

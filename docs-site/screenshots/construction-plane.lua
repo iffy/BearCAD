@@ -16,8 +16,8 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.rect{ x = 0, y = 0, width = 60, height = 40, name = "Base" }
-bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 15, name = "Block" }
+local sides = bearcad.rect{ x = 0, y = 0, width = 60, height = 40, name = "Base" }
+bearcad.extrude{ profiles = sides, distance = 15, name = "Block" }
 bearcad.exit_sketch()
 
 -- A construction plane 35 mm above the ground, with a circle sketched on it.

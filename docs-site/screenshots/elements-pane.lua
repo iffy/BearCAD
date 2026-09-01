@@ -16,10 +16,8 @@ local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/elements-pane.png"
 bearcad.ui.tool_hints(false)
 
 bearcad.new()
-bearcad.rect{ width = 80, height = 50, name = "Plate" }
--- Explicit closed-loop extrude (the `rect = 0` shorthand currently wedges the
--- screenshot render); this builds the same sketch -> extrusion -> body tree.
-bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
+local sides = bearcad.rect{ width = 80, height = 50, name = "Plate" }
+bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
 
 -- Make sure the Elements pane is shown (it is by default); hide the other side
 -- panes so the window reads as pane + viewport without extra chrome (#150).

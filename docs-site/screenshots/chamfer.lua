@@ -16,8 +16,8 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.rect{ x = 0, y = 0, width = 80, height = 50, name = "Base" }
-bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
+local sides = bearcad.rect{ x = 0, y = 0, width = 80, height = 50, name = "Base" }
+bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
 
 -- Every top-cap edge in one operation (a face click does the same).
 bearcad.chamfer{

@@ -50,8 +50,8 @@ A script runs in a coroutine. Calls that wait for a frame — `bearcad.ui.wait`,
 
 ```lua
 bearcad.new()
-local box = bearcad.rect{ width = 80, height = 50, name = "Base" }
-bearcad.extrude{ profiles = box, distance = 20, name = "Block" }
+local sides = bearcad.rect{ width = 80, height = 50, name = "Base" }
+local box = bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
 bearcad.export_step("block.step")
 bearcad.quit()
 ```
@@ -61,8 +61,8 @@ bearcad.quit()
 Drawing verbs open a ground-plane sketch automatically when none is active.
 
 ```lua
-bearcad.rect{ x = 0, y = 0, width = 80, height = 50, name = "Box" }
-bearcad.circle{ x = 10, y = 5, r = 12, name = "Hole" }   -- radius / diameter also accepted
+local box = bearcad.rect{ x = 0, y = 0, width = 80, height = 50, name = "Box" }
+local hole = bearcad.circle{ x = 10, y = 5, r = 12, name = "Hole" }  -- radius / diameter also accepted
 bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0 }            -- explicit endpoints
 bearcad.line{ length = 80, angle = 45 }                  -- length + angle
 bearcad.text{ text = "Hello", x = 10, y = 10, size = 12 }
@@ -72,8 +72,9 @@ bearcad.open_sketch(0)                          -- re-enter sketch 0
 bearcad.exit_sketch()
 ```
 
-A rectangle is **four lines**, indexed in creation order (bottom, right, top, left). A
-scripted line lands unconstrained; `dimension = 50` or `dimension = "leg"` locks its length.
+A rectangle is **four lines** (bottom, right, top, left). Hold the list `rect` returns —
+don't number them. A scripted line lands unconstrained; `dimension = 50` or
+`dimension = "leg"` locks its length.
 
 Every creation call hands back what it made — one element, or a list — and those handles go
 anywhere an index does:
@@ -84,6 +85,8 @@ local box   = bearcad.extrude{ profiles = sides, distance = 10 }  -- the new bod
 box:id()    -- "body#3v0": unique in the document, never reused
 box:index() -- its ordinal right now; an error once it's gone
 ```
+
+Closed loops you did not just draw: `bearcad.sketch_faces()` lists them for `profiles`.
 
 Construction planes:
 
@@ -96,26 +99,28 @@ bearcad.plane{ axis = "x", angle = 45 }                                -- around
 ## Solids
 
 ```lua
-bearcad.extrude{ profiles = {0, 1, 2, 3}, distance = 20, name = "Block" }
-bearcad.revolve{ profiles = {0, 1, 2, 3}, axis = "y", angle = 180 }   -- axis is required
-bearcad.combine{ op = "cut", a = {0}, b = {1} }  -- union | cut | intersect | xor  (`difference` means cut)
-bearcad.shell{ bodies = {0}, thickness = 2 }
-bearcad.move_bodies{ bodies = {0}, x = 40 }
-bearcad.mirror_bodies{ bodies = {0}, plane = 0 }
+local sides = bearcad.rect{ width = 80, height = 50 }
+local box = bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
+bearcad.revolve{ profiles = sides, axis = "y", angle = 180 }   -- axis is required
+local a = bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+local b = bearcad.cuboid{ width = 8, depth = 8, height = 8, at = {5, 0, 0} }
+bearcad.combine{ op = "cut", a = {a}, b = {b} }  -- union | cut | intersect | xor  (`difference` means cut)
+local hollow = bearcad.shell{ bodies = {box}, thickness = 2 }
+bearcad.move_bodies{ bodies = {hollow}, x = 40 }
+bearcad.mirror_bodies{ bodies = {hollow}, plane = 0 }
 ```
 
-An operation **consumes** the body it acts on and produces a new one, so the index moves:
-after `shell{ bodies = {0} }`, the shelled result is the *last* body, and `{0}` is spent.
-Chain operations off `bearcad.count("body") - 1`, or give bodies names and use
-`bearcad.find`.
+An operation **consumes** the body it acts on and produces a new one. The call returns the
+new body — chain off that handle (or a name via `bearcad.find`). Do not hunt
+`bearcad.count("body") - 1`.
 
 To cut into a body, sketch **on one of its faces**, then extrude with `body = "cut"`. A cut
 pointing away from the body is flipped inward for you.
 
 ```lua
 bearcad.begin_sketch(box:face("top"))
-bearcad.circle{ x = 40, y = 25, r = 5 }            -- r is a radius; (0,0) is the rect corner
-bearcad.extrude{ profiles = 0, distance = 20, body = "cut" }
+local hole = bearcad.circle{ x = 40, y = 25, r = 5 }   -- r is a radius; (0,0) is the rect corner
+bearcad.extrude{ profiles = hole, distance = 20, body = "cut" }
 ```
 
 Rounding takes **one call per operation** — a set of edges in a single call, never one call
@@ -133,14 +138,13 @@ too, and the model rebuilds when the parameter changes.
 
 ```lua
 bearcad.add_parameter("w", "24")
-bearcad.rect{ width = "w", height = "w / 3" }
+local sides = bearcad.rect{ width = "w", height = "w / 3" }
 bearcad.set_parameter("w", "30")             -- everything sized by w re-sizes
 
-bearcad.constrain("parallel",                         -- horizontal, vertical, equal,
-  { kind = "line", index = 0 },                       -- perpendicular, coincident, tangent…
-  { kind = "line", index = 1 })
-bearcad.dimension{ kind = "line", index = 0, value = "25mm" }
-bearcad.dimension{ kind = "line", index = 1, value = "leg = 40mm" }  -- names a parameter
+bearcad.constrain("parallel", sides[1], sides[3])     -- horizontal, vertical, equal,
+                                                      -- perpendicular, coincident, tangent…
+bearcad.dimension{ kind = "line", index = sides[1], value = "25mm" }
+bearcad.dimension{ kind = "line", index = sides[2], value = "leg = 40mm" }  -- names a parameter
 ```
 
 ## Reading state back — verify your own work
@@ -151,16 +155,16 @@ Never assume a call did what you meant. Read it back and assert.
 assert(bearcad.count("body") == 1)          -- line, circle, sketch, constraint, body,
                                             -- shape, extrusion, parameter, drawing,
                                             -- image, joint… (`get` takes the same set)
-local l = bearcad.get{ kind = "line", index = 0 }         -- x0,y0,x1,y1,length…
-local x0, y0, x1, y1 = bearcad.line_endpoints(0)
-local s = bearcad.body_stats(0)                           -- volume, triangles, bbox
+local l = bearcad.get{ kind = "line", index = sides[1] }  -- x0,y0,x1,y1,length…
+local x0, y0, x1, y1 = bearcad.line_endpoints(sides[1])
+local s = bearcad.body_stats(box)                         -- volume, triangles, bbox
 assert(math.abs(s.volume - 80 * 50 * 20) < 200)           -- tessellated, so allow a tolerance
 
-bearcad.body_faces(0)      -- { kind = "body_mesh_face", body, face = {x,y,z}, normal = {x,y,z} }
+bearcad.body_faces(box)    -- { kind = "body_mesh_face", body, face = {x,y,z}, normal = {x,y,z} }
                           -- pass an entry to begin_sketch / extrude_face / fillet
-bearcad.body_edges(0)      -- pass entries to fillet{ body, edges } / chamfer{ body, edges }
-bearcad.body_cylinders(0)  -- holes and bosses: radius, length, axis — the reliable way to
-                           -- check a hole is really there and really the right size
+bearcad.body_edges(box)    -- pass entries to fillet{ body, edges } / chamfer{ body, edges }
+bearcad.body_cylinders(box) -- holes and bosses: radius, length, axis — the reliable way to
+                            -- check a hole is really there and really the right size
 bearcad.selection()        -- what is selected
 bearcad.sketch_dof()       -- remaining degrees of freedom
 bearcad.sketch_conflicts()
@@ -231,7 +235,7 @@ configuration; `bearcad mcp` bridges stdio to the running app. Its tools are
    into one call is the difference between one body and several.
 3. **Assert what you built.** Geometry that silently failed looks identical to geometry
    that was never asked for.
-4. **Indices are ordinals in creation order** and shift when things are deleted. Hold the
-   handle a creation call returned (or a name) for anything you will refer to twice.
+4. **Hold the handle a creation call returned** (or a name). Ordinals shift when things
+   are deleted; `count("kind") - 1` is not how you name the thing you just made.
 5. **Prefer the declarative API.** Reach for `bearcad.ui.*` only to test an interaction or
    to take a picture.

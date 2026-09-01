@@ -52,36 +52,33 @@ bearcad.ui.pane("parameters", "hide")
 
 
 -- Trace the outline with the Line tool (the first segment auto-enters a ground-plane sketch).
-local n = #segs
-for i = 1, n do
+local outline = {}
+for i = 1, #segs do
   local s = segs[i]
   local line = { x = u(s[1]), y = v(s[2]), x1 = u(s[3]), y1 = v(s[4]) }
   if s.bez then
     line.bezier = { { u(s.bez[1]), v(s.bez[2]) }, { u(s.bez[3]), v(s.bez[4]) } }
   end
-  bearcad.line(line)
+  outline[i] = bearcad.line(line)
 end
 
 -- Close the outline loop.
-for i = 0, n - 1 do
-  local nxt = (i + 1) % n
-  bearcad.constrain("coincident",
-    { kind = "line", index = i, endpoint = "end" },
-    { kind = "line", index = nxt, endpoint = "start" })
+for i = 1, #outline do
+  local nxt = outline[i % #outline + 1]
+  bearcad.constrain("coincident", outline[i]:endpoint("end"), nxt:start())
 end
 
--- Extrude the closed-loop face 12 mm into a solid body (extrusion 0, body 0).
-local outline = { 0, 1, 2, 3 }
-bearcad.extrude{ polygon = outline, distance = 12, name = "B" }
+-- Extrude the closed-loop face 12 mm into a solid body.
+bearcad.extrude{ profiles = outline, distance = 12, name = "B" }
 
 -- The cap sketch shares the ground plane's (u, v) axes but is anchored at the profile loop's
 -- first vertex (the outline's (0, 0)), so a letter point (lx, ly) is already cap-local.
 local function cap(lx, ly) return lx, ly end
 
 -- Draw one "D" counter (flat left + rounded right) as three Line-tool segments on the current
--- sketch, starting at line index `first`; kappa is the standard circle/ellipse control offset.
+-- sketch; kappa is the standard circle/ellipse control offset.
 local KAPPA = 0.5522847498307936
-local function draw_d_counter(d, first)
+local function draw_d_counter(d)
   local lx, cy, w, hh = d.lx, d.cy, d.w, d.hh
   local ty, by, rx = cy + hh, cy - hh, lx + w
   local kx, ky = KAPPA * w, KAPPA * hh
@@ -91,6 +88,7 @@ local function draw_d_counter(d, first)
     { { lx, ty }, { rx, cy }, { lx + kx, ty }, { rx, cy + ky } },            -- top-right arc
     { { rx, cy }, { lx, by }, { rx, cy - ky }, { lx + kx, by } },            -- bottom-right arc
   }
+  local loop = {}
   for _, p in ipairs(parts) do
     local x0, y0 = cap(p[1][1], p[1][2])
     local x1, y1 = cap(p[2][1], p[2][2])
@@ -100,19 +98,16 @@ local function draw_d_counter(d, first)
       local c1x, c1y = cap(p[4][1], p[4][2])
       line.bezier = { { c0x, c0y }, { c1x, c1y } }
     end
-    bearcad.line(line)
+    loop[#loop + 1] = bearcad.line(line)
   end
-  -- Close this D loop (3 segments share endpoints).
-  for k = 0, 2 do
-    local i = first + k
-    local nxt = first + (k + 1) % 3
-    bearcad.constrain("coincident",
-      { kind = "line", index = i, endpoint = "end" },
-      { kind = "line", index = nxt, endpoint = "start" })
+  for i = 1, #loop do
+    local nxt = loop[i % #loop + 1]
+    bearcad.constrain("coincident", loop[i]:endpoint("end"), nxt:start())
   end
+  return loop
 end
 
--- Open a sketch on the top cap, draw the two D counters (lines 4..6 and 7..9), then cut each
+-- Open a sketch on the top cap, draw the two D counters, then cut each
 -- straight down through the 12 mm body — an OCCT boolean subtract per counter.
 bearcad.begin_sketch{
   kind = "extrude_cap",
@@ -121,11 +116,11 @@ bearcad.begin_sketch{
   profile_lines = outline,
   top = true,
 }
-draw_d_counter(upper_d, 4)
-draw_d_counter(lower_d, 7)
+local upper = draw_d_counter(upper_d)
+local lower = draw_d_counter(lower_d)
 
-bearcad.extrude{ polygon = { 4, 5, 6 }, distance = -13, body = "cut" }
-bearcad.extrude{ polygon = { 7, 8, 9 }, distance = -13, body = "cut" }
+bearcad.extrude{ profiles = upper, distance = -13, body = "cut" }
+bearcad.extrude{ profiles = lower, distance = -13, body = "cut" }
 
 -- Clean render: leave the sketch, hide the cap sketch's outlines and the ground plane.
 bearcad.exit_sketch()

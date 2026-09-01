@@ -11,11 +11,11 @@ bearcad.new()
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.rect{ x = 0, y = 0, width = 8, height = 14, name = "Block" }
+local sides = bearcad.rect{ x = 0, y = 0, width = 8, height = 14, name = "Block" }
 bearcad.exit_sketch()
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10, name = "Block" }
+local box = bearcad.extrude{ profiles = sides, distance = 10, name = "Block" }
 
-bearcad.repeat_bodies{ bodies = {0}, axis = "x", mode = "count_gap", count = 4, spacing = 6, name = "Row" }
+bearcad.repeat_bodies{ bodies = {box}, axis = "x", mode = "count_gap", count = 4, spacing = 6, name = "Row" }
 
 -- Hide the three datum planes a new document opens with.
 bearcad.set_visible({ kind = "plane" }, false)

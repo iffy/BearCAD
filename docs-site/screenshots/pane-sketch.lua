@@ -16,8 +16,8 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("parameters", "hide")
 bearcad.ui.help(true)
 
-bearcad.rect{ x = 0, y = 0, width = 10, height = 8 }
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 6 }
+local sides = bearcad.rect{ x = 0, y = 0, width = 10, height = 8 }
+bearcad.extrude{ profiles = sides, distance = 6 }
 bearcad.exit_sketch()
 
 bearcad.ui.view("top")

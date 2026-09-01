@@ -20,11 +20,8 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.rect{ width = 80, height = 50, name = "Base" }
--- Extrude the rectangle's four lines as an explicit closed loop. (The `rect = 0`
--- shorthand builds the same body but currently wedges the screenshot render, so
--- the docs harness uses the explicit polygon form.)
-bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
+local sides = bearcad.rect{ width = 80, height = 50, name = "Base" }
+bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
 
 bearcad.exit_sketch()
 -- Hide the ground plane's display quad; it reads as a stray tan patch behind the body.

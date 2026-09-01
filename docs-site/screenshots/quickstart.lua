@@ -41,51 +41,41 @@ bearcad.ui.pane("parameters", "hide")
 -- Step 2: the profile, drawn *sloppily* — roughly a 120-degree bracket, every
 -- segment a little off. Corners still chain (the Line tool snaps each click to
 -- the previous segment's end).
-bearcad.line{ x = 0,     y = 0,    x1 = 51,    y1 = 2.5 }  -- 0 outer base
-bearcad.line{ x = 51,    y = 2.5,  x1 = 49.5,  y1 = 7.8 }  -- 1 base end cap
-bearcad.line{ x = 49.5,  y = 7.8,  x1 = 4.5,   y1 = 5.5 }  -- 2 inner base
-bearcad.line{ x = 4.5,   y = 5.5,  x1 = -17.5, y1 = 47 }   -- 3 inner leg
-bearcad.line{ x = -17.5, y = 47,   x1 = -25.5, y1 = 43 }   -- 4 leg end cap
-bearcad.line{ x = -25.5, y = 43,   x1 = 0,     y1 = 0 }    -- 5 outer leg
-for i = 0, 5 do
-  local j = (i + 1) % 6
-  bearcad.constrain("coincident",
-    { kind = "line", index = i, endpoint = "end" },
-    { kind = "line", index = j, endpoint = "start" })
+local loop = {
+  bearcad.line{ x = 0,     y = 0,    x1 = 51,    y1 = 2.5 },  -- outer base
+  bearcad.line{ x = 51,    y = 2.5,  x1 = 49.5,  y1 = 7.8 },  -- base end cap
+  bearcad.line{ x = 49.5,  y = 7.8,  x1 = 4.5,   y1 = 5.5 },  -- inner base
+  bearcad.line{ x = 4.5,   y = 5.5,  x1 = -17.5, y1 = 47 },   -- inner leg
+  bearcad.line{ x = -17.5, y = 47,   x1 = -25.5, y1 = 43 },   -- leg end cap
+  bearcad.line{ x = -25.5, y = 43,   x1 = 0,     y1 = 0 },    -- outer leg
+}
+for i = 1, #loop do
+  local nxt = loop[i % #loop + 1]
+  bearcad.constrain("coincident", loop[i]:endpoint("end"), nxt:start())
 end
 bearcad.ui.view("top")
 shot("quickstart-sloppy.png")
 
 -- Step 3: square it up: geometric constraints first, then exact dimensions on
 -- the four lines whose sizes we care about, then the bend angle.
-local function geo(kind, a, b)
-  if b then
-    bearcad.constrain(kind, { kind = "line", index = a }, { kind = "line", index = b })
-  else
-    bearcad.constrain(kind, { kind = "line", index = a })
-  end
-end
--- Anchor the whole profile: pin the bend corner (line 0's start, at 0,0) to the sketch
+-- Anchor the whole profile: pin the bend corner (outer base start, at 0,0) to the sketch
 -- origin so it's fully located, not free to drift.
-bearcad.constrain("coincident",
-  { kind = "line", index = 0, endpoint = "start" },
-  { kind = "origin" })
-geo("horizontal", 0)
-geo("parallel", 0, 2)
-geo("parallel", 3, 5)
-geo("perpendicular", 1, 0)
-geo("perpendicular", 4, 5)
-bearcad.dimension{ kind = "line", index = 0, value = "leg" }
-bearcad.dimension{ kind = "line", index = 5, value = "leg" }
-bearcad.dimension{ kind = "line", index = 1, value = "thick" }
-bearcad.dimension{ kind = "line", index = 4, value = "thick" }
-bearcad.dimension{ kind = "angle", a = 0, b = 3, value = "bend_angle", sign = 1 }
+bearcad.constrain("coincident", loop[1]:start(), { kind = "origin" })
+bearcad.constrain("horizontal", loop[1])
+bearcad.constrain("parallel", loop[1], loop[3])
+bearcad.constrain("parallel", loop[4], loop[6])
+bearcad.constrain("perpendicular", loop[2], loop[1])
+bearcad.constrain("perpendicular", loop[5], loop[6])
+bearcad.dimension{ kind = "line", index = loop[1], value = "leg" }
+bearcad.dimension{ kind = "line", index = loop[6], value = "leg" }
+bearcad.dimension{ kind = "line", index = loop[2], value = "thick" }
+bearcad.dimension{ kind = "line", index = loop[5], value = "thick" }
+bearcad.dimension{ kind = "angle", a = loop[1], b = loop[4], value = "bend_angle", sign = 1 }
 shot("quickstart-squared.png")
 
 -- Step 4: extrude the profile into the solid bracket.
 bearcad.exit_sketch()
-local loop = {0, 1, 2, 3, 4, 5}
-bearcad.extrude{ polygon = loop, distance = 40, name = "Bracket" }
+bearcad.extrude{ profiles = loop, distance = 40, name = "Bracket" }
 -- Hide the three datum planes a new document opens with.
 bearcad.set_visible({ kind = "plane" }, false)
 -- Hide the ground grid too for a clean background (#579).
@@ -108,10 +98,10 @@ shot("quickstart-bend.png")
 -- bracket" produces the same sign).
 bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
                       profile_lines = loop, edge = 2 }
-bearcad.circle{ x = 19, y = 10, r = 2.5 }
-bearcad.circle{ x = 19, y = 30, r = 2.5 }
+local hole_a = bearcad.circle{ x = 19, y = 10, r = 2.5 }
+local hole_b = bearcad.circle{ x = 19, y = 30, r = 2.5 }
 bearcad.exit_sketch()
-bearcad.extrude{ circles = {0, 1}, distance = -6, body = "cut" }
+bearcad.extrude{ profiles = {hole_a, hole_b}, distance = -6, body = "cut" }
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_left_top")
 shot("quickstart-holes.png")
@@ -152,9 +142,9 @@ shot("quickstart-corners.png")
 -- opposite the countersinks), cut 1 mm deep, then turn the view around to read it.
 bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
                       profile_lines = loop, edge = 0 }
-bearcad.text{ text = "BearCAD", x = 6, y = 17, size = 5 }
+local label = bearcad.text{ text = "BearCAD", x = 6, y = 17, size = 5 }
 bearcad.exit_sketch()
-bearcad.extrude{ text = 0, distance = -1, body = "cut" }
+bearcad.extrude{ profiles = label, distance = -1, body = "cut" }
 bearcad.clear_selection()
 bearcad.ui.view("corner", "front_right_bottom")
 shot("quickstart-engrave.png")

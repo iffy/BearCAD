@@ -14,8 +14,8 @@ bearcad.ui.tool_hints(false)
 bearcad.new()
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.rect{ x = 0, y = 0, width = 60, height = 40 }
-bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 15 }
+local sides = bearcad.rect{ x = 0, y = 0, width = 60, height = 40 }
+bearcad.extrude{ profiles = sides, distance = 15 }
 -- Hide the three datum planes a new document opens with.
 bearcad.set_visible({ kind = "plane" }, false)
 -- Hide the ground grid too for a clean background (#579).

@@ -17,10 +17,10 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("parameters", "hide")
 bearcad.ui.help(true)
 
-bearcad.rect{ width = 30, height = 20, name = "Base" }
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5, name = "Base" }
-bearcad.rect{ x = 40, y = 0, width = 25, height = 8, name = "Arm" }
-bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5, name = "Arm" }
+local base_sides = bearcad.rect{ width = 30, height = 20, name = "Base" }
+local base = bearcad.extrude{ profiles = base_sides, distance = 5, name = "Base" }
+local arm_sides = bearcad.rect{ x = 40, y = 0, width = 25, height = 8, name = "Arm" }
+local arm = bearcad.extrude{ profiles = arm_sides, distance = 5, name = "Arm" }
 bearcad.exit_sketch()
 
 -- Faces and edges are named by their own geometry, which `body_faces`/`body_edges` report.
@@ -42,8 +42,8 @@ local function edge_between(body, a, b)
   error("no edge of body " .. body .. " runs between those corners")
 end
 bearcad.ui.begin_joint{
-  a = 0, b = 1, kind = "slider",
-  face = { moving = face_facing(1, {-1, 0, 0}), fixed = face_facing(0, {1, 0, 0}) },
+  a = base, b = arm, kind = "slider",
+  face = { moving = face_facing(arm, {-1, 0, 0}), fixed = face_facing(base, {1, 0, 0}) },
   slide_max = 20,
 }
 bearcad.ui.wait(6)

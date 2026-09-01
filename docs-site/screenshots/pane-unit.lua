@@ -14,8 +14,8 @@ local tmp = os.getenv("TMPDIR") or "/tmp"
 
 -- The part: a small box.
 bearcad.new()
-bearcad.rect{ width = 20, height = 12 }
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8 }
+local sides = bearcad.rect{ width = 20, height = 12 }
+bearcad.extrude{ profiles = sides, distance = 8 }
 bearcad.save(tmp .. "/bearcad_docs_bracket.bearcad")
 
 bearcad.new()

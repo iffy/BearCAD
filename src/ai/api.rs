@@ -40,9 +40,9 @@ Indices are creation-order ordinals and shift when things are deleted — prefer
 (`bearcad.find`) for anything you will refer to twice. One operation per call
 (especially fillets, chamfers, booleans).
 
-A rectangle is four lines (bottom, right, top, left). Drawing verbs open a ground-plane
-sketch when none is active. An operation that consumes a body produces a new one, so
-the index moves: chain off `bearcad.count("body") - 1` or use names.
+A rectangle is four lines (bottom, right, top, left); `rect` returns those lines as a
+profile. Drawing verbs open a ground-plane sketch when none is active. An operation that
+consumes a body produces a new one: chain off the handle the call returned, or use names.
 
 ## Shapes (no sketch)
 
@@ -196,7 +196,7 @@ bearcad.delete_selection()         -- whatever is selected (the GUI Delete)
 
 Ordinals shift when elements are deleted, and a solid op consumes the body it acts on.
 A handle does not: it names the same element until that element is gone, and then says so.
-Anywhere an index is accepted — `bodies`, `polygon`, `extrusion`, `{ kind, index }`, … —
+Anywhere an index is accepted — `bodies`, `profiles`, `extrusion`, `{ kind, index }`, … —
 a handle, its `id` string, or a name works too.
 
 ## Files

@@ -18,24 +18,24 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("parameters", "hide")
 bearcad.ui.help(true)
 
-bearcad.rect{ x = 0, y = 0, width = 30, height = 20, name = "Block" }
+local block_sides = bearcad.rect{ x = 0, y = 0, width = 30, height = 20, name = "Block" }
 bearcad.exit_sketch()
-bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 12, name = "Block" }
+local block = bearcad.extrude{ profiles = block_sides, distance = 12, name = "Block" }
 
 bearcad.begin_sketch{ kind = "plane", index = 0 }
-bearcad.rect{ x = 18, y = 6, width = 24, height = 8, name = "Bite" }
+local bite_sides = bearcad.rect{ x = 18, y = 6, width = 24, height = 8, name = "Bite" }
 bearcad.exit_sketch()
-bearcad.extrude{ polygon = { 4, 5, 6, 7 }, distance = 20, name = "Bite" }
+local bite = bearcad.extrude{ profiles = bite_sides, distance = 20, name = "Bite" }
 
 bearcad.clear_selection()
 bearcad.ui.tool("combine")
-bearcad.select({ kind = "body", index = 0 })
+bearcad.select(block)
 bearcad.ui.wait(6)
 bearcad.ui.screenshot(out .. "-combine.png", "context")
 
 -- Cut: the second body goes on side B, which Combine folds away.
 bearcad.ui.tool_mode("cut")
-bearcad.select({ kind = "body", index = 1 })
+bearcad.select(bite)
 bearcad.ui.wait(6)
 bearcad.ui.screenshot(out .. "-cut.png", "context")
 

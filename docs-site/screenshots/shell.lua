@@ -16,9 +16,9 @@ bearcad.new()
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.cuboid{ width = 44, depth = 32, height = 22, name = "Tray" }
+local tray = bearcad.cuboid{ width = 44, depth = 32, height = 22, name = "Tray" }
 bearcad.shell{
-  bodies = {0},
+  bodies = {tray},
   faces = {{ kind = "primitive_face", primitive = 0, face = "top" }},
   thickness = "3",
   name = "Tray",

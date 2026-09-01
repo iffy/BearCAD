@@ -9,8 +9,8 @@ local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/pane-drawing-text.
 bearcad.ui.tool_hints(false)
 
 bearcad.new()
-bearcad.rect{ width = 60, height = 35, name = "Plate" }
-bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 12, name = "Block" }
+local sides = bearcad.rect{ width = 60, height = 35, name = "Plate" }
+bearcad.extrude{ profiles = sides, distance = 12, name = "Block" }
 local d = bearcad.drawing{ name = "Plate" }
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
 bearcad.drawing_text{ drawing = d, text = "All edges 0.5 mm", x = 0.55, y = 0.8 }

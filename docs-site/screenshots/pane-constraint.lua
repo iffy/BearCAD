@@ -15,8 +15,8 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("parameters", "hide")
 bearcad.ui.help(true)
 
-bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 2 }
-bearcad.line{ x = 0, y = 8, x1 = 20, y1 = 12 }
+local a = bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 2 }
+local b = bearcad.line{ x = 0, y = 8, x1 = 20, y1 = 12 }
 
 bearcad.ui.view("top")
 bearcad.ui.wait(2)
@@ -25,8 +25,8 @@ bearcad.ui.wait(2)
 
 bearcad.ui.tool("constraint")
 bearcad.ui.wait(2)
-bearcad.select{ kind = "line", index = 0 }
-bearcad.select({ kind = "line", index = 1 }, true)
+bearcad.select(a)
+bearcad.select(b, true)
 bearcad.ui.wait(6)
 bearcad.ui.screenshot(out, "context")
 

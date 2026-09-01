@@ -16,24 +16,19 @@ bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("parameters", "hide")
 
 -- A sloppy open profile, then constraints square it up.
-bearcad.line{ x = 0,  y = 0,  x1 = 40, y1 = 3 }   -- 0 bottom
-bearcad.line{ x = 40, y = 3,  x1 = 38, y1 = 25 }  -- 1 right cap
-bearcad.line{ x = 38, y = 25, x1 = 2,  y1 = 22 }  -- 2 top
-for i = 0, 1 do
-  bearcad.constrain("coincident",
-    { kind = "line", index = i, endpoint = "end" },
-    { kind = "line", index = i + 1, endpoint = "start" })
-end
-bearcad.constrain("horizontal", { kind = "line", index = 0 })
-bearcad.constrain("parallel",
-  { kind = "line", index = 0 }, { kind = "line", index = 2 })
-bearcad.constrain("perpendicular",
-  { kind = "line", index = 1 }, { kind = "line", index = 0 })
+local bottom = bearcad.line{ x = 0,  y = 0,  x1 = 40, y1 = 3 }
+local cap = bearcad.line{ x = 40, y = 3,  x1 = 38, y1 = 25 }
+local top = bearcad.line{ x = 38, y = 25, x1 = 2,  y1 = 22 }
+bearcad.constrain("coincident", bottom:endpoint("end"), cap:start())
+bearcad.constrain("coincident", cap:endpoint("end"), top:start())
+bearcad.constrain("horizontal", bottom)
+bearcad.constrain("parallel", bottom, top)
+bearcad.constrain("perpendicular", cap, bottom)
 
 -- Leave the two parallel lines selected so the pane shows which constraints apply.
 bearcad.ui.tool("constraint")
-bearcad.select{ kind = "line", index = 0 }
-bearcad.select({ kind = "line", index = 2 }, true)
+bearcad.select(bottom)
+bearcad.select(top, true)
 -- A clean background (#667): the ground plane's quad and the grid both away. The
 -- sketch drawn on that plane stays visible.
 -- Hide the three datum planes a new document opens with.

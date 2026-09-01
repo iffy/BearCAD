@@ -16,14 +16,14 @@ bearcad.new()
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.rect{ x = 0, y = 0, width = 30, height = 20, name = "Block" }
+local block_sides = bearcad.rect{ x = 0, y = 0, width = 30, height = 20, name = "Block" }
 bearcad.exit_sketch()
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 12, name = "Block" }
+local block = bearcad.extrude{ profiles = block_sides, distance = 12, name = "Block" }
 
 bearcad.begin_sketch{ kind = "plane", index = 0 }
-bearcad.rect{ x = 18, y = 6, width = 24, height = 8, name = "Bite" }
+local bite_sides = bearcad.rect{ x = 18, y = 6, width = 24, height = 8, name = "Bite" }
 bearcad.exit_sketch()
-bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 20, name = "Bite" }
+local bite = bearcad.extrude{ profiles = bite_sides, distance = 20, name = "Bite" }
 
 -- Hide the three datum planes a new document opens with.
 bearcad.set_visible({ kind = "plane" }, false)
@@ -40,7 +40,7 @@ bearcad.ui.screenshot(dir .. "/combine-before.png")
 -- the web app with `?open=` pointing here.
 bearcad.save(dir .. "/combine-before.bearcad.json")
 
-bearcad.combine{ op = "cut", a = {0}, b = {1}, name = "Notched block" }
+bearcad.combine{ op = "cut", a = {block}, b = {bite}, name = "Notched block" }
 bearcad.ui.wait(2)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(1)

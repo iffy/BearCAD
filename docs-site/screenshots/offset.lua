@@ -11,10 +11,10 @@ bearcad.new()
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
-bearcad.rect{ x = 0, y = 0, width = 40, height = 20 }
-bearcad.circle{ x = 34, y = 0, r = 6 }
-bearcad.offset_sketch{ sketch = 0, lines = {0, 1, 2, 3}, distance = 4 }
-bearcad.offset_sketch{ sketch = 0, circles = {0}, distance = -2, construction = true }
+local sides = bearcad.rect{ x = 0, y = 0, width = 40, height = 20 }
+local hole = bearcad.circle{ x = 34, y = 0, r = 6 }
+bearcad.offset_sketch{ sketch = 0, lines = sides, distance = 4 }
+bearcad.offset_sketch{ sketch = 0, circles = {hole}, distance = -2, construction = true }
 
 bearcad.ui.tool("offset")
 -- A clean background (#667): the ground plane's quad and the grid both away. The

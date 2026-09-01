@@ -19,9 +19,9 @@ bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
 
 -- Profile: a 10 x 12 rectangle standing off the axis by 12 mm.
-bearcad.rect{ x = 12, y = 0, width = 10, height = 12, name = "Profile" }
+local sides = bearcad.rect{ x = 12, y = 0, width = 10, height = 12, name = "Profile" }
 bearcad.exit_sketch()
-bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", angle = 270, name = "Ring" }
+bearcad.revolve{ profiles = sides, axis = "y", angle = 270, name = "Ring" }
 
 -- Hide the three datum planes a new document opens with.
 bearcad.set_visible({ kind = "plane" }, false)

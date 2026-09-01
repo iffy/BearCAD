@@ -18,13 +18,12 @@ is exercised by CI.
 
 bearcad.new()
 
-local box = bearcad.rect{ width = 80, height = 50, name = "Base" }
-bearcad.extrude{ profiles = box, distance = 20, name = "Block" }
+local sides = bearcad.rect{ width = 80, height = 50, name = "Base" }
+local box = bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
 
 bearcad.export_step("block.step")
 
 -- A single body can be exported on its own (handle, id, name, or ordinal):
--- local box = bearcad.extrude{ profiles = sides, distance = 20, name = "Block" }
 -- bearcad.export_step("block.step", box)
 
 bearcad.quit()
@@ -68,14 +67,13 @@ handle; `bearcad.id(el)` is the method spelled as a function.
 
 ```lua
 bearcad.new()
-bearcad.rect{ width = 80, height = 50, name = "Main box" }
+local sides = bearcad.rect{ width = 80, height = 50, name = "Main box" }
 
 -- Named lookup:
-local box = bearcad.find("Main box")
-bearcad.select(box)
+bearcad.select(bearcad.find("Main box"))
 
--- Rename anything. A rect is four lines, so its edges are addressable individually:
-bearcad.set_name(bearcad.element("line", 0), "Front edge")
+-- A rect is four lines; rename one from the list it returned:
+bearcad.set_name(sides[1], "Front edge")
 ```
 
 Geometry helpers enter a ground-plane sketch automatically if none is open:
@@ -102,9 +100,9 @@ the model rebuilds when the parameter changes:
 
 ```lua
 bearcad.add_parameter("w", "24")
-bearcad.rect{ width = "w", height = "w / 3" }
+local sides = bearcad.rect{ width = "w", height = "w / 3" }
 bearcad.circle{ x = 40, y = 0, diameter = "w" }        -- `r`/`radius` take expressions too
-bearcad.extrude{ profiles = {0, 1, 2, 3}, distance = "w / 2" }
+local box = bearcad.extrude{ profiles = sides, distance = "w / 2" }
 bearcad.edit_extrusion{ extrusion = 0, distance = "w" }
 bearcad.set_parameter("w", "30")                       -- everything above re-sizes
 ```
@@ -133,11 +131,11 @@ cap/washer faces of a revolve (a full-turn revolve has no end caps; sketch on it
 ```lua
 bearcad.begin_sketch{
   kind = "extrude_cap", extrusion = 0,
-  profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
+  profile = "polygon", profile_lines = sides, top = true,
 }
 bearcad.begin_sketch{
   kind = "revolve_side", revolution = 0, edge = 2,
-  profile = "polygon", profile_lines = {0, 1, 2, 3},
+  profile = "polygon", profile_lines = sides,
 }
 ```
 
@@ -148,7 +146,7 @@ bearcad.begin_sketch{
 bearcad.begin_sketch{
   kind = "extrude_cap", extrusion = 0, top = true,
   profile = "boolean",
-  boolean = { op = "difference", a = { polygon = {0, 1, 2, 3} }, b = { circle = 0 } },
+  boolean = { op = "difference", a = { polygon = sides }, b = { circle = hole } },
 }
 ```
 
@@ -186,10 +184,10 @@ extrudable face:
 
 ```lua
 bearcad.new()
-bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
-bearcad.line{ x = 10, y = 0, x1 = 5, y1 = 8 }
-bearcad.line{ x = 5, y = 8, x1 = 0, y1 = 0 }
-bearcad.extrude{ profiles = {0, 1, 2}, distance = 6 }
+local a = bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+local b = bearcad.line{ x = 10, y = 0, x1 = 5, y1 = 8 }
+local c = bearcad.line{ x = 5, y = 8, x1 = 0, y1 = 0 }
+bearcad.extrude{ profiles = {a, b, c}, distance = 6 }
 ```
 
 `bearcad.sketch_faces(sketch?)` lists closed loops, circles, text glyphs, and plane regions
@@ -219,19 +217,19 @@ body is flipped inward. A side wall's `edge` is the profile **line index**, stab
 when filleted edges sit between walls.
 
 ```lua
-bearcad.rect{ x = 0, y = 0, width = 20, height = 20 }
+local sides = bearcad.rect{ x = 0, y = 0, width = 20, height = 20 }
 bearcad.exit_sketch()
-bearcad.extrude{ profiles = {0, 1, 2, 3}, distance = 20 }
+bearcad.extrude{ profiles = sides, distance = 20 }
 
 -- Pull a side wall outward by 10 mm into a boss.
 bearcad.extrude_face{
-  face = { kind = "extrude_side", extrusion = 0, profile = "polygon", profile_lines = {0, 1, 2, 3}, edge = 0 },
+  face = { kind = "extrude_side", extrusion = 0, profile = "polygon", profile_lines = sides, edge = 0 },
   distance = 10, name = "Boss",
 }
 
 -- Or snap the pushed face onto another surface instead of a fixed distance.
 bearcad.extrude_face{
-  face = { kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true },
+  face = { kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = sides, top = true },
   to = { plane = 1 },
 }
 ```
@@ -253,13 +251,13 @@ corner; `points` treats several in **one** operation — the same rule as `edges
 the solid verbs:
 
 ```lua
-local corner = { kind = "line", index = 0, endpoint = "end" }
+local corner = sides[1]:endpoint("end")
 bearcad.chamfer_vertex{ point = corner, distance = 3 }
 bearcad.fillet_vertex{ point = corner, radius = 3 }
 
 bearcad.fillet_vertex{ points = {
-  { kind = "line", index = 0, endpoint = "end" },
-  { kind = "line", index = 1, endpoint = "end" },
+  sides[1]:endpoint("end"),
+  sides[2]:endpoint("end"),
 }, radius = 3 }
 ```
 
@@ -283,14 +281,13 @@ a single `edges` list. Analytic `extrusion=` / `primitive=` is still accepted.
 ## Constraints and parameters
 
 ```lua
-bearcad.constrain("parallel",
-  { kind = "line", index = 0 }, { kind = "line", index = 1 })
+bearcad.constrain("parallel", sides[1], sides[2])
 
-bearcad.dimension{ kind = "line", index = 0, value = "25mm" }
+bearcad.dimension{ kind = "line", index = sides[1], value = "25mm" }
 -- `name = value` defines the parameter and dimensions with it, as in any value field:
-bearcad.dimension{ kind = "line", index = 1, value = "leg = 40mm" }
+bearcad.dimension{ kind = "line", index = sides[2], value = "leg = 40mm" }
 -- Repeating `dimension` on an already-dimensioned line or circle updates the value.
-bearcad.dimension{ kind = "angle", a = 0, b = 1, value = "90" }
+bearcad.dimension{ kind = "angle", a = sides[1], b = sides[2], value = "90" }
 
 bearcad.add_parameter("A", "5mm")
 bearcad.set_parameter("A", "A + 5in")
@@ -328,31 +325,31 @@ scripts.
 
 ```lua
 bearcad.new()
-bearcad.rect{ width = 40, height = 30 }
-bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+local sides = bearcad.rect{ width = 40, height = 30 }
+local box = bearcad.extrude{ profiles = sides, distance = 10 }
 
 assert(bearcad.count("line") == 4)             -- non-deleted entities per kind
 -- kinds (`count` and `get` take the same set): line, circle, sketch, constraint,
 --        plane, extrusion, shape, body, drawing, cross_section,
 --        section_plane, parameter, sketch_text, component, image, joint
-local l = bearcad.get{ kind = "line", index = 0 }
+local l = bearcad.get{ kind = "line", index = sides[1] }
 assert(l.x0 == 0 and math.abs(l.length - 40) < 1e-3)
 
 -- A construction plane reports its drawn rectangle in its own u/v axes.
 local e = bearcad.get{ kind = "plane", index = 0 }.extent
 assert(e.u_min == 5 and e.u_max == 105)
 
-local s = bearcad.body_stats(0)                -- volume / triangles / bbox of a body's mesh
+local s = bearcad.body_stats(box)              -- volume / triangles / bbox of a body's mesh
 assert(math.abs(s.volume - 40 * 30 * 10) < 120)
 assert(s.bbox.max.z - s.bbox.min.z == 10)
 
 -- A body's faces and edges, spelled the way a joint's mate takes them.
-local f = bearcad.body_faces(0)[1]             -- { body, face = {x,y,z}, normal = {x,y,z} }
+local f = bearcad.body_faces(box)[1]           -- { body, face = {x,y,z}, normal = {x,y,z} }
 local v = bearcad.drawing_views(0)[1]          -- { orientation, style, dimensions, pos_x, pos_y, … }
-local e2 = bearcad.body_edges(0)[1]            -- { body, edge = { {x,y,z}, {x,y,z} } }
-local c = bearcad.body_cylinders(0)[1]         -- a hole/boss: radius, length, and its axis
+local e2 = bearcad.body_edges(box)[1]          -- { body, edge = { {x,y,z}, {x,y,z} } }
+local c = bearcad.body_cylinders(box)[1]       -- a hole/boss: radius, length, and its axis
 
-bearcad.select{ kind = "line", index = 0 }
+bearcad.select(sides[1])
 assert(bearcad.selection()[1].kind == "line")  -- current scene selection
 print(bearcad.status())                        -- the status-bar text
 print(bearcad.session_log())                   -- what this run has done, timestamped
