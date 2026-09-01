@@ -6096,9 +6096,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                 }
                 "edge_dimension" => {
-                    // A drawing view's edge-length dimension (#1916): where its label was
-                    // dragged to, and the outward angle it snapped onto. `index` is the
-                    // ordinal among the view's shown edge dimensions.
+                    // A drawing view's edge-length dimension (#1916/#1926): where its
+                    // label was dragged to, the outward angle it snapped onto, and which
+                    // end a too-short label hangs past. `index` is the ordinal among the
+                    // view's shown edge dimensions.
                     let opts = opts.as_ref().ok_or_else(|| {
                         mlua::Error::external(
                             "get{ kind = \"edge_dimension\", index, drawing, view }",
@@ -6128,6 +6129,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         v.dimension_offset_angles.iter().find(|(k, _)| *k == key)
                     {
                         t.set("angle", *ang)?;
+                    }
+                    if let Some((_, s)) =
+                        v.dimension_label_sides.iter().find(|(k, _)| *k == key)
+                    {
+                        t.set("side", *s)?;
                     }
                     let deq = |q: [i32; 3]| crate::hierarchy::dequantize_body_point(q);
                     t.set("a", vec3_lua(lua, deq(key.0))?)?;
@@ -11818,9 +11824,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Set (or clear) a drawing edge dim label's offset (#294/#1228) and snap angle (#1916).
-    // `bearcad.drawing_dim_offset{ drawing, view, a, b, offset, angle }` — omit/nil `offset`
-    // clears; omit `angle` leaves a stored angle; `angle = nil` restores the auto perp.
+    // Set (or clear) a drawing edge dim label's offset (#294/#1228), snap angle (#1916),
+    // and overflow end (#1926). `bearcad.drawing_dim_offset{ drawing, view, a, b, offset,
+    // angle, side }` — omit/nil `offset` clears; omit `angle`/`side` leaves a stored
+    // value; `angle = nil` / `side = nil` restores the auto.
     api.set(
         "drawing_dim_offset",
         lua.create_function(|lua, opts: Table| {
@@ -11828,7 +11835,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "drawing_dim_offset",
-                &["drawing", "view", "a", "b", "offset", "angle"],
+                &["drawing", "view", "a", "b", "offset", "angle", "side"],
             )?;
             let drawing: usize = opts.ordinal_req("drawing")?;
             let view: usize = opts.ordinal_req("view")?;
@@ -11849,6 +11856,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             } else {
                 None
             };
+            let side = if opts.contains_key("side")? {
+                Some(
+                    opts.get::<Option<f32>>("side")?
+                        .map(|v| if v < 0.0 { -1 } else { 1 }),
+                )
+            } else {
+                None
+            };
             unsafe {
                 tick.exec(Instruction::SetDrawingDimensionOffset {
                     drawing,
@@ -11857,6 +11872,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     b,
                     offset,
                     angle,
+                    side,
                 })
             }
         })?,
@@ -24927,6 +24943,35 @@ pub mod tests {
             local cleared = bearcad.get{ kind = "edge_dimension", drawing = d, view = 0, index = 0 }
             assert(cleared.offset == 0.0, "clearing drops the offset")
             assert(cleared.angle == nil, "clearing drops the angle")
+        "#;
+        run_lua(script);
+    }
+
+    /// #1926: `drawing_dim_offset` stores which end a too-short label hangs past.
+    #[test]
+    fn lua_drawing_dim_offset_stores_a_label_side() {
+        let script = r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }
+            bearcad.drawing_dim_offset{
+                drawing = d, view = 0, a = {0,0,0}, b = {40,0,0},
+                offset = 0, side = -1
+            }
+            local dim = bearcad.get{ kind = "edge_dimension", drawing = d, view = 0, index = 0 }
+            assert(dim.side == -1, "side round-trips, got " .. tostring(dim.side))
+            bearcad.drawing_dim_offset{
+                drawing = d, view = 0, a = {0,0,0}, b = {40,0,0},
+                offset = 0, side = 1
+            }
+            dim = bearcad.get{ kind = "edge_dimension", drawing = d, view = 0, index = 0 }
+            assert(dim.side == 1, "flipping side round-trips, got " .. tostring(dim.side))
+            bearcad.drawing_dim_offset{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }
+            local cleared = bearcad.get{ kind = "edge_dimension", drawing = d, view = 0, index = 0 }
+            assert(cleared.side == nil, "clearing drops the side")
         "#;
         run_lua(script);
     }

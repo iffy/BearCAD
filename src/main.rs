@@ -1356,7 +1356,8 @@ enum DimLabelKind {
 
 /// An in-flight drag of a drawing dimension label (#294): the label rides the pointer's
 /// perpendicular offset from its edge, written back as a `dimension_offsets` override.
-/// Edge dims also orbit the edge and snap to a few meaningful angles (#1916).
+/// Edge dims also orbit the edge and snap to a few meaningful angles (#1916), and a
+/// too-short label can be dragged past either end (#1926).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct DrawingDimLabelDrag {
     drawing: model::DrawingKey,
@@ -1366,6 +1367,10 @@ struct DrawingDimLabelDrag {
     start_offset: Option<f32>,
     /// Outward `atan2` at grab time. `None` means the auto perpendicular.
     start_angle: Option<f32>,
+    /// Overflow-label end at grab time. `None` means the auto far end.
+    start_side: Option<i8>,
+    /// Whether `line_a_screen` is the order-normalized key's first endpoint.
+    line_a_is_key_a: bool,
     start_pointer: egui::Pos2,
     /// Outward unit direction in screen space (pixels), for projecting the drag delta
     /// of circle/point dims (1D along this).
@@ -1375,6 +1380,10 @@ struct DrawingDimLabelDrag {
     /// Measured-edge midpoint in screen pixels — origin for an edge-dim orbit. Unused
     /// (ZERO) for circle/point dims.
     edge_mid_screen: egui::Pos2,
+    /// Dimension-line ends in screen pixels, for picking which overflow end the
+    /// pointer is on (#1926). Unused (ZERO) for circle/point dims.
+    line_a_screen: egui::Pos2,
+    line_b_screen: egui::Pos2,
     /// Auto-perpendicular in projected millimetres (y-up), so a snap back onto it can
     /// drop the stored angle. Unused (ZERO) for circle/point dims.
     default_outward: glam::Vec2,
@@ -1404,15 +1413,42 @@ impl DrawingDimLabelDrag {
             kind,
             start_offset,
             start_angle: None,
+            start_side: None,
+            line_a_is_key_a: true,
             start_pointer,
             outward_screen,
             mm_per_px,
             edge_mid_screen: egui::Pos2::ZERO,
+            line_a_screen: egui::Pos2::ZERO,
+            line_b_screen: egui::Pos2::ZERO,
             default_outward: glam::Vec2::ZERO,
             start_outward: glam::Vec2::ZERO,
             default_gap: 0.0,
             snap_dirs: [glam::Vec2::ZERO; 8],
             snap_n: 0,
+        }
+    }
+
+    /// Which overflow end the pointer is on (#1926). `None` keeps the grab-time side
+    /// when the pointer has not left a dead zone around the midpoint.
+    fn live_side(&self, pointer: egui::Pos2) -> Option<i8> {
+        let along = self.line_b_screen - self.line_a_screen;
+        let span = along.length();
+        if span < 1.0 {
+            return self.start_side;
+        }
+        let dir = along / span;
+        let t = (pointer - self.line_a_screen).dot(dir);
+        let from_mid = t - span * 0.5;
+        let dead = (span * 0.25).max(12.0);
+        if from_mid.abs() < dead {
+            self.start_side
+        } else {
+            let layout = if from_mid < 0.0 { -1 } else { 1 };
+            Some(crate::drawing::dimension_label_stored_side(
+                layout,
+                self.line_a_is_key_a,
+            ))
         }
     }
 }
@@ -29498,6 +29534,17 @@ impl App {
                             .find(|(k, _)| *k == key)
                             .map(|(_, o)| *o)
                             .unwrap_or(0.0);
+                        let stored_side = view
+                            .dimension_label_sides
+                            .iter()
+                            .find(|(k, _)| *k == key)
+                            .map(|(_, s)| *s);
+                        let line_a_is_key_a =
+                            crate::hierarchy::quantize_body_point(wa) == key.0;
+                        let label_side = crate::drawing::dimension_label_layout_side(
+                            stored_side,
+                            line_a_is_key_a,
+                        );
                         let off = default_gap + extra;
                         let g = crate::drawing::dimension_line_geometry(
                             glam::Vec2::new(av.x, av.y),
@@ -29521,21 +29568,22 @@ impl App {
                                 egui::Stroke::NONE,
                             ));
                         }
-                        // The label runs along the dimension line, or sits past its end if the
-                        // line is too short — still lettered along the line (#314/#1918).
+                        // The label runs along the dimension line, or sits past one end if
+                        // the line is too short — still lettered along the line (#314/#1918/#1926).
                         let label_text =
                             crate::value::format_length_display_in((wa - wb).length(), unit);
                         let (sla, slb) = (sp(g.line.0), sp(g.line.1));
                         let out_screen =
                             (sp(g.line.0 + glam::Vec2::new(outward.x, outward.y)) - sp(g.line.0))
                                 .normalized();
-                        let (lp, ang) = crate::drawing::dimension_label_layout(
+                        let (lp, ang) = crate::drawing::dimension_label_layout_sided(
                             glam::Vec2::new(sla.x, sla.y),
                             glam::Vec2::new(slb.x, slb.y),
                             glam::Vec2::new(out_screen.x, out_screen.y),
                             crate::drawing::text_device_width(dim_font, &label_text),
                             dim_font,
                             5.0 * px_per_pt,
+                            label_side,
                         );
                         let label_screen = egui::pos2(lp.x, lp.y);
                         let label_w =
@@ -29662,10 +29710,14 @@ impl App {
                                             .find(|(k, _)| *k == key)
                                             .map(|(_, o)| *o),
                                         start_angle: stored_angle,
+                                        start_side: stored_side,
+                                        line_a_is_key_a,
                                         start_pointer: pp,
                                         outward_screen: om.normalized(),
                                         mm_per_px,
                                         edge_mid_screen: to_screen(mid),
+                                        line_a_screen: sla,
+                                        line_b_screen: slb,
                                         default_outward,
                                         start_outward: outward,
                                         default_gap,
@@ -30344,9 +30396,13 @@ impl App {
         // Follow / end an in-flight dimension-label drag (#294/#1228): live-write the offset
         // without undo snapshots (cloning the doc every frame was the lag), then land one
         // undoable apply on release — same pattern as joint select-drag. Edge dims also
-        // snap the outward onto the edge's perpendicular or a face that makes it (#1916).
+        // snap the outward onto the edge's perpendicular or a face that makes it (#1916),
+        // and a too-short label can be dragged past either end (#1926).
         if let Some(d) = self.drawing_dim_label_drag {
             let base = d.start_offset.unwrap_or(0.0);
+            let live_side = pointer_screen
+                .map(|pp| d.live_side(pp))
+                .unwrap_or(d.start_side);
             let (moved, live_offset, live_angle) = if d.snap_n > 0 {
                 let to_proj = |screen: egui::Pos2| {
                     let delta = screen - d.edge_mid_screen;
@@ -30356,9 +30412,12 @@ impl App {
                 let live = pointer_screen.map(to_proj).unwrap_or(grab);
                 let old_dim = d.start_outward * (d.default_gap + base);
                 let target = old_dim + (live - grab);
-                let moved = (live - grab).length() > 1e-3;
+                let side_moved = live_side != d.start_side;
+                let moved = (live - grab).length() > 1e-3 || side_moved;
                 if !moved {
                     (false, d.start_offset, d.start_angle)
+                } else if (live - grab).length() <= 1e-3 {
+                    (true, d.start_offset, d.start_angle)
                 } else {
                     let dirs = &d.snap_dirs[..d.snap_n as usize];
                     let snapped = crate::drawing::snap_dimension_outward(target, dirs);
@@ -30382,7 +30441,10 @@ impl App {
                 };
                 (moved, live_offset, d.start_angle)
             };
-            let write = |state: &mut actions::AppState, offset: Option<f32>, angle: Option<f32>| {
+            let write = |state: &mut actions::AppState,
+                         offset: Option<f32>,
+                         angle: Option<f32>,
+                         side: Option<i8>| {
                 match d.kind {
                     DimLabelKind::Circle(center) => {
                         let _ = actions::set_drawing_circle_dim_offset(
@@ -30402,6 +30464,7 @@ impl App {
                             b,
                             offset,
                             Some(angle),
+                            Some(side),
                         );
                     }
                     // A point dim always has an offset (its default gap); a tiny motion
@@ -30419,12 +30482,12 @@ impl App {
             };
             if ui.input(|i| i.pointer.primary_down()) {
                 if moved {
-                    write(&mut self.state, live_offset, live_angle);
+                    write(&mut self.state, live_offset, live_angle, live_side);
                 }
                 pan_suppressed_by_card = true;
             } else {
                 // Release: restore the pre-drag value, then apply the landed offset once.
-                write(&mut self.state, d.start_offset, d.start_angle);
+                write(&mut self.state, d.start_offset, d.start_angle, d.start_side);
                 let offset_changed = match (d.start_offset, live_offset) {
                     (None, None) => false,
                     (Some(a), Some(b)) => (a - b).abs() > 1e-6,
@@ -30435,7 +30498,8 @@ impl App {
                     (Some(a), Some(b)) => (a - b).abs() > 1e-4,
                     _ => true,
                 };
-                if offset_changed || angle_changed {
+                let side_changed = live_side != d.start_side;
+                if offset_changed || angle_changed || side_changed {
                     match d.kind {
                         DimLabelKind::Circle(center) => {
                             self.state.apply(Action::SetDrawingCircleDimOffset {
@@ -30453,6 +30517,7 @@ impl App {
                                 b,
                                 offset: live_offset,
                                 angle: Some(live_angle),
+                                side: Some(live_side),
                             });
                         }
                         DimLabelKind::Point(index) => {

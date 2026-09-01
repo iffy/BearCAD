@@ -3524,7 +3524,9 @@ pub enum Action {
     /// edge's quantized endpoints. `offset` is signed projected-mm past the default gap;
     /// `None` restores the auto-placed default. `angle` is the outward's `atan2` in
     /// projected millimetres (#1916): `None` leaves a stored angle alone, `Some(None)`
-    /// restores the auto perpendicular, `Some(Some(θ))` stores θ.
+    /// restores the auto perpendicular, `Some(Some(θ))` stores θ. `side` is which end a
+    /// too-short label hangs past (#1926): `None` leaves it, `Some(None)` restores the
+    /// auto far end, `Some(Some(-1|1))` stores the end.
     SetDrawingDimensionOffset {
         drawing: crate::model::DrawingKey,
         view: usize,
@@ -3532,6 +3534,7 @@ pub enum Action {
         b: [i32; 3],
         offset: Option<f32>,
         angle: Option<Option<f32>>,
+        side: Option<Option<i8>>,
     },
     /// Set (or clear) a circle Ø-label offset override (#397), keyed by the circle's
     /// quantized world centre — the circle analogue of [`Self::SetDrawingDimensionOffset`].
@@ -4459,6 +4462,7 @@ pub fn set_drawing_dimension_offset(
     b: [i32; 3],
     offset: Option<f32>,
     angle: Option<Option<f32>>,
+    side: Option<Option<i8>>,
 ) -> Result<(), String> {
     let key = if a <= b { (a, b) } else { (b, a) };
     let Some(v) = doc
@@ -4468,12 +4472,14 @@ pub fn set_drawing_dimension_offset(
     else {
         return Err(format!("No view {view} in drawing {}", drawing.index()));
     };
-    v.dimension_offsets.retain(|(k, _)| *k != key);
     if let Some(o) = offset {
+        v.dimension_offsets.retain(|(k, _)| *k != key);
         v.dimension_offsets.push((key, o));
+    } else if angle.is_none() && side.is_none() {
+        v.dimension_offsets.retain(|(k, _)| *k != key);
     }
     match angle {
-        None if offset.is_none() => {
+        None if offset.is_none() && side.is_none() => {
             v.dimension_offset_angles.retain(|(k, _)| *k != key);
         }
         None => {}
@@ -4483,6 +4489,19 @@ pub fn set_drawing_dimension_offset(
         Some(Some(ang)) => {
             v.dimension_offset_angles.retain(|(k, _)| *k != key);
             v.dimension_offset_angles.push((key, ang));
+        }
+    }
+    match side {
+        None if offset.is_none() && angle.is_none() => {
+            v.dimension_label_sides.retain(|(k, _)| *k != key);
+        }
+        None => {}
+        Some(None) => {
+            v.dimension_label_sides.retain(|(k, _)| *k != key);
+        }
+        Some(Some(s)) => {
+            v.dimension_label_sides.retain(|(k, _)| *k != key);
+            v.dimension_label_sides.push((key, if s < 0 { -1 } else { 1 }));
         }
     }
     Ok(())
@@ -15592,6 +15611,7 @@ impl AppState {
                     // Drop any label-offset override for a hidden dimension (#294/#1916).
                     v.dimension_offsets.retain(|(k, _)| *k != key);
                     v.dimension_offset_angles.retain(|(k, _)| *k != key);
+                    v.dimension_label_sides.retain(|(k, _)| *k != key);
                     self.status = "Hid edge dimension".to_string();
                 } else {
                     v.dimensioned_edges.push(key);
@@ -15715,6 +15735,7 @@ impl AppState {
                 target.dimensioned_edges = keys;
                 target.dimension_offsets = offsets;
                 target.dimension_offset_angles.clear();
+                target.dimension_label_sides.clear();
                 target.dimensioned_circles = circles;
                 // Angle dimensions are user-added, so leave them alone; this only flips the
                 // length/diameter set the buttons control (#331).
@@ -15725,8 +15746,8 @@ impl AppState {
                 };
                 ActionResult::Ok
             }
-            Action::SetDrawingDimensionOffset { drawing, view, a, b, offset, angle } => {
-                match set_drawing_dimension_offset(&mut self.doc, drawing, view, a, b, offset, angle) {
+            Action::SetDrawingDimensionOffset { drawing, view, a, b, offset, angle, side } => {
+                match set_drawing_dimension_offset(&mut self.doc, drawing, view, a, b, offset, angle, side) {
                     Ok(()) => ActionResult::Ok,
                     Err(e) => ActionResult::Err(e),
                 }
@@ -36276,6 +36297,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             b,
             offset: Some(3.25),
             angle: None,
+            side: None,
         });
         assert_eq!(
             state.doc.drawings[dkey(0)].views[0].dimension_offsets,
@@ -36288,8 +36310,47 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             b,
             offset: None,
             angle: None,
+            side: None,
         });
         assert!(state.doc.drawings[dkey(0)].views[0].dimension_offsets.is_empty());
+    }
+
+    /// #1926: which end a too-short label hangs past stores and clears like the offset.
+    #[test]
+    fn edge_dim_label_side_stores_and_clears() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: dkey(0),
+            bodies: vec![bkey(0)],
+            orientation: crate::model::DrawingOrientation::Front,
+        });
+        let a = [0, 0, 0];
+        let b = [1000, 0, 0];
+        let key = if a <= b { (a, b) } else { (b, a) };
+        state.apply(Action::SetDrawingDimensionOffset {
+            drawing: dkey(0),
+            view: 0,
+            a,
+            b,
+            offset: Some(0.0),
+            angle: None,
+            side: Some(Some(-1)),
+        });
+        assert_eq!(
+            state.doc.drawings[dkey(0)].views[0].dimension_label_sides,
+            vec![(key, -1)]
+        );
+        state.apply(Action::SetDrawingDimensionOffset {
+            drawing: dkey(0),
+            view: 0,
+            a,
+            b,
+            offset: None,
+            angle: None,
+            side: None,
+        });
+        assert!(state.doc.drawings[dkey(0)].views[0].dimension_label_sides.is_empty());
     }
 
     /// #1228: dragging a drawing dim label used to `apply(SetDrawingDimensionOffset)` every
@@ -36318,6 +36379,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 b,
                 Some(i as f32 * 0.05),
                 None,
+                None,
             )
             .unwrap();
         }
@@ -36337,7 +36399,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             .map(|(_, o)| *o)
             .unwrap();
         // Restore the pre-drag value (no override), then commit once (release path).
-        set_drawing_dimension_offset(&mut state.doc, dkey(0), 0, a, b, None, None).unwrap();
+        set_drawing_dimension_offset(&mut state.doc, dkey(0), 0, a, b, None, None, None).unwrap();
         assert!(matches!(
             state.apply(Action::SetDrawingDimensionOffset {
                 drawing: dkey(0),
@@ -36346,6 +36408,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 b,
                 offset: Some(final_offset),
                 angle: None,
+                side: None,
             }),
             ActionResult::Ok
         ));

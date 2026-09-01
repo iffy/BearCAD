@@ -2812,7 +2812,7 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   projected edges that share an endpoint). The landed angle is stored as
   `dimension_offset_angles` (radians of the outward in projected millimetres);
   absent means the auto perpendicular. Scriptable as
-  `bearcad.drawing_dim_offset{ …, offset, angle }` and
+  `bearcad.drawing_dim_offset{ …, offset, angle, side }` and
   `bearcad.get{ kind = "edge_dimension", drawing, view, index }`. Hovering a dimension **highlights** it — the
   dimension line is accented and its label outlined (#326) — so it's obvious which dimension a
   drag will move: with the **Select tool** via its label, and with the **Dimension tool** also
@@ -2833,9 +2833,12 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   **left-to-right or bottom-to-top** (#322; `drawing::readable_text_angle` normalizes the angle
   into `[-90°, 90°)`, so a downward vertical reads upward and a down-to-the-right slope reads
   top-left → bottom-right); when the line is too short for the text, the label is placed just
-  past the line's end, still lettered along the line (#314/#1918; `drawing::dimension_label_layout`, rendered
+  past one end, still lettered along the line, with the text **centreline on the dimension
+  line** (#314/#1918/#1926; `drawing::dimension_label_layout`). Drag the label along the line
+  to hang it past the other end (`dimension_label_sides`; `bearcad.drawing_dim_offset{ …, side }`,
+  `bearcad.get{ kind = "edge_dimension" }.side`). Rendered
   with rotated text via egui `TextShape` in the editor and SVG `rotate()` / a PDF text matrix
-  in the exports). Editor and exports treat that layout point as the **visual centre** of
+  in the exports. Editor and exports treat that layout point as the **visual centre** of
   the glyphs (SVG `dominant-baseline="central"`, PDF baseline shifted 0.35em) so a label
   that sits beside its line on screen does in the PDF too. All dimensions are keyed to the
   edges' quantized world endpoints (a geometry identity that survives rebuilds), stored per

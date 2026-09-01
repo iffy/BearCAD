@@ -75,8 +75,29 @@ bearcad.ui.wait(6)
 local offset = point_dim_offset()
 assert(offset > 2.0, "dragging the label outward moves the dimension, got offset " .. offset)
 
+-- Re-find the label: a too-short one sits on the line (#1926), so it does not
+-- stay under the pointer the way an offset-above-the-line label does.
+bearcad.ui.click(cx + 120, cy + 120)
+bearcad.ui.wait(3)
+label_x, label_y = nil, nil
+for dy = -36, 80, 8 do
+  for dx = -60, 60, 10 do
+    local x, y = cx + dx, cy - 50 + dy
+    bearcad.ui.move(x, y)
+    bearcad.ui.wait(1)
+    bearcad.ui.click(x, y)
+    bearcad.ui.wait(2)
+    if selected_kind() == "drawing_dimension" then
+      label_x, label_y = x, y
+      break
+    end
+  end
+  if label_x then break end
+end
+assert(label_x, "the label is still clickable after dragging it")
+
 -- Dragging it back lands a smaller offset (the drag is live, not a one-shot jump).
-bearcad.ui.drag(label_x, label_y + 40, label_x, label_y + 6)
+bearcad.ui.drag(label_x, label_y, label_x, label_y - 34)
 bearcad.ui.wait(6)
 local back = point_dim_offset()
 assert(back < offset, "dragging back reduces the offset, got " .. back .. " after " .. offset)
