@@ -15,9 +15,9 @@ geometry.
   create land inside it. Selecting a component activates it; click the **Document** row
   to go back to creating at the root.
 - Contents indent under the component; the **triangle** collapses/expands them.
-- **Drag** any top-level row onto a component to move it there (a name tag follows the
-  cursor; or use right-click → **Move to**). Drop on the **Document** row to move it back
-  out. Components drag into each other to nest.
+- **Drag** any top-level row onto a component to move it there (list or graph; a name tag
+  follows the cursor; or use right-click → **Move to**). Drop on the **Document** row to
+  move it back out. Components drag into each other to nest.
 - **Hiding** a component hides everything inside it, nested components included.
 - Deleting a component keeps its contents — they move to its parent.
 - **Export** a component straight to **STL** or **STEP** from its right-click menu: every
@@ -40,12 +40,11 @@ The **type filter** at the bottom of the pane applies to both the list and the g
 hiding a category (say, sketches) thins out either view the same way.
 
 **Right-click any row** for the same context menu its list row offers — edit the
-element, add it to a drawing, export a body, move it to a component, roll back to it, or
-delete it.
+element, add it to a drawing, export a body or component, nest a component, move it to a
+component, roll back to it, or delete it.
 
-Nodes are draggable, and the graph always keeps its flow readable: an element's inputs
-stay **above** it and its outputs stay **below** it. Drag a node past one of its
-neighbors and the neighbors slide out of the way to preserve that order.
+**Drag** a row onto a component to file it there, the same as in the list. An element's
+inputs stay **above** it and its outputs stay **below** it.
 
 ## Rolling back
 

@@ -280,7 +280,7 @@ const FEATURE_SECTIONS: &[Section] = &[
         title: "Components",
         items: &[
             "New component; nest a component inside another",
-            "Drag an element into a component; drop on Document to un-file",
+            "Drag an element into a component (list or graph); drop on Document to un-file",
             "Active component: new features land inside it",
             "Hide a component (hides contents)",
             "Delete a component (re-homes contents)",

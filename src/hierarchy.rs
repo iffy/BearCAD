@@ -1275,7 +1275,8 @@ pub struct GraphNodePosition {
 }
 
 /// Compute the graph-node view's layout: depth-first walk of `tree`, assigning each node a
-/// column (its depth) and a row (its sequential order within that column). Deterministic and
+/// column (its depth) and a row (its sequential order within that column). Components are
+/// rows like everything else (#1927) so members can hang off them. Deterministic and
 /// non-force-directed, per #34 — the whole graph is meant to fit horizontally by construction
 /// (column count is bounded by tree depth), with height handled by vertical scrolling.
 pub fn graph_node_positions(tree: &[HierarchyEntry]) -> Vec<GraphNodePosition> {
@@ -1286,14 +1287,6 @@ pub fn graph_node_positions(tree: &[HierarchyEntry]) -> Vec<GraphNodePosition> {
         next_row_in_column: &mut HashMap<usize, usize>,
         out: &mut Vec<GraphNodePosition>,
     ) {
-        // Components (#423) are drawn as areas encompassing their members, not as nodes:
-        // pass through to the children at the same depth, keeping the outer parent.
-        if matches!(entry.node, HierarchyNode::Component(_)) {
-            for child in &entry.children {
-                walk(child, depth, parent, next_row_in_column, out);
-            }
-            return;
-        }
         let row = next_row_in_column.entry(depth).or_insert(0);
         let this_row = *row;
         *row += 1;
@@ -5121,10 +5114,18 @@ pub fn show_pane(
                 on_export_body_step,
                 on_export_body_3mf,
                 on_move_to_component,
+                active_component,
+                on_add_component,
+                on_export_component,
+                on_export_component_step,
+                on_export_component_3mf,
                 on_set_rollback,
                 on_edit_drawing,
                 on_rename_drawing,
                 on_set_drawing_paper,
+                on_select_drawing_element,
+                on_hover_drawing_element,
+                selected_drawing_leaf,
             );
         }
     }
@@ -5283,10 +5284,18 @@ fn show_graph_view(
     on_export_body_step: &mut impl FnMut(crate::model::BodyKey),
     on_export_body_3mf: &mut impl FnMut(crate::model::BodyKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
+    active_component: Option<crate::model::ComponentKey>,
+    on_add_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
+    on_export_component: &mut impl FnMut(crate::model::ComponentKey),
+    on_export_component_step: &mut impl FnMut(crate::model::ComponentKey),
+    on_export_component_3mf: &mut impl FnMut(crate::model::ComponentKey),
     on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_edit_drawing: &mut impl FnMut(crate::model::DrawingKey),
     on_rename_drawing: &mut impl FnMut(crate::model::DrawingKey, String),
     on_set_drawing_paper: &mut impl FnMut(crate::model::DrawingKey, bool),
+    on_select_drawing_element: &mut impl FnMut(HierarchyNode),
+    on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
+    selected_drawing_leaf: Option<HierarchyNode>,
 ) {
     let layout = graph_lane_layout(doc, tree);
     if layout.rows.is_empty() {
@@ -5429,7 +5438,8 @@ fn show_graph_view(
                 .enumerate()
                 .map(|(row, r)| {
                     let selected = scene_element_for_node(r.node)
-                        .is_some_and(|el| row_shows_selection(&el, selection, style_selection));
+                        .is_some_and(|el| row_shows_selection(&el, selection, style_selection))
+                        || selected_drawing_leaf == Some(r.node);
                     let open = node_is_open_drawing(r.node, active_drawing);
                     if selected {
                         Some(ui.visuals().selection.bg_fill.gamma_multiply(0.55))
@@ -5523,12 +5533,15 @@ fn show_graph_view(
                 // Selection fills white even when health tints the icon red/amber (#511).
                 let selected = element
                     .as_ref()
-                    .is_some_and(|el| row_shows_selection(el, selection, style_selection));
+                    .is_some_and(|el| row_shows_selection(el, selection, style_selection))
+                    || selected_drawing_leaf == Some(node);
                 let open = node_is_open_drawing(node, active_drawing);
+                let active_comp =
+                    matches!(node, HierarchyNode::Component(ci) if active_component == Some(ci));
                 let related = related_nodes.contains(&node);
                 let tint = if selected {
                     Color32::WHITE
-                } else if open {
+                } else if open || active_comp {
                     crate::theme::FOCUS_ACCENT
                 } else if related {
                     GRAPH_RELATED_EDGE
@@ -5565,6 +5578,13 @@ fn show_graph_view(
                             .clone()
                             .interact(egui::Sense::drag())
                             .dnd_set_drag_payload(DrawingDragPayload(element.clone()));
+                    } else if component_member_node(node) {
+                        // Same as List (#423/#1927): drag a member (or a component) onto
+                        // a component row to file or nest it.
+                        response
+                            .clone()
+                            .interact(egui::Sense::drag())
+                            .dnd_set_drag_payload(ComponentDragPayload(element.clone()));
                     }
                     // Double-click edits where the List/Tree rows do (#546/#1691/#1755), a
                     // plain click selects — the same dispatch, one node per graph row (#1770).
@@ -5614,43 +5634,95 @@ fn show_graph_view(
                             }
                         }
                     }
-                    // The same context menu the List/Tree row shows (#623).
+                    // The same context menu the List/Tree row shows (#623/#1927).
                     response.context_menu(|ui| {
-                        element_context_menu(
-                            ui,
-                            doc,
-                            node,
-                            &element,
-                            active_drawing,
-                            on_edit_sketch,
-                            on_edit_plane,
-                            on_import_image_on_plane,
-                            on_edit_extrusion,
-                            on_edit_edge_treatment_op,
-                            on_edit_operation,
-                            on_joint_rest,
-                            on_add_to_drawing,
-                            on_create_drawing_of_body,
-                            on_set_body_shadow,
-                            on_export_body,
-                            on_export_body_step,
-                            on_export_body_3mf,
-                            on_move_to_component,
-                            on_set_rollback,
-                            on_delete_element,
-                            on_clone_unit_instance,
-                            clipboard_has_items,
-                            clipboard_has_linkable,
-                            crate::copy_paste::copyable_element(&element).is_some(),
-                            on_copy,
-                            on_paste,
-                            crate::selection::delete_menu_count(selection, &element),
-                        );
+                        if let HierarchyNode::Component(ci) = node {
+                            component_context_menu(
+                                ui,
+                                ci,
+                                &element,
+                                active_drawing,
+                                clipboard_has_items,
+                                clipboard_has_linkable,
+                                on_add_component,
+                                on_add_to_drawing,
+                                on_export_component,
+                                on_export_component_3mf,
+                                on_export_component_step,
+                                on_move_to_component,
+                                on_copy,
+                                on_paste,
+                                on_delete_element,
+                            );
+                        } else {
+                            element_context_menu(
+                                ui,
+                                doc,
+                                node,
+                                &element,
+                                active_drawing,
+                                on_edit_sketch,
+                                on_edit_plane,
+                                on_import_image_on_plane,
+                                on_edit_extrusion,
+                                on_edit_edge_treatment_op,
+                                on_edit_operation,
+                                on_joint_rest,
+                                on_add_to_drawing,
+                                on_create_drawing_of_body,
+                                on_set_body_shadow,
+                                on_export_body,
+                                on_export_body_step,
+                                on_export_body_3mf,
+                                on_move_to_component,
+                                on_set_rollback,
+                                on_delete_element,
+                                on_clone_unit_instance,
+                                clipboard_has_items,
+                                clipboard_has_linkable,
+                                crate::copy_paste::copyable_element(&element).is_some(),
+                                on_copy,
+                                on_paste,
+                                crate::selection::delete_menu_count(selection, &element),
+                            );
+                        }
                     });
+                    // Whole-row drop target (#430/#1927): rect-based so releasing anywhere
+                    // on the component row files the dragged element into it.
+                    if let HierarchyNode::Component(ci) = node {
+                        let rr = row_rect(row);
+                        let dragging = active_drawing.is_none()
+                            && egui::DragAndDrop::has_payload_of_type::<ComponentDragPayload>(
+                                ui.ctx(),
+                            );
+                        if dragging && ui.rect_contains_pointer(rr) {
+                            painter.rect_stroke(
+                                rr,
+                                2.0,
+                                egui::Stroke::new(1.5, crate::theme::FOCUS_ACCENT),
+                                egui::StrokeKind::Inside,
+                            );
+                            if ui.input(|i| i.pointer.any_released()) {
+                                if let Some(payload) =
+                                    egui::DragAndDrop::take_payload::<ComponentDragPayload>(
+                                        ui.ctx(),
+                                    )
+                                {
+                                    if payload.0 != element {
+                                        on_move_to_component(payload.0.clone(), Some(ci));
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else {
                     // Display-only leaves keep their row menus in the graph too (#623).
                     match node {
                         HierarchyNode::Drawing(index) => {
+                            // Re-entering a drawing is a double-click, like the List row (#1712).
+                            if row_primary_double_clicked(response, ui) {
+                                on_edit_drawing(index);
+                            }
                             response.context_menu(|ui| {
                                 drawing_context_menu(
                                     ui,
@@ -5668,12 +5740,26 @@ fn show_graph_view(
                                     crate::model::VertexTreatmentKind::Chamfer => "chamfer",
                                     crate::model::VertexTreatmentKind::Fillet => "fillet",
                                 };
+                                if row_primary_double_clicked(response, ui) {
+                                    on_edit_edge_treatment(extrusion, index);
+                                }
                                 response.context_menu(|ui| {
                                     if ui.button(format!("Edit {noun}")).clicked() {
                                         on_edit_edge_treatment(extrusion, index);
                                         ui.close();
                                     }
                                 });
+                            }
+                        }
+                        node if drawing_element_for_node(node).is_some() => {
+                            if let Some((drawing, _)) = drawing_element_for_node(node) {
+                                if response.clicked() {
+                                    on_edit_drawing(drawing);
+                                    on_select_drawing_element(node);
+                                }
+                                if response.hovered() {
+                                    on_hover_drawing_element(Some(node));
+                                }
                             }
                         }
                         _ => {}
@@ -5712,7 +5798,7 @@ fn show_graph_view(
                     egui::FontId::default(),
                     if selected || related {
                         Color32::WHITE
-                    } else if open {
+                    } else if open || active_comp {
                         crate::theme::FOCUS_ACCENT
                     } else {
                         Color32::from_gray(200)
@@ -6142,50 +6228,23 @@ fn show_component_row(
                 .dnd_set_drag_payload(ComponentDragPayload(element.clone()));
         }
         response.context_menu(|ui| {
-            if ui.button("New component inside").clicked() {
-                on_add_component(Some(ci));
-                ui.close();
-            }
-            // In the Drawing workbench, project every body in the component as one view (#1190).
-            if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
-                on_add_to_drawing(element.clone());
-                ui.close();
-            }
-            // Export the component's bodies (#521): everything filed into it and its nested
-            // components, as one STL/STEP file.
-            if ui.button("Export STL…").clicked() {
-                on_export_component(ci);
-                ui.close();
-            }
-            if ui.button("Export 3MF…").clicked() {
-                on_export_component_3mf(ci);
-                ui.close();
-            }
-            if ui.button("Export STEP…").clicked() {
-                on_export_component_step(ci);
-                ui.close();
-            }
-            if ui.button("Move to document root").clicked() {
-                on_move_to_component(element.clone(), None);
-                ui.close();
-            }
-            // Copy / Paste (#1236).
-            if ui.button("Copy").clicked() {
-                on_copy();
-                ui.close();
-            }
-            if clipboard_has_items && ui.button("Paste").clicked() {
-                on_paste(false);
-                ui.close();
-            }
-            if clipboard_has_linkable && ui.button("Paste Linked").clicked() {
-                on_paste(true);
-                ui.close();
-            }
-            if ui.button("Delete").clicked() {
-                on_delete_element(element.clone());
-                ui.close();
-            }
+            component_context_menu(
+                ui,
+                ci,
+                &element,
+                active_drawing,
+                clipboard_has_items,
+                clipboard_has_linkable,
+                on_add_component,
+                on_add_to_drawing,
+                on_export_component,
+                on_export_component_3mf,
+                on_export_component_step,
+                on_move_to_component,
+                on_copy,
+                on_paste,
+                on_delete_element,
+            );
         });
     });
     // Whole-row drop target (#430): rect-based so releasing over any child widget (the
@@ -6775,6 +6834,70 @@ fn drawing_context_menu(
     }
 }
 
+/// A component row's context menu, shared by the List view and the Graph view (#1927):
+/// nest another component, project/export, un-file, copy/paste, delete.
+fn component_context_menu(
+    ui: &mut egui::Ui,
+    ci: crate::model::ComponentKey,
+    element: &SceneElement,
+    active_drawing: Option<crate::model::DrawingKey>,
+    clipboard_has_items: bool,
+    clipboard_has_linkable: bool,
+    on_add_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
+    on_add_to_drawing: &mut impl FnMut(SceneElement),
+    on_export_component: &mut impl FnMut(crate::model::ComponentKey),
+    on_export_component_3mf: &mut impl FnMut(crate::model::ComponentKey),
+    on_export_component_step: &mut impl FnMut(crate::model::ComponentKey),
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
+    on_copy: &mut impl FnMut(),
+    on_paste: &mut impl FnMut(bool),
+    on_delete_element: &mut impl FnMut(SceneElement),
+) {
+    if menu_button(ui, "New component inside").clicked() {
+        on_add_component(Some(ci));
+        ui.close();
+    }
+    // In the Drawing workbench, project every body in the component as one view (#1190).
+    if active_drawing.is_some() && menu_button(ui, "Add to drawing").clicked() {
+        on_add_to_drawing(element.clone());
+        ui.close();
+    }
+    // Export the component's bodies (#521): everything filed into it and its nested
+    // components, as one STL/STEP file.
+    if menu_button(ui, "Export STL…").clicked() {
+        on_export_component(ci);
+        ui.close();
+    }
+    if menu_button(ui, "Export 3MF…").clicked() {
+        on_export_component_3mf(ci);
+        ui.close();
+    }
+    if menu_button(ui, "Export STEP…").clicked() {
+        on_export_component_step(ci);
+        ui.close();
+    }
+    if menu_button(ui, "Move to document root").clicked() {
+        on_move_to_component(element.clone(), None);
+        ui.close();
+    }
+    if menu_button(ui, "Copy").clicked() {
+        on_copy();
+        ui.close();
+    }
+    if clipboard_has_items && menu_button(ui, "Paste").clicked() {
+        on_paste(false);
+        ui.close();
+    }
+    if clipboard_has_linkable && menu_button(ui, "Paste Linked").clicked() {
+        on_paste(true);
+        ui.close();
+    }
+    if menu_button(ui, "Delete").clicked() {
+        on_delete_element(element.clone());
+        ui.close();
+    }
+}
+
 /// The element context menu shared by the List/Tree rows, the Graph view's nodes (#623),
 /// and a right-click on already-selected geometry in the 3D viewport (#1224):
 /// node-specific actions (edit entries, drawing/export extras), Move-to-component (#423),
@@ -7022,12 +7145,15 @@ fn component_member_node(node: HierarchyNode) -> bool {
             | HierarchyNode::Body(_)
             | HierarchyNode::BooleanOp(_)
             | HierarchyNode::MoveOp(_)
+            | HierarchyNode::MirrorOp(_)
             | HierarchyNode::RepeatOp(_)
             | HierarchyNode::SliceOp(_)
             | HierarchyNode::ShellOp(_)
+            | HierarchyNode::EdgeTreatmentOp(_)
             | HierarchyNode::Revolution(_)
             | HierarchyNode::SweepOp(_)
             | HierarchyNode::Loft(_)
+            | HierarchyNode::Component(_)
     )
 }
 
@@ -9979,6 +10105,59 @@ label_hidden: false,
         assert!(
             !empty[0].children.iter().any(|e| e.node == HierarchyNode::Views),
             "no views, no section"
+        );
+    }
+
+    /// #1927: a component is a graph row, and its members string down the lane it opens —
+    /// the same grouping the List view shows by indenting them.
+    #[test]
+    fn graph_lane_layout_strings_component_contents_down_its_lane() {
+        use crate::model::ComponentMember as CM;
+        let mut doc = Document::default();
+        retain_ground_plane_only(&mut doc);
+        doc.components.insert(crate::model::Component {
+            name: Some("Frame".to_string()),
+            parent: None,
+            length_unit: None,
+            angle_unit: None,
+        });
+        let plane = doc
+            .construction_planes
+            .keys()
+            .next()
+            .expect("ground plane");
+        doc.set_component_member(CM::ConstructionPlane(plane), Some(ckey(0)));
+
+        let tree = graph_view_tree(&doc, None, &ElementFilter::default());
+        let layout = graph_lane_layout(&doc, &tree);
+
+        assert!(
+            layout
+                .rows
+                .iter()
+                .any(|r| r.node == HierarchyNode::Component(ckey(0))),
+            "the graph shows the component as a row"
+        );
+        let comp_row = layout
+            .row_of(HierarchyNode::Component(ckey(0)))
+            .expect("component row");
+        let plane_row = layout
+            .row_of(HierarchyNode::ConstructionPlane(plane))
+            .expect("member plane row");
+        assert!(
+            comp_row < plane_row,
+            "the component sits above its contents, got component row {comp_row} plane row {plane_row}"
+        );
+        assert!(
+            layout.edges.iter().any(|e| e.from == HierarchyNode::Component(ckey(0))
+                && e.to == HierarchyNode::ConstructionPlane(plane)
+                && e.kind.is_input()),
+            "a parent line runs from the component to its member"
+        );
+        assert_eq!(
+            lane_of(&layout, HierarchyNode::ConstructionPlane(plane)),
+            lane_of(&layout, HierarchyNode::Component(ckey(0))),
+            "a lone member continues the component's lane"
         );
     }
 
