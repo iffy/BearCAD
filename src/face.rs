@@ -274,7 +274,10 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
             if n.dot(key_n) < 0.0 {
                 n = -n;
             }
-            let origin = crate::extrude::face_group_center(&tris);
+            // Area centroid, not the vertex-average the face key stores: that average
+            // counts shared vertices once per triangle and drifts off a square-with-a-hole
+            // (#1902). Mating already uses this point (#1080).
+            let origin = crate::extrude::face_group_area_centroid(&tris);
             let u_axis = crate::primitives::plane_u_axis(n);
             let v_axis = n.cross(u_axis).normalize_or_zero();
             Some(SketchFrame {
