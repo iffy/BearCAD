@@ -29415,7 +29415,7 @@ impl App {
                             ));
                         }
                         // The label runs along the dimension line, or sits past its end if the
-                        // line is too short (#314).
+                        // line is too short — still lettered along the line (#314/#1918).
                         let label_text =
                             crate::value::format_length_display_in((wa - wb).length(), unit);
                         let (sla, slb) = (sp(g.line.0), sp(g.line.1));

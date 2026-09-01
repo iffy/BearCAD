@@ -25443,6 +25443,43 @@ pub mod tests {
         );
     }
 
+    /// #1918: a short isometric/corner-view edge still letters its value along the
+    /// dimension line — not horizontally past the arrows.
+    #[test]
+    fn drawing_export_short_diagonal_dimension_follows_the_line() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 50.8, height = 6.35 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 127 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front-right-top" }
+            bearcad.drawing_dimension{ drawing = d, view = 0, a = {50.8, 0, 127}, b = {50.8, 6.35, 127} }
+        "#,
+        );
+        let svg = crate::drawing::drawing_to_svg(&state.doc, dkey(0)).expect("svg");
+        let dim_labels: Vec<_> = svg
+            .lines()
+            .filter(|l| l.contains("dominant-baseline=\"central\"") && l.contains(" mm"))
+            .collect();
+        assert!(
+            !dim_labels.is_empty(),
+            "the short edge must export a length label, got:\n{svg}"
+        );
+        let mut found_rotated = false;
+        for line in &dim_labels {
+            let (_, _, _, angle) = parse_svg_text_layout(line);
+            if angle.abs() > 1.0 {
+                found_rotated = true;
+            }
+        }
+        assert!(
+            found_rotated,
+            "short diagonal dimension must rotate with its line, got:\n{}",
+            dim_labels.join("\n")
+        );
+    }
+
     fn parse_svg_text_layout(line: &str) -> (f32, f32, f32, f32) {
         let attr = |name: &str| -> f32 {
             let key = format!("{name}=\"");

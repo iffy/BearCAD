@@ -2806,7 +2806,7 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   **left-to-right or bottom-to-top** (#322; `drawing::readable_text_angle` normalizes the angle
   into `[-90°, 90°)`, so a downward vertical reads upward and a down-to-the-right slope reads
   top-left → bottom-right); when the line is too short for the text, the label is placed just
-  past the line's end horizontally instead (#314; `drawing::dimension_label_layout`, rendered
+  past the line's end, still lettered along the line (#314/#1918; `drawing::dimension_label_layout`, rendered
   with rotated text via egui `TextShape` in the editor and SVG `rotate()` / a PDF text matrix
   in the exports). Editor and exports treat that layout point as the **visual centre** of
   the glyphs (SVG `dominant-baseline="central"`, PDF baseline shifted 0.35em) so a label

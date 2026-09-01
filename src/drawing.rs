@@ -3101,8 +3101,9 @@ pub const DIM_LABEL_MID_EM: f32 = 0.35;
 
 /// Where and how to draw a dimension's label (#314): `(pos, angle_radians)`. If the text fits
 /// along the dimension line it runs centred along it (rotated, kept upright); otherwise it's
-/// placed just beyond the line's far end, horizontal, so it never overlaps the arrows.
-/// Everything is in device units (screen px for the editor, points for export).
+/// placed just beyond the line's far end, still lettered along the line so a short isometric
+/// edge doesn't go horizontal (#1918). Everything is in device units (screen px for the
+/// editor, points for export).
 pub fn dimension_label_layout(
     a: glam::Vec2,
     b: glam::Vec2,
@@ -3120,11 +3121,12 @@ pub fn dimension_label_layout(
     // 11 pt label's lower edge about a point off the line -- close enough to read as sitting
     // on it, worst of all where the label runs alongside the stroke for its whole width.
     let clear = gap + text_h * DIM_LABEL_MID_EM;
+    let angle = readable_text_angle(dir);
     if text_w + gap <= len {
-        (mid + outward * clear, readable_text_angle(dir))
+        (mid + outward * clear, angle)
     } else {
-        // Too short: sit horizontally just past the far end, on the outward side.
-        (b + dir * (text_w * 0.5 + gap) + outward * clear, 0.0)
+        // Too short: sit just past the far end, on the outward side, still along the line.
+        (b + dir * (text_w * 0.5 + gap) + outward * clear, angle)
     }
 }
 
@@ -3737,7 +3739,7 @@ fn render_view_geometry<C: Canvas>(
                 .collect();
             canvas.poly(&pts, BLACK);
         }
-        // The label runs along the dimension line, or sits past its end if too short (#314).
+        // The label runs along the dimension line, or sits past its end if too short (#314/#1918).
         let label = crate::value::format_length_display_in((wa - wb).length(), unit);
         let (sa, sb) = (to_screen(geom.line.0), to_screen(geom.line.1));
         let out_screen = (to_screen(geom.line.0 + outward) - to_screen(geom.line.0)).normalize();
@@ -5159,7 +5161,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
     }
 
     /// #314: a label that fits runs centred along the dimension line (angle matches, kept
-    /// upright); one too wide sits past the far end, horizontal.
+    /// upright); one too wide sits past the far end, still lettered along the line (#1918).
     #[test]
     fn dimension_label_runs_along_or_beside_the_line() {
         use std::f32::consts::FRAC_PI_2;
@@ -5193,7 +5195,8 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         );
         // A down-to-the-right slope is allowed to read top-left → bottom-right (positive angle).
         assert!(readable_text_angle(glam::Vec2::new(1.0, 1.0)) > 0.0);
-        // A short line: label can't fit, so it sits past the far end (x > line end), horizontal.
+        // A short line: label can't fit, so it sits past the far end (x > line end), still
+        // along the line — a short horizontal stays ~0, a short diagonal does not.
         let (pos_s, ang_s) = dimension_label_layout(
             glam::Vec2::new(0.0, 0.0),
             glam::Vec2::new(4.0, 0.0),
@@ -5202,8 +5205,30 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             11.0,
             5.0,
         );
-        assert!(ang_s.abs() < 1e-3, "short line → horizontal label");
+        assert!(ang_s.abs() < 1e-3, "short horizontal line → horizontal label");
         assert!(pos_s.x > 4.0, "label sits past the far end");
+        let short_diag = glam::Vec2::new(4.0, 4.0);
+        let (pos_d, ang_d) = dimension_label_layout(
+            glam::Vec2::ZERO,
+            short_diag,
+            glam::Vec2::new(-1.0, 1.0).normalize(),
+            30.0,
+            11.0,
+            5.0,
+        );
+        let expected = readable_text_angle(short_diag);
+        assert!(
+            (ang_d - expected).abs() < 1e-3,
+            "short diagonal label follows the line, got {ang_d} want {expected}"
+        );
+        assert!(
+            ang_d.abs() > 0.1,
+            "short diagonal must not stay horizontal, got {ang_d}"
+        );
+        assert!(
+            (pos_d - short_diag).dot(short_diag.normalize()) > 0.0,
+            "short diagonal label sits past the far end"
+        );
         // The returned point is the visual centre, offset `gap` plus half a glyph off the
         // line so a centred 11 pt box clears the stroke (#1350, #1716).
         assert!(
