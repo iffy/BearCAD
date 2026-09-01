@@ -3496,9 +3496,15 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         input.drawing_view.clone()
     };
     // The page-wide default belongs to the pane only while no single view owns it (#1834).
+    // Dimension measures the page; it doesn't set the style of views that haven't been
+    // placed yet (#1914).
     let drawing_default_style = input
         .drawing_default_style
-        .filter(|_| drawing_view.is_none() && input.drawing_annotation.is_none());
+        .filter(|_| {
+            drawing_view.is_none()
+                && input.drawing_annotation.is_none()
+                && input.tool != Tool::Dimension
+        });
     let drawing_annotation = input.drawing_annotation.clone();
     let drawing_add_active = input.drawing_add_active;
     let repeat_edit_start = input.repeat_edit_start;
@@ -11585,6 +11591,18 @@ mod tests {
             ..input(&doc, &selection)
         });
         assert!(modeling.drawing_default_style.is_none());
+
+        // #1914: Dimension measures the page; it doesn't set what new projections start as.
+        let dim = context_pane_content(&ContextInput {
+            tool: Tool::Dimension,
+            in_drawing_workbench: true,
+            drawing_default_style: Some(crate::model::DrawingViewStyle::Colorful),
+            ..input(&doc, &selection)
+        });
+        assert!(
+            dim.drawing_default_style.is_none(),
+            "Dimension tool hides the Drawing New views row"
+        );
     }
 
     /// #486: the Dimension tool shows the same sketch-geometry element picker as Constraint.
