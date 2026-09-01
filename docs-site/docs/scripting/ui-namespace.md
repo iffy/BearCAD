@@ -91,7 +91,8 @@ bearcad.ui.workbench("view")            -- switch, opening the most recent view/
 local g = bearcad.ui.elements_graph()   -- the graph view's one-node-per-line layout
 bearcad.ui.elements_graph{ shadow_bodies = true }  -- include shadow bodies
 -- g.lanes                              -- how many lanes wide it is
--- g.rows[i]  = { name=, kind=, lane=, x=, y=, w=, h= }   -- window px; pass the row to click()
+-- g.rows[i]  = { name=, kind=, lane=, x=, y=, w=, h=, active= }   -- window px; pass the row to click()
+--                                                          active is the open drawing (#1905)
 -- g.edges[i] = { from=, to=, lane=, kind = "parent" | "dependency" | "related" }
 --                                                          from/to are row numbers
 ```

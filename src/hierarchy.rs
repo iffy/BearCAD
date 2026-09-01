@@ -3957,6 +3957,18 @@ fn row_is_selected(element: &SceneElement, selection: &SceneSelection) -> bool {
     selection.is_selected(element.clone())
 }
 
+/// The drawing currently open in the Drawing workbench (#1905). Distinct from selection:
+/// viewing a page marks its Elements-pane row even with nothing picked on it.
+pub fn node_is_open_drawing(
+    node: HierarchyNode,
+    active_drawing: Option<crate::model::DrawingKey>,
+) -> bool {
+    matches!(
+        (node, active_drawing),
+        (HierarchyNode::Drawing(index), Some(open)) if index == open
+    )
+}
+
 /// Only dim the list when a selected element is actually shown in it.
 fn selection_styles_visible_list(elements: &[HierarchyNode], selection: &SceneSelection) -> bool {
     if selection.is_empty() {
@@ -5281,8 +5293,11 @@ fn show_graph_view(
                 .map(|(row, r)| {
                     let selected = scene_element_for_node(r.node)
                         .is_some_and(|el| row_shows_selection(&el, selection, style_selection));
+                    let open = node_is_open_drawing(r.node, active_drawing);
                     if selected {
                         Some(ui.visuals().selection.bg_fill.gamma_multiply(0.55))
+                    } else if open {
+                        Some(crate::theme::FOCUS_ACCENT.gamma_multiply(0.35))
                     } else if responses[row].hovered() {
                         Some(ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.35))
                     } else {
@@ -5355,9 +5370,12 @@ fn show_graph_view(
                 let selected = element
                     .as_ref()
                     .is_some_and(|el| row_shows_selection(el, selection, style_selection));
+                let open = node_is_open_drawing(node, active_drawing);
                 let related = related_nodes.contains(&node);
                 let tint = if selected {
                     Color32::WHITE
+                } else if open {
+                    crate::theme::FOCUS_ACCENT
                 } else if related {
                     GRAPH_RELATED_EDGE
                 } else {
@@ -5538,7 +5556,13 @@ fn show_graph_view(
                     egui::Align2::LEFT_CENTER,
                     truncated,
                     egui::FontId::default(),
-                    if selected || related { Color32::WHITE } else { Color32::from_gray(200) },
+                    if selected || related {
+                        Color32::WHITE
+                    } else if open {
+                        crate::theme::FOCUS_ACCENT
+                    } else {
+                        Color32::from_gray(200)
+                    },
                 );
             }
         });
@@ -6201,7 +6225,15 @@ fn show_row(
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
             let label = node_label(doc, node);
-            let response = clipped_selectable_label(ui, false, &label, &label);
+            let open = node_is_open_drawing(node, active_drawing);
+            let text = if open {
+                // Same "you are here" mark as the active component (#429/#1905).
+                active_marker_dot(ui);
+                RichText::new(&label).color(crate::theme::FOCUS_ACCENT)
+            } else {
+                RichText::new(&label)
+            };
+            let response = clipped_selectable_label(ui, open, text, &label);
             if row_primary_double_clicked(&response, ui) {
                 on_edit_drawing(index);
             }
@@ -7803,6 +7835,40 @@ label_hidden: false,
         assert_eq!(
             node_label(&doc, HierarchyNode::DrawingProjection { drawing: dkey(0), view: 0 }),
             "Plate — Front"
+        );
+    }
+
+    /// #1905: the open drawing (Drawing workbench) is a highlight on its Elements-pane
+    /// node, not a selection.
+    #[test]
+    fn open_drawing_marks_its_hierarchy_row_not_selection() {
+        let sheet = dkey(0);
+        let other = dkey(1);
+        assert!(
+            node_is_open_drawing(HierarchyNode::Drawing(sheet), Some(sheet)),
+            "the page you are viewing marks its own row"
+        );
+        assert!(
+            !node_is_open_drawing(HierarchyNode::Drawing(sheet), None),
+            "no drawing open → no mark"
+        );
+        assert!(
+            !node_is_open_drawing(HierarchyNode::Drawing(other), Some(sheet)),
+            "a different drawing is not marked"
+        );
+        assert!(
+            !node_is_open_drawing(HierarchyNode::Sketch(skey(0)), Some(sheet)),
+            "only the drawing node itself is marked"
+        );
+        assert!(
+            !node_is_open_drawing(
+                HierarchyNode::DrawingProjection {
+                    drawing: sheet,
+                    view: 0
+                },
+                Some(sheet)
+            ),
+            "projections on the page are not the drawing row"
         );
     }
 

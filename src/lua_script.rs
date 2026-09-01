@@ -7614,14 +7614,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // #1670: read the Graph view's one-node-per-line layout — `{ lanes = n, rows = { { name,
-    // kind, lane, x, y, w, h }, ... }, edges = { { from, to, lane, kind = "parent" | "dependency"
+    // kind, lane, x, y, w, h, active }, ... }, edges = { { from, to, lane, kind = "parent" | "dependency"
     // | "related" },
     // ... } }`, with `from`/`to` as 1-based row numbers and an edge kind of "parent",
     // "dependency", or "related". Rows come out in the order the pane
     // draws them, with the pane's default element filter; pass `{ shadow_bodies = true }` to
     // include shadow bodies the way the filter toggle does. `x/y/w/h` are where the row was
     // drawn last frame, in window pixels like `elements_row_rect` — pass the row to `click`
-    // (#1880). Absent unless the Graph view painted that row.
+    // (#1880). Absent unless the Graph view painted that row. `active` is true for the
+    // drawing currently open in the Drawing workbench (#1905), even when that row is not
+    // selected.
     api.set(
         "elements_graph",
         lua.create_function(|lua, opts: Option<mlua::Table>| {
@@ -7655,6 +7657,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 t.set("name", crate::hierarchy::node_label(&state.doc, entry.node))?;
                 t.set("kind", hierarchy_node_kind_name(entry.node))?;
                 t.set("lane", entry.lane)?;
+                t.set(
+                    "active",
+                    crate::hierarchy::node_is_open_drawing(entry.node, state.editing_drawing),
+                )?;
                 if let Some((_, rect)) = painted.iter().find(|(node, _)| *node == entry.node) {
                     // Window pixels, like `elements_row_rect` / `pane_rect`. `click(row)`
                     // converts to the viewport space the pointer events use (#1880).
@@ -23149,6 +23155,48 @@ pub mod tests {
             r#"
             local ok = pcall(bearcad.ui.elements_view, "spiral")
             assert(not ok, "unknown elements view should error")
+        "#,
+        );
+    }
+
+    /// #1905: viewing a drawing marks that drawing's Elements-pane row (`active`), in both
+    /// the Graph layout scripts read and independently of selection.
+    #[test]
+    fn lua_open_drawing_marks_its_elements_graph_row() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.drawing{ name = "Sheet" }
+
+            local function drawing_rows()
+                local found = {}
+                for _, row in ipairs(bearcad.ui.elements_graph().rows) do
+                    if row.kind == "drawing" then
+                        found[row.name] = row.active
+                    end
+                end
+                return found
+            end
+
+            local open = drawing_rows()
+            assert(open["Sheet"] == true, "the page you are on is marked active")
+            for _, row in ipairs(bearcad.ui.elements_graph().rows) do
+                if row.kind ~= "drawing" then
+                    assert(row.active == false, row.kind .. " should not be the open drawing")
+                end
+            end
+
+            bearcad.ui.workbench("model")
+            assert(drawing_rows()["Sheet"] == false, "leaving the page clears the mark")
+
+            bearcad.ui.workbench("drawing")
+            assert(drawing_rows()["Sheet"] == true, "coming back marks it again")
+
+            bearcad.drawing{ name = "Other" }
+            local two = drawing_rows()
+            assert(two["Other"] == true, "the page just opened is the active one")
+            assert(two["Sheet"] == false, "the other drawing is not")
         "#,
         );
     }
