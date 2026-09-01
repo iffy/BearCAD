@@ -155,9 +155,10 @@ Never assume a call did what you meant. Read it back and assert.
 assert(bearcad.count("body") == 1)          -- line, circle, sketch, constraint, body,
                                             -- shape, extrusion, parameter, drawing,
                                             -- image, joint… (`get` takes the same set)
-local l = bearcad.get{ kind = "line", index = sides[1] }  -- x0,y0,x1,y1,length…
-local x0, y0, x1, y1 = bearcad.line_endpoints(sides[1])
-local s = bearcad.body_stats(box)                         -- volume, triangles, bbox
+local l = bearcad.get{ kind = "line", index = sides[1] }  -- x,y,x1,y1 (also x0,y0), length…
+local g = sides[1]:get()                                  -- same table; missing → nil
+local x0, y0, x1, y1 = bearcad.line_endpoints(sides[1])    -- missing → nil
+local s = box:stats()                                     -- or body_stats(box); missing → nil, no mesh → error
 assert(math.abs(s.volume - 80 * 50 * 20) < 200)           -- tessellated, so allow a tolerance
 
 bearcad.body_faces(box)    -- { kind = "body_mesh_face", body, face = {x,y,z}, normal = {x,y,z} }

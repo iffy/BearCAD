@@ -23,7 +23,7 @@ use eframe::egui;
 /// (which compiles `script_json` but not this module) can read them too.
 pub use crate::script::{count_kind, INSPECT_KINDS};
 
-use mlua::{FromLua, IntoLua, Lua, MultiValue, Table, UserData, UserDataMethods, Value};
+use mlua::{FromLua, IntoLua, IntoLuaMulti, Lua, MultiValue, Table, UserData, UserDataMethods, Value};
 use std::path::Path;
 
 /// Per-tick context passed to Lua callbacks via `Lua::set_app_data`.
@@ -214,6 +214,28 @@ impl UserData for LuaElement {
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             Ok(crate::names::element_name(unsafe { &tick.state().doc }, this.element.clone())
                 .map(str::to_string))
+        });
+        // #1882: inspect without spelling kind/index; `get` is the inverse of create.
+        methods.add_method("get", |lua, this, ()| lua_handle_get(lua, this));
+        methods.add_method("stats", |lua, this, ()| {
+            if !matches!(this.element, SceneElement::Body(_)) {
+                return Err(mlua::Error::external("stats() is for bodies"));
+            }
+            if this.live_index(lua).is_none() {
+                return Ok(Value::Nil);
+            }
+            let bearcad: Table = lua.globals().get("bearcad")?;
+            let stats: mlua::Function = bearcad.get("body_stats")?;
+            stats.call::<Value>(lua.create_userdata(this.clone())?)
+        });
+        methods.add_method("select", |lua, this, additive: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                tick.exec(Instruction::SelectSceneElement {
+                    element: this.element.clone(),
+                    additive: additive.unwrap_or(false),
+                })
+            }
         });
         // #1871: `box:face("top")` is the same object `body_faces` lists — begin_sketch,
         // extrude_face, and fillet/chamfer all accept it.
@@ -2454,7 +2476,23 @@ fn parse_constraint_point(lua: &Lua, value: Value) -> mlua::Result<ConstraintPoi
 }
 
 fn parse_constraint_point_table(lua: &Lua, table: Table) -> mlua::Result<ConstraintPoint> {
-    let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
+    let mut kind: String = table.get("kind").or_else(|_| table.get("type"))?;
+    // #1882: a point selection reports `kind = "point"` plus the parent identity.
+    if kind.eq_ignore_ascii_case("point") {
+        if table.contains_key("endpoint")? {
+            kind = "line".into();
+        } else if table.contains_key("anchor")? {
+            if table.contains_key("point")? {
+                kind = "image".into();
+            } else {
+                kind = "sketch_text".into();
+            }
+        } else if table.get::<Option<bool>>("center")?.unwrap_or(false) {
+            kind = "face".into();
+        } else {
+            kind = "circle".into();
+        }
+    }
     if kind.eq_ignore_ascii_case("origin") {
         return Ok(ConstraintPoint::Origin);
     }
@@ -3994,6 +4032,214 @@ fn constraint_kind_name(kind: &ConstraintKind) -> &'static str {
         ConstraintKind::Tangent { .. } => "tangent",
         ConstraintKind::TangentCircle { .. } => "tangent_circle",
     }
+}
+
+fn lua_handle_get(lua: &Lua, this: &LuaElement) -> mlua::Result<Value> {
+    match &this.element {
+        SceneElement::Point(p) => {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let doc = unsafe { &tick.state().doc };
+            Ok(Value::Table(point_identity_table(lua, doc, p)?))
+        }
+        _ => {
+            if this.live_index(lua).is_none() {
+                return Ok(Value::Nil);
+            }
+            let opts = lua.create_table()?;
+            opts.set("kind", element_kind_name(this.element.clone()))?;
+            opts.set("index", this.live_index(lua).unwrap())?;
+            let bearcad: Table = lua.globals().get("bearcad")?;
+            let get: mlua::Function = bearcad.get("get")?;
+            get.call(opts)
+        }
+    }
+}
+
+fn line_end_script_name(end: LineEnd) -> &'static str {
+    match end {
+        LineEnd::Start => "start",
+        LineEnd::End => "end",
+    }
+}
+
+fn point_identity_table(
+    lua: &Lua,
+    doc: &crate::model::Document,
+    p: &ConstraintPoint,
+) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    match p {
+        ConstraintPoint::LineEndpoint { line, end } => {
+            t.set("kind", "line")?;
+            t.set(
+                "index",
+                doc.lines.keys().position(|k| k == *line).unwrap_or(0),
+            )?;
+            t.set("endpoint", line_end_script_name(*end))?;
+        }
+        ConstraintPoint::CircleCenter(c) => {
+            t.set("kind", "circle")?;
+            t.set(
+                "index",
+                doc.circles.keys().position(|k| k == *c).unwrap_or(0),
+            )?;
+            t.set("point", true)?;
+        }
+        ConstraintPoint::Origin => t.set("kind", "origin")?,
+        ConstraintPoint::FaceVertex { face, index } => {
+            t.set("kind", "face")?;
+            t.set("index", *index)?;
+            t.set("face", face_kind_name(face))?;
+        }
+        ConstraintPoint::FaceCircleCenter { face } => {
+            t.set("kind", "face")?;
+            t.set("center", true)?;
+            t.set("face", face_kind_name(face))?;
+        }
+        ConstraintPoint::TextAnchor { text, anchor } => {
+            t.set("kind", "sketch_text")?;
+            t.set(
+                "index",
+                doc.sketch_texts.keys().position(|k| k == *text).unwrap_or(0),
+            )?;
+            t.set("anchor", anchor.lua_name())?;
+        }
+        ConstraintPoint::ImageCalibrationPoint { image, index } => {
+            t.set("kind", "image")?;
+            t.set(
+                "index",
+                doc.tracing_images
+                    .keys()
+                    .position(|k| k == *image)
+                    .unwrap_or(0),
+            )?;
+            t.set("point", *index)?;
+        }
+        ConstraintPoint::ImageAnchor { image, anchor } => {
+            t.set("kind", "image")?;
+            t.set(
+                "index",
+                doc.tracing_images
+                    .keys()
+                    .position(|k| k == *image)
+                    .unwrap_or(0),
+            )?;
+            t.set("anchor", anchor.lua_name())?;
+        }
+    }
+    Ok(t)
+}
+
+fn fill_selection_point(lua: &Lua, doc: &crate::model::Document, entry: &Table, p: &ConstraintPoint) -> mlua::Result<()> {
+    let ident = point_identity_table(lua, doc, p)?;
+    // Keep kind "point" so existing scripts that branch on it still work; copy the
+    // parent identity (index, endpoint, …) so the table can be passed back to select.
+    for pair in ident.pairs::<Value, Value>() {
+        let (k, v) = pair?;
+        if matches!(&k, Value::String(s) if s.to_str().is_ok_and(|s| s == "kind")) {
+            continue;
+        }
+        entry.set(k, v)?;
+    }
+    Ok(())
+}
+
+fn extrusion_body_script(doc: &crate::model::Document, key: crate::model::ExtrusionKey) -> &'static str {
+    for body in doc.bodies.values() {
+        if body.source.cut_extrusion_indices().contains(&key) {
+            return "cut";
+        }
+    }
+    for body in doc.bodies.values() {
+        if !body.source.extrusion_indices().contains(&key) {
+            continue;
+        }
+        match &body.source {
+            crate::model::BodySource::Extrusion(k) if *k == key => return "new",
+            crate::model::BodySource::Extrusions(ks) if ks.first() == Some(&key) => return "new",
+            _ => return "add",
+        }
+    }
+    "new"
+}
+
+fn body_ordinals_table(
+    lua: &Lua,
+    doc: &crate::model::Document,
+    keys: &[crate::model::BodyKey],
+) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    for (i, k) in keys.iter().enumerate() {
+        t.set(i + 1, doc.bodies.keys().position(|x| x == *k))?;
+    }
+    Ok(t)
+}
+
+fn extrude_target_table(
+    lua: &Lua,
+    doc: &crate::model::Document,
+    target: &crate::model::ExtrudeTarget,
+) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    match target {
+        crate::model::ExtrudeTarget::Plane(k) => {
+            t.set(
+                "plane",
+                doc.construction_planes.keys().position(|x| x == *k).unwrap_or(0),
+            )?;
+        }
+        crate::model::ExtrudeTarget::Vertex(p) => {
+            t.set("vertex", point_identity_table(lua, doc, p)?)?;
+        }
+        crate::model::ExtrudeTarget::Face(face) => {
+            t.set("face", extrude_face_profile_table(lua, doc, face)?)?;
+        }
+        crate::model::ExtrudeTarget::BodyFace(face) => {
+            let f = lua.create_table()?;
+            f.set("kind", face_kind_name(face))?;
+            t.set("face", f)?;
+        }
+        crate::model::ExtrudeTarget::RepeatedFace { face, op, instance } => {
+            let f = lua.create_table()?;
+            f.set("kind", face_kind_name(face))?;
+            t.set("face", f)?;
+            t.set(
+                "repeat_op",
+                doc.repeat_ops.keys().position(|x| x == *op).unwrap_or(0),
+            )?;
+            t.set("instance", *instance)?;
+        }
+    }
+    Ok(t)
+}
+
+fn extrude_face_profile_table(
+    lua: &Lua,
+    doc: &crate::model::Document,
+    face: &crate::model::ExtrudeFace,
+) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    match face {
+        crate::model::ExtrudeFace::Circle(c) => {
+            t.set(
+                "circle",
+                doc.circles.keys().position(|k| k == *c).unwrap_or(0),
+            )?;
+        }
+        crate::model::ExtrudeFace::Polygon(lines) => {
+            let poly = lua.create_table()?;
+            for (i, k) in lines.iter().enumerate() {
+                poly.set(i + 1, doc.lines.keys().position(|x| x == *k))?;
+            }
+            t.set("polygon", poly)?;
+        }
+        other => {
+            t.set("kind", format!("{other:?}"))?;
+        }
+    }
+    Ok(t)
 }
 
 /// Sources `bearcad.project{ ... }` should project into the open sketch (#1351).
@@ -5547,6 +5793,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     };
                     t.set("x0", line.x0)?;
                     t.set("y0", line.y0)?;
+                    t.set("x", line.x0)?;
+                    t.set("y", line.y0)?;
                     t.set("x1", line.x1)?;
                     t.set("y1", line.y1)?;
                     t.set("construction", line.construction)?;
@@ -5639,17 +5887,29 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "extrusion" => {
                     // The script's `index` is the extrusion's ordinal among the live
                     // ones (#1055).
-                    let Some(extrusion) =
-                        doc.extrusions.keys().nth(index).map(|k| &doc.extrusions[k])
-                    else {
+                    let Some(key) = doc.extrusions.keys().nth(index) else {
                         return Ok(Value::Nil);
                     };
+                    let extrusion = &doc.extrusions[key];
                     t.set("distance", extrusion.distance)?;
                     t.set(
                         "sketch",
                         doc.sketches.keys().position(|k| k == extrusion.sketch),
                     )?;
                     t.set("faces", extrusion.faces.len())?;
+                    t.set("body", extrusion_body_script(doc, key))?;
+                    t.set("symmetric", extrusion.symmetric)?;
+                    t.set("taper", extrusion.taper)?;
+                    t.set("taper_mode", extrusion.taper_mode.as_str())?;
+                    if !extrusion.taper_expression.is_empty() {
+                        t.set("taper_expression", extrusion.taper_expression.as_str())?;
+                    }
+                    if !extrusion.expression.is_empty() {
+                        t.set("expression", extrusion.expression.as_str())?;
+                    }
+                    if let Some(target) = &extrusion.target {
+                        t.set("to", extrude_target_table(lua, doc, target)?)?;
+                    }
                     if let Some(name) = &extrusion.name {
                         t.set("name", name.as_str())?;
                     }
@@ -5999,8 +6259,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         return Ok(Value::Nil);
                     };
                     t.set("op", op.kind.script_name())?;
-                    t.set("a", op.a.len())?;
-                    t.set("b", op.b.len())?;
+                    t.set("a", body_ordinals_table(lua, doc, &op.a)?)?;
+                    t.set("b", body_ordinals_table(lua, doc, &op.b)?)?;
                     t.set("keep_b", op.keep_b)?;
                     t.set("outputs", op.outputs.len())?;
                     if let Some(name) = &op.name {
@@ -6215,14 +6475,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
             let doc = unsafe { &tick.state().doc };
-            let Some(index) = doc.bodies.keys().nth(index) else {
+            let Some(key) = doc.bodies.keys().nth(index) else {
                 return Ok(Value::Nil);
             };
-            let Some(mesh) = crate::extrude::body_solid_mesh(doc, index) else {
-                return Ok(Value::Nil);
+            let Some(mesh) = crate::extrude::body_solid_mesh(doc, key) else {
+                return Err(mlua::Error::external(format!(
+                    "body {index} has no mesh"
+                )));
             };
             let Some((min, max)) = mesh.bounds() else {
-                return Ok(Value::Nil);
+                return Err(mlua::Error::external(format!(
+                    "body {index} has no mesh"
+                )));
             };
             let t = lua.create_table()?;
             t.set("volume", crate::extrude::mesh_signed_volume(&mesh).abs())?;
@@ -6404,18 +6668,74 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             for (i, element) in state.scene_selection.iter().enumerate() {
                 let entry = lua.create_table()?;
                 entry.set("kind", element_kind_name(element.clone()))?;
-                // Point/FaceEdge selections have no flat (kind, index) mapping (they name a
-                // vertex/edge of another element); report just their kind and leave `index` nil.
-                if !matches!(
-                    element,
-                    SceneElement::Point(_)
-                        | SceneElement::FaceEdge(_)
-                        | SceneElement::BodyFace { .. }
-        | SceneElement::BodyCylinder { .. }
-        | SceneElement::BodyAxis { .. }
-        | SceneElement::CircleNormal(_)
-                ) {
-                    entry.set("index", element_index(&state.doc, element))?;
+                // #1882: every selection entry carries identity so the table works as a
+                // handle (point/face-edge used to omit `index` entirely).
+                match &element {
+                    SceneElement::Point(p) => fill_selection_point(lua, &state.doc, &entry, p)?,
+                    SceneElement::CircleNormal(key) => {
+                        entry.set(
+                            "index",
+                            state.doc.circles.keys().position(|k| k == *key).unwrap_or(0),
+                        )?;
+                    }
+                    SceneElement::BodyFace {
+                        body,
+                        centroid,
+                        normal,
+                    } => {
+                        let ordinal = state.doc.bodies.keys().position(|k| k == *body).unwrap_or(0);
+                        entry.set("index", ordinal)?;
+                        entry.set("body", ordinal)?;
+                        entry.set(
+                            "face",
+                            vec3_lua(lua, crate::hierarchy::dequantize_body_point(*centroid))?,
+                        )?;
+                        entry.set(
+                            "normal",
+                            vec3_lua(
+                                lua,
+                                crate::hierarchy::dequantize_body_point(*normal).normalize_or_zero(),
+                            )?,
+                        )?;
+                    }
+                    SceneElement::BodyCylinder {
+                        body,
+                        origin,
+                        dir,
+                        radius,
+                    } => {
+                        let ordinal = state.doc.bodies.keys().position(|k| k == *body).unwrap_or(0);
+                        entry.set("index", ordinal)?;
+                        entry.set("body", ordinal)?;
+                        entry.set(
+                            "cylinder",
+                            vec3_lua(lua, crate::hierarchy::dequantize_body_point(*origin))?,
+                        )?;
+                        entry.set(
+                            "direction",
+                            vec3_lua(lua, crate::hierarchy::dequantize_body_point(*dir))?,
+                        )?;
+                        entry.set("radius", *radius as f32 / 1000.0)?;
+                    }
+                    SceneElement::BodyAxis { body, origin, dir } => {
+                        let ordinal = state.doc.bodies.keys().position(|k| k == *body).unwrap_or(0);
+                        entry.set("index", ordinal)?;
+                        entry.set("body", ordinal)?;
+                        entry.set(
+                            "origin",
+                            vec3_lua(lua, crate::hierarchy::dequantize_body_point(*origin))?,
+                        )?;
+                        entry.set(
+                            "direction",
+                            vec3_lua(lua, crate::hierarchy::dequantize_body_point(*dir))?,
+                        )?;
+                    }
+                    SceneElement::FaceEdge(_) => {
+                        entry.set("index", element_index(&state.doc, element.clone()))?;
+                    }
+                    _ => {
+                        entry.set("index", element_index(&state.doc, element.clone()))?;
+                    }
                 }
                 out.set(i + 1, entry)?;
             }
@@ -8510,14 +8830,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let state = unsafe { tick.state() };
             // The script's `index` is the line's ordinal (#1055).
-            let line = state
-                .doc
-                .lines
-                .keys()
-                .nth(index)
-                .map(|k| &state.doc.lines[k])
-                .ok_or_else(|| mlua::Error::external(format!("no line {index}")))?;
-            Ok((line.x0, line.y0, line.x1, line.y1))
+            let Some(line) = state.doc.lines.keys().nth(index).map(|k| &state.doc.lines[k])
+            else {
+                return Ok(mlua::MultiValue::new());
+            };
+            (line.x0, line.y0, line.x1, line.y1).into_lua_multi(lua)
         })?,
     )?;
 
@@ -13513,10 +13830,17 @@ pub mod tests {
         run_lua_with_synthetic(source).0
     }
 
+    fn run_lua_on(state: AppState, source: &str) -> AppState {
+        run_lua_on_with_synthetic(state, source).0
+    }
+
     fn run_lua_with_synthetic(source: &str) -> (AppState, SyntheticInput) {
+        run_lua_on_with_synthetic(AppState::default(), source)
+    }
+
+    fn run_lua_on_with_synthetic(mut state: AppState, source: &str) -> (AppState, SyntheticInput) {
         let mut runner = ScriptRunner::from_lua_source(source).unwrap();
         runner.verbose = false;
-        let mut state = AppState::default();
         let mut synthetic = SyntheticInput::default();
         let ctx = egui::Context::default();
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
@@ -20128,6 +20452,173 @@ pub mod tests {
             assert(sel[1].kind == "line")
             assert(sel[1].index == 0)
         "#,
+        );
+    }
+
+    /// #1882: `get` (and `handle:get()`) echoes the keys create/edit accept, plus evaluated
+    /// numbers. Extrusion reports body/to/taper/expression; combine reports a/b lists.
+    /// `selection()` tables work as handles; a point selection keeps its identity.
+    #[test]
+    fn lua_get_is_the_inverse_of_create() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.add_parameter("h", "12")
+            local sides = bearcad.rect{ width = 20, height = 10 }
+            local box = bearcad.extrude{
+              profiles = sides, distance = "h", taper = 2, taper_mode = "distance",
+              body = "new", name = "Block",
+            }
+            local ext = bearcad.get{ kind = "extrusion", index = 0 }
+            assert(ext.body == "new", "body mode, got " .. tostring(ext.body))
+            assert(ext.expression == "h", "expression, got " .. tostring(ext.expression))
+            assert(math.abs(ext.distance - 12) < 1e-3, "evaluated distance " .. tostring(ext.distance))
+            assert(math.abs(ext.taper - 2) < 1e-3, "taper " .. tostring(ext.taper))
+            assert(ext.taper_mode == "distance", "taper_mode " .. tostring(ext.taper_mode))
+            assert(ext.to == nil, "no up-to target")
+            assert(ext.name == "Block")
+            local eg = bearcad.element("extrusion", 0):get()
+            assert(eg.body == "new" and eg.expression == "h",
+              "handle:get extrusion, body=" .. tostring(eg.body) .. " expr=" .. tostring(eg.expression))
+            assert(box:kind() == "body", "extrude returns a body, got " .. tostring(box:kind()))
+            local bg = box:get()
+            assert(bg ~= nil, "body handle:get()")
+            box:select()
+            local sel = bearcad.selection()
+            assert(#sel == 1 and sel[1].kind == "body",
+              "select body, got " .. (#sel > 0 and tostring(sel[1].kind) or "nothing"))
+            bearcad.clear_selection()
+            bearcad.select(sel[1])
+            assert(#bearcad.selection() == 1, "selection table works as a handle")
+            assert(math.abs(box:stats().volume - bearcad.body_stats(box).volume) < 1e-3,
+              "stats vs body_stats")
+
+            -- Up-to a construction plane round-trips as `to`.
+            bearcad.new()
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, to = { plane = 0 } }
+            ext = bearcad.get{ kind = "extrusion", index = 0 }
+            assert(ext.to ~= nil and ext.to.plane == 0, "to.plane, got " .. tostring(ext.to and ext.to.plane))
+
+            -- Add/cut body modes.
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 40 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.begin_sketch{
+              kind = "extrude_cap", extrusion = 0,
+              profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
+            }
+            bearcad.rect{ x = 5, y = 5, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 4, body = "add" }
+            ext = bearcad.get{ kind = "extrusion", index = 1 }
+            assert(ext.body == "add", "add body mode, got " .. tostring(ext.body))
+            bearcad.rect{ x = 20, y = 20, width = 8, height = 8 }
+            bearcad.extrude{ polygon = {8, 9, 10, 11}, distance = 12, body = "cut" }
+            ext = bearcad.get{ kind = "extrusion", index = 2 }
+            assert(ext.body == "cut", "cut body mode, got " .. tostring(ext.body))
+
+            -- Combine get lists the operand bodies, not just counts.
+            bearcad.new()
+            local a = bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            local b = bearcad.cuboid{ width = 6, depth = 6, height = 20, at = {0, 0, 0} }
+            bearcad.combine{ op = "cut", a = {a}, b = {b} }
+            local c = bearcad.get{ kind = "combine", index = 0 }
+            assert(c.op == "cut")
+            assert(type(c.a) == "table" and #c.a == 1, "a list, got " .. type(c.a))
+            assert(type(c.b) == "table" and #c.b == 1)
+            assert(c.a[1] == a:index() or (type(c.a[1]) == "userdata" and c.a[1]:index() == a:index()),
+              "a[1] names the first body")
+            bearcad.edit_combine{ index = 0, a = c.a, b = c.b, op = "cut" }
+
+            -- Circle get already has radius; line get includes create's x/y.
+            bearcad.new()
+            bearcad.circle{ x = 3, y = 4, radius = 5 }
+            local circ = bearcad.get{ kind = "circle", index = 0 }
+            assert(math.abs(circ.radius - 5) < 1e-4 and math.abs(circ.r - 5) < 1e-4)
+            local ln = bearcad.line{ x = 1, y = 2, x1 = 11, y1 = 2 }
+            local lg = ln:get()
+            assert(math.abs(lg.x - 1) < 1e-4 and math.abs(lg.y - 2) < 1e-4)
+            assert(math.abs(lg.x1 - 11) < 1e-4)
+
+            -- Point selections keep identity and work as handles.
+            bearcad.clear_selection()
+            bearcad.select{ kind = "line", index = 0, endpoint = "start" }
+            sel = bearcad.selection()
+            assert(#sel == 1)
+            assert(sel[1].kind == "point" or sel[1].kind == "line",
+              "point kind, got " .. tostring(sel[1].kind))
+            assert(sel[1].index == 0, "point parent index, got " .. tostring(sel[1].index))
+            assert(sel[1].endpoint == "start", "endpoint, got " .. tostring(sel[1].endpoint))
+            bearcad.clear_selection()
+            bearcad.select(sel[1])
+            assert(#bearcad.selection() == 1, "point selection table works as a handle")
+            "#,
+        );
+    }
+
+    /// #1891: missing identity is nil on find-style reads; a missing write operand and an
+    /// unknown enum error. `body_stats` distinguishes "no such body" from "body has no mesh".
+    #[test]
+    fn lua_missing_identity_is_nil_unknown_is_an_error() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            -- Find-style reads: missing → nil.
+            assert(bearcad.get{ kind = "line", index = 0 } == nil)
+            assert(bearcad.find("no-such") == nil)
+            assert(bearcad.body_stats(0) == nil)
+            assert(bearcad.line_endpoints(0) == nil)
+            assert(select(1, bearcad.line_endpoints(0)) == nil)
+
+            local ok, err = pcall(function() return bearcad.get{ kind = "widget", index = 0 } end)
+            assert(not ok, "unknown get kind should error")
+            assert(tostring(err):find("widget"), tostring(err))
+
+            -- Missing required operand of a write → error.
+            ok, err = pcall(function() bearcad.extrude{ distance = 10 } end)
+            assert(not ok, "extrude without profiles should error")
+            ok, err = pcall(function() bearcad.combine{ op = "cut" } end)
+            assert(not ok, "combine without a/b should error")
+            ok, err = pcall(function() bearcad.delete() end)
+            assert(not ok, "delete without an element should error")
+
+            -- Unknown enums always error.
+            bearcad.rect{ width = 10, height = 10 }
+            ok, err = pcall(function()
+              bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5, taper_mode = "sideways" }
+            end)
+            assert(not ok, "unknown taper_mode should error")
+            assert(tostring(err):find("sideways"), tostring(err))
+            ok, err = pcall(function()
+              bearcad.combine{ op = "melt", a = {0}, b = {0} }
+            end)
+            assert(not ok, "unknown boolean op should error")
+            "#,
+        );
+
+        let mut state = crate::actions::AppState::default();
+        let mesh = state.doc.imported_meshes.insert(crate::model::ImportedMesh {
+            triangles: Vec::new(),
+            source_name: "empty".into(),
+            step_bytes: None,
+        });
+        state.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh),
+            name: None,
+            material: None,
+            shadow: false,
+        });
+        run_lua_on(
+            state,
+            r#"
+            assert(bearcad.count("body") == 1)
+            assert(bearcad.body_stats(99) == nil, "missing body is nil")
+            local ok, err = pcall(bearcad.body_stats, 0)
+            assert(not ok, "existing body with no mesh should error, not nil")
+            err = tostring(err)
+            assert(err:find("mesh") or err:find("no solid"), "unexpected: " .. err)
+            "#,
         );
     }
 
