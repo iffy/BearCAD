@@ -2452,7 +2452,8 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   node, with its own icon, per drawing). Right-clicking a drawing — or clicking its row —
   **opens it** in the drawing pane, which takes over the central area. The **editor** is
   white-on-black to match the app's dark-mode aesthetic (#254); **export** inverts back to
-  black ink on a white sheet.
+  black ink on a white sheet. While that drawing's workbench is open, its List and Graph
+  rows are marked in the Elements pane (accent, not selection) (#1905).
 - **Workbenches (#254/#271/#272):** opening a drawing switches to the **Drawing workbench**,
   whose toolbar shows **Back, Select, Projection, Aligned view, Dimension, Zoom loupe, Text** (#295: no Move
   tool; the Select tool drags projections directly, #293 — and **only** the Select tool: with
