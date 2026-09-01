@@ -419,7 +419,8 @@ bearcad.edit_section_plane{ cut = 0, exclude_bodies = {1} }  -- or: everything b
 bearcad.edit_section_plane{ cut = 0, bodies = "all", exclude_bodies = false }  -- back to all
 ```
 
-A technical drawing can import a view — the whole model cut, or just some bodies:
+A technical drawing can import a view — the whole model cut, or just some bodies.
+See [Drawings](./drawings) for the rest of the page API:
 
 ```lua
 bearcad.drawing_view{ drawing = 0, cross_section = 0 }            -- the whole view
