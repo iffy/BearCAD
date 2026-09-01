@@ -34,8 +34,9 @@ pub struct PreviewRect {
 use crate::hierarchy::ElementVisibility;
 use crate::dimensions::{
     dimension_arrow_dirs, dimension_arrow_wing_world, dimension_arrows_outside,
-    pixels_to_world_distance, LinearDimensionWorldGeom, PlanarLabelView, ARROW_LENGTH, ARROW_WING,
-    LINE_WIDTH,
+    dimension_outside_overshoot, dimension_reverse_arrow_len, pixels_to_world_distance,
+    LinearDimensionWorldGeom, PlanarLabelView, ARROW_LENGTH, ARROW_WING, LINE_WIDTH,
+    OUTSIDE_REVERSE_ARROW,
 };
 use crate::gpu_viewport::dim_labels::ViewportDimLabel;
 use crate::selection::SceneSelection;
@@ -5957,15 +5958,12 @@ fn push_linear_dimension_world(
     };
     let along = world.along_world.normalize_or_zero();
     let outside = dimension_arrows_outside(span_px, ARROW_LENGTH);
-    let arrow_len = pixels_to_world_distance(project, world.dim_a, along, ARROW_LENGTH);
-    let (line_a, line_b) = if outside {
-        (
-            world.dim_a - along * arrow_len,
-            world.dim_b + along * arrow_len,
-        )
-    } else {
-        (world.dim_a, world.dim_b)
-    };
+    let overshoot_px = dimension_outside_overshoot(span_px, ARROW_LENGTH);
+    let overshoot = pixels_to_world_distance(project, world.dim_a, along, overshoot_px);
+    let (line_a, line_b) = (
+        world.dim_a - along * overshoot,
+        world.dim_b + along * overshoot,
+    );
     mesh.push_line_segment(
         line_a,
         line_b,
@@ -5981,6 +5979,8 @@ fn push_linear_dimension_world(
         world,
         world.dim_a,
         dir_a,
+        ARROW_LENGTH,
+        ARROW_WING,
         color,
         cam,
         viewport,
@@ -5992,12 +5992,46 @@ fn push_linear_dimension_world(
         world,
         world.dim_b,
         dir_b,
+        ARROW_LENGTH,
+        ARROW_WING,
         color,
         cam,
         viewport,
         view_proj,
         project,
     );
+    if outside {
+        let rev_px = dimension_reverse_arrow_len(ARROW_LENGTH);
+        let wing_px = ARROW_WING * OUTSIDE_REVERSE_ARROW;
+        let main_len = pixels_to_world_distance(project, world.dim_a, along, ARROW_LENGTH);
+        let rev_len = pixels_to_world_distance(project, world.dim_a, along, rev_px);
+        push_arrowhead_world(
+            mesh,
+            world,
+            world.dim_a - dir_a * (main_len + rev_len),
+            -dir_a,
+            rev_px,
+            wing_px,
+            color,
+            cam,
+            viewport,
+            view_proj,
+            project,
+        );
+        push_arrowhead_world(
+            mesh,
+            world,
+            world.dim_b - dir_b * (main_len + rev_len),
+            -dir_b,
+            rev_px,
+            wing_px,
+            color,
+            cam,
+            viewport,
+            view_proj,
+            project,
+        );
+    }
 }
 
 fn push_arrowhead_world(
@@ -6005,6 +6039,8 @@ fn push_arrowhead_world(
     world: &LinearDimensionWorldGeom,
     tip: Vec3,
     dir: Vec3,
+    length_px: f32,
+    wing_px: f32,
     color: Color32,
     cam: &Camera,
     viewport: UiRect,
@@ -6015,8 +6051,8 @@ fn push_arrowhead_world(
     if along.length_squared() < 1e-8 {
         return;
     }
-    let arrow_len = pixels_to_world_distance(project, tip, along, ARROW_LENGTH);
-    let arrow_wing = pixels_to_world_distance(project, tip, along, ARROW_WING);
+    let arrow_len = pixels_to_world_distance(project, tip, along, length_px);
+    let arrow_wing = pixels_to_world_distance(project, tip, along, wing_px);
     let mut side = dimension_arrow_wing_world(along, world.outward_world);
     if side.length_squared() < 1e-8 {
         let to_cam = (cam.eye() - tip).normalize_or_zero();

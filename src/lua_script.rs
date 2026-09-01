@@ -25902,6 +25902,28 @@ pub mod tests {
         );
     }
 
+    /// #1925: a span too short for both heads exports four arrow polygons — the
+    /// two outside-in heads plus a reverse tail behind each.
+    #[test]
+    fn drawing_export_short_dimension_has_reverse_arrow_polygons() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 2, height = 80 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 1 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
+            bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {2,0,0} }
+        "#,
+        );
+        let svg = crate::drawing::drawing_to_svg(&state.doc, dkey(0)).expect("svg");
+        let polys = svg.matches("<polygon ").count();
+        assert_eq!(
+            polys, 4,
+            "short dimension should export two heads and two reverse tails, got {polys} polygons:\n{svg}"
+        );
+    }
+
     fn parse_svg_text_layout(line: &str) -> (f32, f32, f32, f32) {
         let attr = |name: &str| -> f32 {
             let key = format!("{name}=\"");
