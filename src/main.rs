@@ -1623,6 +1623,10 @@ struct ExploderState {
     /// Shift is released, and the fan dismisses immediately — unlike Shift held only while
     /// clicking loupes, which keeps the fan open for multi-select.
     opened_with_shift: bool,
+    /// Opened on the drawing workbench (#1641/#1912). The two workbenches share one `exploder`
+    /// slot; a page fan — even an empty one, the frozen hitbox over nothing — must not be
+    /// mistaken for a leftover 3D fan and dropped on the next frame.
+    page_space: bool,
 }
 
 impl ExploderState {
@@ -26640,6 +26644,113 @@ fn drawing_view_edge_mid(ctx: &egui::Context, view: usize) -> Option<egui::Pos2>
     ctx.data(|d| d.get_temp::<egui::Pos2>(drawing_view_edge_mid_id(view)))
 }
 
+/// Projected edges and corners under `pp` for the drawing-page Exploder (#1641/#1714/#1912).
+/// `to_screen` is the card's own map, or a zoom loupe's magnified one; `clip` (view mm)
+/// keeps a loupe's crowd to geometry that actually appears inside the detail circle.
+fn push_projected_drawing_crowd(
+    fan: &mut Vec<construction::CrowdCandidate>,
+    drawing: model::DrawingKey,
+    view: usize,
+    world_edges: &[(Vec3, Vec3)],
+    proj: &[(egui::Vec2, egui::Vec2)],
+    to_screen: &impl Fn(egui::Vec2) -> egui::Pos2,
+    pp: egui::Pos2,
+    reach: f32,
+    vertex_bodies: &std::collections::HashMap<[i32; 3], Vec<model::BodyKey>>,
+    clip: Option<(glam::Vec2, f32)>,
+    exclude_edge: impl Fn(egui::Vec2, egui::Vec2) -> bool,
+) {
+    let screen_pt = |p: egui::Pos2| Vec3::new(p.x, p.y, 0.0);
+    let mut seen_corners: std::collections::HashSet<(Option<model::BodyKey>, [i32; 3])> =
+        std::collections::HashSet::new();
+    let in_clip = |uv: egui::Vec2| {
+        let Some((c, r)) = clip else {
+            return true;
+        };
+        (glam::Vec2::new(uv.x, uv.y) - c).length() <= r
+    };
+    for (i, (a, b)) in proj.iter().enumerate() {
+        if exclude_edge(*a, *b) {
+            continue;
+        }
+        let (sa, sb) = match clip {
+            Some((c, r)) => {
+                let Some((ca, cb)) = crate::drawing::clip_segment_to_circle(
+                    glam::Vec2::new(a.x, a.y),
+                    glam::Vec2::new(b.x, b.y),
+                    c,
+                    r,
+                ) else {
+                    continue;
+                };
+                (
+                    to_screen(egui::vec2(ca.x, ca.y)),
+                    to_screen(egui::vec2(cb.x, cb.y)),
+                )
+            }
+            None => (to_screen(*a), to_screen(*b)),
+        };
+        if (sb - sa).length() < 1.0 {
+            continue;
+        }
+        let (wa, wb) = world_edges[i];
+        let (qa, qb) = {
+            let a = hierarchy::quantize_body_point(wa);
+            let b = hierarchy::quantize_body_point(wb);
+            if a <= b { (a, b) } else { (b, a) }
+        };
+        let body = crate::drawing::drawing_view_edge_body(vertex_bodies, wa, wb);
+        let d = dist_point_to_segment(pp, sa, sb);
+        if d <= reach {
+            fan.push(construction::CrowdCandidate {
+                kind: construction::PickTargetKind::ProjectedEdge {
+                    drawing,
+                    view,
+                    body,
+                    a: qa,
+                    b: qb,
+                    outline: vec![screen_pt(sa), screen_pt(sb)],
+                },
+                anchor: screen_pt(closest_point_on_segment(pp, sa, sb)),
+                dist_px: d,
+            });
+        }
+        for (world, screen, uv) in [(wa, to_screen(*a), *a), (wb, to_screen(*b), *b)] {
+            if !in_clip(uv) {
+                continue;
+            }
+            let qp = hierarchy::quantize_body_point(world);
+            for cbody in crate::drawing::drawing_view_corner_bodies(vertex_bodies, qp) {
+                if !seen_corners.insert((cbody, qp)) {
+                    continue;
+                }
+                let cd = (screen - pp).length();
+                if cd > reach {
+                    continue;
+                }
+                let r = 5.0;
+                fan.push(construction::CrowdCandidate {
+                    kind: construction::PickTargetKind::ProjectedCorner {
+                        drawing,
+                        view,
+                        body: cbody,
+                        p: qp,
+                        outline: vec![
+                            screen_pt(screen + egui::vec2(-r, 0.0)),
+                            screen_pt(screen + egui::vec2(r, 0.0)),
+                            screen_pt(screen),
+                            screen_pt(screen + egui::vec2(0.0, -r)),
+                            screen_pt(screen + egui::vec2(0.0, r)),
+                        ],
+                    },
+                    anchor: screen_pt(screen),
+                    dist_px: cd,
+                });
+            }
+        }
+    }
+}
+
 impl App {
     /// Tab for in-progress sketch dimensions. Consumes Tab so focus cannot escape to the toolbar
     /// while creating geometry. Enter is handled after dim TextEdits render (see draw_viewport).
@@ -26763,16 +26874,7 @@ impl App {
     /// `exploder` slot, and neither can hover-test the other's anchors, so a fan left open by
     /// one is dropped when the other takes over.
     fn exploder_is_page_fan(&self) -> bool {
-        self.exploder.as_ref().is_some_and(|ex| {
-            ex.items.iter().any(|i| {
-                matches!(
-                    i.target,
-                    construction::PickTargetKind::DrawingElement { .. }
-                        | construction::PickTargetKind::ProjectedEdge { .. }
-                        | construction::PickTargetKind::ProjectedCorner { .. }
-                )
-            })
-        })
+        self.exploder.as_ref().is_some_and(|ex| ex.page_space)
     }
 
     /// The Selection Exploder on the drawing workbench (#1641). Space fans the crowd under the
@@ -26883,6 +26985,7 @@ impl App {
                     zoom_mul: 1.0,
                     drill_anim: None,
                     opened_with_shift: ui.input(|i| i.modifiers.shift),
+                    page_space: true,
                 });
                 self.draw_exploder(ui.painter(), &project, None, area);
                 self.publish_drawing_exploder_leaves(area, &project);
@@ -28019,95 +28122,85 @@ impl App {
                 // each projected edge and corner, and the card itself. Coincident projected edges
                 // are exactly what the fan is for — two lines of a body can land on top of each
                 // other in an orthographic view. The armed picker then keeps only what it takes.
+                // A zoom loupe remaps the same geometry into its magnified circle (#1912): Space
+                // there must fan the vertex it is magnifying, not whatever sits under it on the
+                // un-magnified card.
                 let vertex_bodies =
                     crate::drawing::drawing_view_vertex_bodies(&self.state.doc, view);
                 if let Some(pp) = pointer_screen.filter(|p| area.contains(*p)) {
                     let reach = exploder::hitbox_radius();
                     let screen_pt = |p: egui::Pos2| Vec3::new(p.x, p.y, 0.0);
-                    let mut seen_corners: std::collections::HashSet<(Option<model::BodyKey>, [i32; 3])> =
-                        std::collections::HashSet::new();
-                    for (i, (a, b)) in proj.iter().enumerate() {
-                        let (sa, sb) = (to_screen(*a), to_screen(*b));
-                        // An edge-on edge projects to a point: nothing to dimension (#294).
-                        if (sb - sa).length() < 1.0 || on_circle(*a, *b) {
+                    let mut in_loupe = false;
+                    for loupe in &view.loupes {
+                        let (c1, c2) = crate::drawing::loupe_centers(loupe);
+                        let zoom = crate::drawing::loupe_zoom(loupe);
+                        let mag_center = to_screen(egui::vec2(c2.x, c2.y));
+                        let mag_r = loupe.to_radius.abs() * scale;
+                        if (pp - mag_center).length() > mag_r {
                             continue;
                         }
-                        let (wa, wb) = world_edges[i];
-                        let (qa, qb) = edge_key(wa, wb);
-                        let body = crate::drawing::drawing_view_edge_body(&vertex_bodies, wa, wb);
-                        let d = dist_point_to_segment(pp, sa, sb);
-                        if d <= reach {
-                            fan_candidates.push(construction::CrowdCandidate {
-                                kind: construction::PickTargetKind::ProjectedEdge {
-                                    drawing,
-                                    view: vi,
-                                    body,
-                                    a: qa,
-                                    b: qb,
-                                    outline: vec![screen_pt(sa), screen_pt(sb)],
-                                },
-                                anchor: screen_pt(closest_point_on_segment(pp, sa, sb)),
-                                dist_px: d,
-                            });
-                        }
-                        for (world, screen, uv) in [(wa, sa, *a), (wb, sb, *b)] {
-                            let qp = hierarchy::quantize_body_point(world);
-                            let cbody = vertex_bodies.get(&qp).copied();
-                            if !seen_corners.insert((cbody, qp)) {
-                                continue;
-                            }
-                            let cd = (screen - pp).length();
-                            if cd > reach {
-                                continue;
-                            }
-                            let _ = uv;
-                            let r = 5.0;
-                            fan_candidates.push(construction::CrowdCandidate {
-                                kind: construction::PickTargetKind::ProjectedCorner {
-                                    drawing,
-                                    view: vi,
-                                    body: cbody,
-                                    p: qp,
-                                    outline: vec![
-                                        screen_pt(screen + egui::vec2(-r, 0.0)),
-                                        screen_pt(screen + egui::vec2(r, 0.0)),
-                                        screen_pt(screen),
-                                        screen_pt(screen + egui::vec2(0.0, -r)),
-                                        screen_pt(screen + egui::vec2(0.0, r)),
-                                    ],
-                                },
-                                anchor: screen_pt(screen),
-                                dist_px: cd,
-                            });
-                        }
+                        in_loupe = true;
+                        let map = |p: glam::Vec2| c2 + (p - c1) * zoom;
+                        let loupe_screen = |p: egui::Vec2| {
+                            let m = map(glam::Vec2::new(p.x, p.y));
+                            to_screen(egui::vec2(m.x, m.y))
+                        };
+                        push_projected_drawing_crowd(
+                            &mut fan_candidates,
+                            drawing,
+                            vi,
+                            &world_edges,
+                            &proj,
+                            &loupe_screen,
+                            pp,
+                            reach,
+                            &vertex_bodies,
+                            Some((c1, loupe.radius.abs())),
+                            |a, b| on_circle(a, b),
+                        );
                     }
-                    if cell.contains(pp) {
-                        let corners = [
-                            cell.left_top(),
-                            cell.right_top(),
-                            cell.right_bottom(),
-                            cell.left_bottom(),
-                            cell.left_top(),
-                        ];
-                        let nearest = corners
-                            .windows(2)
-                            .map(|w| closest_point_on_segment(pp, w[0], w[1]))
-                            .min_by(|a, b| {
-                                (*a - pp)
-                                    .length()
-                                    .partial_cmp(&(*b - pp).length())
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                            .unwrap_or(cell.center());
-                        fan_candidates.push(construction::CrowdCandidate {
-                            kind: construction::PickTargetKind::DrawingElement {
-                                drawing,
-                                element: context::DrawingElementRef::Projection(vi),
-                                outline: corners.iter().copied().map(screen_pt).collect(),
-                            },
-                            anchor: screen_pt(nearest),
-                            dist_px: (nearest - pp).length(),
-                        });
+                    if !in_loupe {
+                        push_projected_drawing_crowd(
+                            &mut fan_candidates,
+                            drawing,
+                            vi,
+                            &world_edges,
+                            &proj,
+                            &to_screen,
+                            pp,
+                            reach,
+                            &vertex_bodies,
+                            None,
+                            |a, b| on_circle(a, b),
+                        );
+                        if cell.contains(pp) {
+                            let corners = [
+                                cell.left_top(),
+                                cell.right_top(),
+                                cell.right_bottom(),
+                                cell.left_bottom(),
+                                cell.left_top(),
+                            ];
+                            let nearest = corners
+                                .windows(2)
+                                .map(|w| closest_point_on_segment(pp, w[0], w[1]))
+                                .min_by(|a, b| {
+                                    (*a - pp)
+                                        .length()
+                                        .partial_cmp(&(*b - pp).length())
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                                .unwrap_or(cell.center());
+                            fan_candidates.push(construction::CrowdCandidate {
+                                kind: construction::PickTargetKind::DrawingElement {
+                                    drawing,
+                                    element: context::DrawingElementRef::Projection(vi),
+                                    outline: corners.iter().copied().map(screen_pt).collect(),
+                                },
+                                anchor: screen_pt(nearest),
+                                dist_px: (nearest - pp).length(),
+                            });
+                        }
                     }
                 }
 
@@ -28197,7 +28290,13 @@ impl App {
                                     continue;
                                 }
                                 let qp = hierarchy::quantize_body_point(world);
-                                let cbody = vertex_bodies.get(&qp).copied();
+                                let cbody = crate::drawing::drawing_view_corner_bodies(
+                                    &vertex_bodies,
+                                    qp,
+                                )
+                                .into_iter()
+                                .next()
+                                .flatten();
                                 best = Some((d, uv, qp, cbody));
                             }
                         }
@@ -30777,6 +30876,7 @@ impl App {
                 drill_anim: None,
                 // Capture Shift at open time (#1198) — sticky for the first additive pick.
                 opened_with_shift: shift,
+                page_space: false,
             });
             return (true, None, false);
         }
@@ -42800,6 +42900,7 @@ mod tests {
             zoom_mul: 1.0,
             drill_anim: None,
             opened_with_shift: false,
+            page_space: false,
         }
     }
 
@@ -42970,6 +43071,7 @@ mod tests {
             zoom_mul: 1.0,
             drill_anim: None,
             opened_with_shift: false,
+            page_space: false,
         };
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         let project = |w: Vec3| Some(egui::pos2(400.0 + w.x, 300.0 - w.y)); // screen y flips
@@ -43019,6 +43121,7 @@ mod tests {
             zoom_mul: 1.0,
             drill_anim: None,
             opened_with_shift: false,
+            page_space: false,
         };
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 900.0));
         let project = |w: Vec3| Some(egui::pos2(400.0 + w.x, 300.0 - w.y));

@@ -1472,20 +1472,25 @@ pub fn drawing_view_silhouette_edges(
     crate::gpu_viewport::solid_mesh_silhouette_edges(&mesh, right.cross(up))
 }
 
-/// Quantized world vertices of this view, mapped to the body they sit on (#1714).
-/// First body wins at a coincident vertex.
+/// Quantized world vertices of this view, mapped to every body they sit on (#1714/#1912).
+/// A vertex shared by two bodies keeps both, so the Selection Exploder can offer each.
 pub fn drawing_view_vertex_bodies(
     doc: &Document,
     view: &DrawingView,
-) -> std::collections::HashMap<[i32; 3], crate::model::BodyKey> {
-    let mut map = std::collections::HashMap::new();
+) -> std::collections::HashMap<[i32; 3], Vec<crate::model::BodyKey>> {
+    let mut map: std::collections::HashMap<[i32; 3], Vec<crate::model::BodyKey>> =
+        std::collections::HashMap::new();
     for bi in drawing_view_bodies(doc, view) {
         let Some(mesh) = drawing_view_body_mesh(doc, view, bi) else {
             continue;
         };
+        let mut seen = std::collections::HashSet::new();
         for tri in &mesh.triangles {
             for p in tri {
-                map.entry(crate::hierarchy::quantize_body_point(*p)).or_insert(bi);
+                let q = crate::hierarchy::quantize_body_point(*p);
+                if seen.insert(q) {
+                    map.entry(q).or_default().push(bi);
+                }
             }
         }
     }
@@ -1493,8 +1498,10 @@ pub fn drawing_view_vertex_bodies(
 }
 
 /// The body of this view that owns both endpoints of a world edge, if any (#1714).
+/// When several bodies share the edge, the first in view order wins — the Exploder
+/// still fans coincident *vertices* per body.
 pub fn drawing_view_edge_body(
-    vertex_bodies: &std::collections::HashMap<[i32; 3], crate::model::BodyKey>,
+    vertex_bodies: &std::collections::HashMap<[i32; 3], Vec<crate::model::BodyKey>>,
     a: Vec3,
     b: Vec3,
 ) -> Option<crate::model::BodyKey> {
@@ -1502,7 +1509,18 @@ pub fn drawing_view_edge_body(
     let qb = crate::hierarchy::quantize_body_point(b);
     let ba = vertex_bodies.get(&qa)?;
     let bb = vertex_bodies.get(&qb)?;
-    (ba == bb).then_some(*ba)
+    ba.iter().find(|b| bb.contains(b)).copied()
+}
+
+/// Bodies that own this quantized world vertex in the view, or `[None]` when none do.
+pub fn drawing_view_corner_bodies(
+    vertex_bodies: &std::collections::HashMap<[i32; 3], Vec<crate::model::BodyKey>>,
+    p: [i32; 3],
+) -> Vec<Option<crate::model::BodyKey>> {
+    match vertex_bodies.get(&p) {
+        Some(bodies) if !bodies.is_empty() => bodies.iter().copied().map(Some).collect(),
+        _ => vec![None],
+    }
 }
 
 /// The edges a view can dimension (#334): its crease/feature edges plus the view-dependent
