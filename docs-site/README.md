@@ -16,8 +16,11 @@ else is noise. Concretely:
   parentheticals. Prefer a heading and three short lines over a dense paragraph.
 - **Cut automatic behavior** the user never invokes (auto-stacking, auto-sharing) unless
   omitting it would confuse.
-- **Keep** hidden gestures (Shift+click, double-click, drag), shortcuts, defaults,
-  non-obvious rules, and scripting examples.
+- **Keep** hidden gestures (Shift+click, double-click, drag), shortcuts, defaults, and
+  non-obvious GUI rules.
+- **Scripting examples** live only under `/docs/scripting`. Tool, drawing, and other GUI
+  pages never include `bearcad.*` samples or `## Scripting` sections. A single link to
+  Scripting is allowed.
 - **No reassurances or narration** ("so it's clear which…", "you can also…"). State the
   fact once and stop.
 

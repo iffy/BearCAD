@@ -12,7 +12,7 @@ For every completed task/feature/fix to the app, record the change with a single
 
 When adding or changing a keyboard shortcut, update `shortcuts::all_shortcuts()` in the same change — it renders the Keyboard Shortcuts window (View/Help menus) and is the single source for the app's binding list (see SPEC §11).
 
-When writing docs, I really *really* **REALLY** prefer brevity. Be as succinct as possible in the docs, but also thorough. Follow the "Writing style" principles in `docs-site/README.md` — the app is the documentation; docs only cover what the app can't show. Don't reference todoer issue numbers in the docs, but please reference them in the Git Commits.
+When writing docs, I really *really* **REALLY** prefer brevity. Be as succinct as possible in the docs, but also thorough. Follow the "Writing style" principles in `docs-site/README.md` — the app is the documentation; docs only cover what the app can't show. Lua samples and `## Scripting` sections belong only under `/docs/scripting`; GUI pages may link there. Don't reference todoer issue numbers in the docs, but please reference them in the Git Commits.
 
 Always work directly on the `master` branch. Before starting, merge in `origin/master`. Do not create feature branches unless I specifically tell you to — commit your work straight to `master` and push to `origin` when a task is complete.
 

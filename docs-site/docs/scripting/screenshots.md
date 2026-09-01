@@ -11,6 +11,9 @@ scripted with the same [declarative](/docs/scripting/declarative-modeling) and
 [`bearcad.ui.*`](/docs/scripting/ui-namespace) API you'd use anywhere else, ending in a
 [`bearcad.ui.screenshot(...)`](/docs/scripting/ui-namespace) capture.
 
+Those scripts (`docs-site/screenshots/*.lua`) are not user-facing docs. GUI pages do not embed
+`bearcad.*` samples; those live under [Scripting](/docs/scripting).
+
 ## How it works
 
 - The scripts live in [`docs-site/screenshots/*.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots).
