@@ -4755,7 +4755,8 @@ fn row_help(tool: Option<Tool>, label: &str) -> Option<&'static str> {
             "The tilt about the anchored axis, in degrees — for an edge or axis anchor.",
         ),
         (Some(Tool::DrawingAdd), "Projection") => Some(
-            "Click a body or sketch — in the Elements pane or the 3D view — and a \
+            "Bodies already selected when you pick the tool start a projection of them. \
+             Click a body or sketch — in the Elements pane or the 3D view — and a \
              projection of it lands on the page.",
         ),
         (Some(Tool::DrawingAlign), "Base view") => Some(
