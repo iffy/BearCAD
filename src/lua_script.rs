@@ -5836,11 +5836,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 "sketch" => {
                     // The script's `index` is the sketch's ordinal (#1055).
-                    let Some(sketch) = doc.sketches.keys().nth(index).map(|k| &doc.sketches[k])
-                    else {
+                    let Some(key) = doc.sketches.keys().nth(index) else {
                         return Ok(Value::Nil);
                     };
+                    let sketch = &doc.sketches[key];
                     t.set("face", face_kind_name(&sketch.face))?;
+                    if let Some(frame) = crate::face::sketch_geometry_frame(doc, key) {
+                        t.set("origin", vec3_lua(lua, frame.origin)?)?;
+                    }
                     if let Some(name) = &sketch.name {
                         t.set("name", name.as_str())?;
                     }
@@ -19361,6 +19364,84 @@ pub mod tests {
         );
     }
 
+    /// #1902: a sketch on the remaining top of a square plate with a centered hole
+    /// sits its origin at the face's geometric centre, not the mesh's vertex-average
+    /// centroid (which drifts with triangulation).
+    #[test]
+    fn lua_body_face_sketch_origin_is_the_face_centre() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 40 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.begin_sketch{
+                kind = "extrude_cap", extrusion = 0,
+                profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
+            }
+            bearcad.rect{ x = 10, y = 10, width = 20, height = 20 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = -8, body = "cut" }
+            local live
+            for i = 0, 20 do
+                local b = bearcad.get{ kind = "body", index = i }
+                if b == nil then break end
+                if not b.shadow then live = i end
+            end
+            assert(live, "cut left a live body")
+            local faces = bearcad.body_faces(live)
+            local top
+            for _, f in ipairs(faces) do
+                if f.normal[3] > 0.9 and f.face[3] > 5 then top = f end
+            end
+            assert(top, "cut body has a top face")
+            bearcad.begin_sketch(top)
+            local s = bearcad.get{ kind = "sketch", index = bearcad.count("sketch") - 1 }
+            assert(s.face == "body_mesh_face", "remaining top is a mesh face, got " .. tostring(s.face))
+            assert(math.abs(s.origin.x - 20) < 0.05 and math.abs(s.origin.y - 20) < 0.05,
+                "origin should be the 40×40 face centre (20, 20), got " .. s.origin.x .. "," .. s.origin.y)
+            assert(math.abs(s.origin.z - 10) < 0.05, "origin z " .. s.origin.z)
+            "#,
+        );
+        let sketch = state
+            .doc
+            .sketches
+            .keys()
+            .last()
+            .expect("the face-started sketch");
+        assert!(
+            matches!(
+                state.doc.sketch_face(sketch),
+                Some(crate::model::FaceId::BodyMeshFace { .. })
+            ),
+            "the remaining top is a mesh face, got {:?}",
+            state.doc.sketch_face(sketch)
+        );
+        let frame = crate::face::sketch_geometry_frame(&state.doc, sketch).expect("frame");
+        let origin = frame.origin;
+        assert!(
+            (origin.x - 20.0).abs() < 0.05 && (origin.y - 20.0).abs() < 0.05,
+            "origin should be the 40×40 face centre (20, 20), got {origin:?}"
+        );
+        assert!(
+            (origin.z - 10.0).abs() < 0.05,
+            "origin should sit on the top plane z=10, got {origin:?}"
+        );
+        // The mesh key's vertex average is the bug: it is *not* the geometric centre.
+        if let Some(crate::model::FaceId::BodyMeshFace {
+            body,
+            centroid,
+            normal,
+        }) = state.doc.sketch_face(sketch)
+        {
+            let tris = crate::extrude::body_face_triangles(&state.doc, body, centroid, normal)
+                .expect("top triangles");
+            let averaged = crate::extrude::face_group_center(&tris);
+            assert!(
+                (averaged.x - 20.0).abs() > 0.1 || (averaged.y - 20.0).abs() > 0.1,
+                "this case only reproduces when the vertex average drifts, got {averaged:?}"
+            );
+        }
+    }
+
     /// #1523: `face` is world millimetres (what `body_faces` emits); no hand-quantize.
     #[test]
     fn lua_body_mesh_face_accepts_world_mm_face_from_body_faces() {
@@ -20271,6 +20352,7 @@ pub mod tests {
             assert(c.construction == false and c.name == nil)
             local s = bearcad.get{ kind = "sketch", index = 0 }
             assert(s.face == "plane")
+            assert(math.abs(s.origin.x) < 1e-4 and math.abs(s.origin.y) < 1e-4 and math.abs(s.origin.z) < 1e-4)
             local p = bearcad.get{ kind = "plane", index = 0 }
             assert(p.origin[3] == 0 and p.normal[3] == 1)
             assert(bearcad.get{ kind = "line", index = 99 } == nil)

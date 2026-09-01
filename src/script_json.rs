@@ -2784,10 +2784,14 @@ fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String
         }
         "sketch" => {
             // The script's `index` is the sketch's ordinal (#1055).
-            let Some(sketch) = doc.sketches.keys().nth(index).map(|k| &doc.sketches[k]) else {
+            let Some(key) = doc.sketches.keys().nth(index) else {
                 return Ok(Value::Null);
             };
+            let sketch = &doc.sketches[key];
             t.insert("face".into(), json!(face_kind_name(&sketch.face)));
+            if let Some(frame) = crate::face::sketch_geometry_frame(doc, key) {
+                t.insert("origin".into(), vec3_json(frame.origin));
+            }
             if let Some(name) = &sketch.name {
                 t.insert("name".into(), json!(name));
             }
