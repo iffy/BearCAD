@@ -368,6 +368,7 @@ pub const ORIGIN_AXIS_HOVER_WIDTH_PX: f32 = 4.0;
 /// Selected thickness: **2×** the hover thickness, and drawn through bodies (#1124).
 pub const ORIGIN_AXIS_SELECTED_WIDTH_PX: f32 = ORIGIN_AXIS_HOVER_WIDTH_PX * 2.0;
 /// Lift strokes toward the camera so lines draw over coplanar face fills and grid.
+/// Applied along each endpoint's own eye ray (#1903) so the pixels stay put.
 pub const STROKE_DEPTH_BIAS: f32 = 0.10;
 /// Lift construction-plane hover fills above the plane surface (avoids z-fighting).
 /// Kept at zero: the overlay pipeline's own depth bias is enough to prevent z-fighting with
@@ -5396,13 +5397,26 @@ fn plane_camera_depth(plane: &ConstructionPlane, cam: &Camera) -> f32 {
     (cam.eye() - center).length()
 }
 
-fn offset_segment_toward_camera(a: Vec3, b: Vec3, eye: Vec3, bias: f32) -> (Vec3, Vec3) {
+/// Slide `p` along its own eye ray by `bias` mm. Perspective rays are constant in
+/// NDC xy, so the point stays on the same pixel and only depth changes — a shared
+/// direction from the segment midpoint (#1903) slid CAD strokes along the face
+/// when zoomed in at a grazing angle.
+fn offset_point_along_view_ray(p: Vec3, eye: Vec3, bias: f32) -> Vec3 {
     if bias == 0.0 {
-        return (a, b);
+        return p;
     }
-    let mid = (a + b) * 0.5;
-    let to_cam = (eye - mid).normalize_or_zero();
-    (a + to_cam * bias, b + to_cam * bias)
+    let to_cam = (eye - p).normalize_or_zero();
+    if to_cam.length_squared() < 1e-8 {
+        return p;
+    }
+    p + to_cam * bias
+}
+
+fn offset_segment_toward_camera(a: Vec3, b: Vec3, eye: Vec3, bias: f32) -> (Vec3, Vec3) {
+    (
+        offset_point_along_view_ray(a, eye, bias),
+        offset_point_along_view_ray(b, eye, bias),
+    )
 }
 
 /// Extra toward-camera lift for strokes that lie *on* a face — the section hatch and its
@@ -13199,7 +13213,45 @@ mod tests {
             stroke_dist < fill_dist,
             "strokes should sit closer to the camera than coplanar face fills"
         );
-        assert_eq!(stroke_a.z, stroke_b.z);
+        assert!(
+            (eye - stroke_b).length() < fill_dist,
+            "both stroke endpoints should sit closer to the camera than coplanar fills"
+        );
+    }
+
+    /// #1903: a depth lift must not slide the stroke on screen. Zoomed in at a grazing
+    /// angle, moving both endpoints along the *midpoint*'s view direction shifted a
+    /// 0.1 mm-scale line by about a stroke-bias along the face — CAD edges looked drunk.
+    /// Each endpoint lifts along its own eye ray so NDC xy (and therefore the pixels) stay put.
+    #[test]
+    fn stroke_depth_lift_keeps_screen_position_when_zoomed_in() {
+        let mut cam = Camera::default();
+        cam.target = Vec3::ZERO;
+        cam.distance = 4.0;
+        cam.pitch = 0.18; // ~10° — grazing, like the #1903 screenshot
+        cam.yaw = 0.9;
+        let viewport = test_viewport();
+        let vp = cam.view_proj(viewport);
+        // A short segment around the look-at so both ends stay in front of the near plane.
+        let a = Vec3::new(-1.0, 0.0, 0.0);
+        let b = Vec3::new(1.0, 0.0, 0.0);
+        let (a2, b2) = offset_segment_toward_camera(a, b, cam.eye(), STROKE_DEPTH_BIAS);
+        let project = |p: Vec3| cam.project(p, viewport, &vp).expect("visible");
+        let slide = |p: Vec3, q: Vec3| (project(p) - project(q)).length();
+        assert!(
+            slide(a, a2) < 0.05,
+            "lifted start slid {} px; must stay on the geometric pixel",
+            slide(a, a2)
+        );
+        assert!(
+            slide(b, b2) < 0.05,
+            "lifted end slid {} px; must stay on the geometric pixel",
+            slide(b, b2)
+        );
+        assert!(
+            (cam.eye() - a2).length() + 1e-6 < (cam.eye() - a).length(),
+            "lift must still win the depth test against the coplanar face"
+        );
     }
 
     #[test]
