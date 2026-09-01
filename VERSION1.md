@@ -8,16 +8,16 @@
   [ ] Angle choosers
   [ ] Push/pull
 [ ] Working with linked documents is intuitive and nice
-[ ] Linked docs with parameters
-  [ ] Minimum
-  [ ] Maximum
-  [ ] Step
-  [ ] Unit mismatch
+[x] Linked docs with parameters
+  [x] Minimum
+  [x] Maximum
+  [x] Step
+  [x] Unit mismatch
 
 # Version 1.0.0
 [ ] Script generator (document -> lua -> document roundtrip)
 [ ] Joints are intuitive and work
-[ ] Node graph is useable
+[x] Node graph is useable
 [ ] Several simple tutorials. One for every tool
   [x] Draw
   [x] Extrude
@@ -54,26 +54,20 @@
   [ ] Shell
   [ ] Dimension
     [ ] Derived parameter
-  [ ] Joint
-    [ ] Rigid
-    [ ] Slider
-    [ ] Revolute
-    [ ] Cylindrical
-    [ ] Planar
-    [ ] Ball
-    [ ] Pin-slot
-    [ ] Screw
 
 [x] Tabs and linked docs
 [ ] Cross sections
-[ ] Technical drawing cross-sections
+  [ ] Boolean plane
+  [ ] Parting curtain (two opposing planes that cut open a piece)
+[x] Technical drawing cross-sections
 [ ] Technical drawing zoom-ins
-[ ] Saved views
+[x] Saved views
 [x] Module params with limits, steps, etc...
 [x] Shell tool
 
 # Later versions
 
+- Collaboration
 - Surface modeling
 - Sheet metal
 - PCB? Probably not
