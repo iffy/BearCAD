@@ -11208,6 +11208,13 @@ impl AppState {
                 if self.creating_sweep.is_some() && tool != Tool::Sweep {
                     self.creating_sweep = None;
                 }
+                // A projection still riding the cursor belongs to Projection (#1923): leaving
+                // the tool takes it back off the sheet, same as Esc.
+                if tool != Tool::DrawingAdd {
+                    if let Some((drawing, view)) = self.placing_drawing_view.take() {
+                        let _ = self.apply_inner(Action::RemoveDrawingView { drawing, view });
+                    }
+                }
 
                 // 3D-only tools act on the solid, not sketch geometry: leave the sketch
                 // so Combine/Joint/Shell (and every later 3D-only tool) cannot sit armed
@@ -11434,11 +11441,14 @@ impl AppState {
                 self.picker_focus = None;
                 let row = self.tool_row();
                 // Modal placements that belong to no tool's draft: a dimension being placed or
-                // re-edited, and a pending paste, back out first.
+                // re-edited, a projection riding the cursor (#1923), and a pending paste,
+                // back out first.
                 if self.editing_committed_dim.take().is_some()
                     || self.placing_dimension.take().is_some()
                 {
                     self.status = "Cancelled".to_string();
+                } else if self.placing_drawing_view.is_some() {
+                    return self.apply_inner(Action::CancelPlacingDrawingView);
                 } else if self.creating_paste.is_some() {
                     let _ = self.apply_inner(Action::CancelPaste);
                 } else if self.draft_has_picks(row.draft) {
@@ -18333,6 +18343,7 @@ op,
                             });
                         }
                         self.arm_drawing_view_placement(drawing);
+                        self.scene_selection.clear();
                         true
                     }
                     // A cross-section view clicked with the Add-view tool imports the whole
@@ -18347,6 +18358,7 @@ op,
                             orientation: crate::model::DrawingOrientation::default(),
                         });
                         self.arm_drawing_view_placement(drawing);
+                        self.scene_selection.clear();
                         true
                     }
                     SceneElement::Component(ci)
@@ -18392,6 +18404,7 @@ op,
                             }
                         }
                         self.arm_drawing_view_placement(drawing);
+                        self.scene_selection.clear();
                         true
                     }
                     SceneElement::Sketch(si)
@@ -18409,6 +18422,7 @@ op,
                             self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                             self.arm_drawing_view_placement(drawing);
                         }
+                        self.scene_selection.clear();
                         true
                     }
                     SceneElement::Body(bi) => toggle_body_in_active_tool(self, *bi),
@@ -23782,8 +23796,8 @@ impl AppState {
                 .creating_shape
                 .as_ref()
                 .is_some_and(|c| c.phase != ShapePhase::Anchor),
-            // Dimension's placement is a modal that belongs to no creating_* draft.
-            D::None => self.placing_dimension.is_some(),
+            // Dimension / projection placement is a modal that belongs to no creating_* draft.
+            D::None => self.placing_dimension.is_some() || self.placing_drawing_view.is_some(),
             _ => false,
         }
     }
@@ -42708,6 +42722,49 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         state.apply(Action::SetTool(Tool::DrawingAdd));
         assert_eq!(state.doc.drawings[drawing].views.len(), 0);
         assert!(state.placing_drawing_view.is_none());
+    }
+
+    /// #1923: Esc while a projection is riding the cursor takes that view off the sheet
+    /// and leaves Projection armed — a second Esc returns to Select.
+    #[test]
+    fn escape_cancels_a_placing_drawing_view_and_keeps_the_tool() {
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        let drawing = state.editing_drawing.expect("drawing open");
+        state.apply(Action::SetTool(Tool::DrawingAdd));
+        state.scene_selection.insert(SceneElement::Body(bkey(0)));
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Body(bkey(0)),
+            additive: false,
+        });
+        assert_eq!(state.doc.drawings[drawing].views.len(), 1);
+        assert_eq!(state.placing_drawing_view, Some((drawing, 0)));
+        assert!(
+            state.scene_selection.is_empty(),
+            "the body click fed the tool, not the selection"
+        );
+
+        state.apply(Action::PlaceDrawingView);
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Body(bkey(0)),
+            additive: false,
+        });
+        assert_eq!(state.doc.drawings[drawing].views.len(), 2);
+        assert_eq!(state.placing_drawing_view, Some((drawing, 1)));
+
+        state.apply(Action::CancelOperation);
+        assert_eq!(
+            state.doc.drawings[drawing].views.len(),
+            1,
+            "Esc takes the riding view off the sheet"
+        );
+        assert!(state.placing_drawing_view.is_none());
+        assert_eq!(state.tool, Tool::DrawingAdd, "first Esc keeps Projection armed");
+
+        state.apply(Action::CancelOperation);
+        assert_eq!(state.tool, Tool::Select, "second Esc leaves the tool");
+        assert_eq!(state.doc.drawings[drawing].views.len(), 1, "the dropped view stays");
     }
 
     #[test]

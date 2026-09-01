@@ -29849,6 +29849,9 @@ impl App {
                         self.state.apply(Action::PlaceDrawingView);
                     } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         self.state.apply(Action::CancelPlacingDrawingView);
+                        // The pointer already queued a follow-the-cursor move for this
+                        // view; dropping it avoids a refused MoveDrawingView after cancel.
+                        move_view = None;
                     }
                 }
             }

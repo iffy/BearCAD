@@ -12780,8 +12780,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- against a click that never happened.
         -- Bounded, so a call that can never settle fails loudly instead of spinning the
         -- script forever. Ten seconds at 60 fps is far longer than any camera glide.
-        -- After the call lands, yield until queued pointer batches have been consumed and
-        -- one more frame so pickers/hover from this ui() are current (#1881).
+        -- After the call lands, yield until queued pointer/key batches have been consumed and
+        -- one more frame so pickers/hover from this ui() are current (#1881/#1923).
         local SETTLE_FRAMES = 600
         local function settling(name)
             local native = bearcad.ui[name]
@@ -12811,7 +12811,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "move", "click", "double_click", "move_ground", "click_ground",
             "move_world", "click_world", "drag", "drag_ground", "drag_world",
             "right_click", "right_click_ground", "right_drag", "right_drag_shift",
-            "type",
+            "type", "key", "keydown", "keyup",
         }) do
             if bearcad.ui[name] then settling(name) end
         end
