@@ -2649,7 +2649,12 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   effect; empty returns to **auto-fit** (the default). A set scale draws the projection at
   exactly that size in the editor and both exports, and shows in the card caption
   (`Body 0 — Front (1:20)`). `Action::SetDrawingViewScale`;
-  `crate::model::parse_drawing_scale`. The Parameters
+  `crate::model::parse_drawing_scale`. Scriptable:
+  `bearcad.drawing_view_scale{ drawing, view, scale }` (`scale = nil` auto-fits).
+  Dimension **arrowheads** are a constant page size (`drawing::DIM_ARROW`) and
+  dimension-line **thickness** is `drawing::DIM_STROKE`; scaling the projection
+  lengthens the measured strokes and moves the tips, but never grows the heads or
+  the annotation stroke (#1924). The Parameters
   pane **hides by default on entering the Drawing workbench** (#398) but can be re-shown
   from the View menu like anywhere else (#378) — so parameters can be edited (rebuilding the
   model and the open drawing's views) without leaving the drawing — and its pre-drawing
@@ -2775,9 +2780,12 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   exports) — from one shared `drawing::dimension_line_geometry`. When the span is
   too short for both arrowheads, they sit **outside the ticks, pointing in**, and
   the dimension line continues through those outside arrows (modeling dimensions
-  do the same). Dimension lines, their extension lines, and diameter lines
+  do the same). Arrowheads are a **constant page size** (`drawing::DIM_ARROW`), converted
+  into the view's millimetres so a 2:1 scale moves the tips with the geometry but does not
+  enlarge the triangles (#1924). Dimension lines, their extension lines, and diameter lines
   are stroked **thinner than the model outline** (#327): the projected model edges and detected
-  circles use `drawing::MODEL_STROKE` and the annotations use the lighter `drawing::DIM_STROKE`,
+  circles use `drawing::MODEL_STROKE` and the annotations use the lighter `drawing::DIM_STROKE`
+  (applied after the view scale, so thickness never follows the projection),
   so the part reads as the primary geometry and the dimensions sit visually beneath it (editor
   and exports share both constants). The default dimension set is **deduped by projected
   segment** so coincident front/back edges (a box's bottom edge seen from the front) get one

@@ -1042,6 +1042,17 @@ impl<'a> EmitCtx<'a> {
                         );
                         out.push('\n');
                     }
+                    if let Some(scale) = &view.scale {
+                        out.push_str(
+                            &Instruction::SetDrawingViewScale {
+                                drawing: dord,
+                                view: vi,
+                                scale: Some(scale.clone()),
+                            }
+                            .as_lua_in(Some(self.doc)),
+                        );
+                        out.push('\n');
+                    }
                 }
                 // #1516: `bearcad.drawing{}` seeds its own title annotation. Re-emitting it
                 // as a `drawing_text` left the replayed drawing with two overlapping titles,

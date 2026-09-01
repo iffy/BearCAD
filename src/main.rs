@@ -28076,7 +28076,12 @@ impl App {
                 let bbox_center_v = egui::vec2(bbox_center.x, bbox_center.y);
                 let diag = extent.length().max(1.0);
                 let default_gap = diag * 0.05;
-                let arrow = diag * 0.025;
+                // Arrowheads are a constant page size (8 pt × the page's on-screen scale);
+                // converting into view millimetres keeps them from growing with the projection.
+                let arrow = crate::drawing::page_len_in_view_mm(
+                    crate::drawing::DIM_ARROW * px_per_pt,
+                    scale,
+                );
                 // The on-screen dimension line segment for edge `i` if it currently carries a
                 // dimension (#324), so the Dimension tool can pick a dimension by hovering its
                 // line/label, not only the model edge. Mirrors the render loop's geometry.

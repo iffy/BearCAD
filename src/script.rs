@@ -439,6 +439,12 @@ pub enum Instruction {
         size_x: f32,
         size_y: f32,
     },
+    /// Set a placed view's print scale (`"1:20"`) or `None` to auto-fit (#300/#1924).
+    SetDrawingViewScale {
+        drawing: usize,
+        view: usize,
+        scale: Option<String>,
+    },
     /// Toggle the length dimension of a view's edge, named by its two world endpoints.
     ToggleDrawingDimension {
         drawing: usize,
@@ -1772,6 +1778,20 @@ impl Instruction {
                 "bearcad.drawing_view_size{{ drawing = {drawing}, view = {view}, \
                  width = {size_x}, height = {size_y} }}"
             ),
+            Instruction::SetDrawingViewScale {
+                drawing,
+                view,
+                scale,
+            } => {
+                let scale = match scale {
+                    Some(s) => format!("{s:?}"),
+                    None => "nil".to_string(),
+                };
+                format!(
+                    "bearcad.drawing_view_scale{{ drawing = {drawing}, view = {view}, \
+                     scale = {scale} }}"
+                )
+            },
             Instruction::ToggleDrawingDimension {
                 drawing,
                 view,
@@ -8004,6 +8024,23 @@ impl ScriptRunner {
                     view,
                     size_x,
                     size_y,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingViewScale {
+                drawing,
+                view,
+                scale,
+            } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::SetDrawingViewScale {
+                    drawing,
+                    view,
+                    scale,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

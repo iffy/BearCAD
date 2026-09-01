@@ -303,6 +303,7 @@ bearcad.drawing_view_align_lines{ … }
 bearcad.drawing_view_label{ … }
 bearcad.drawing_view_lines{ … }
 bearcad.drawing_view_orientation{ … }
+bearcad.drawing_view_scale{ drawing, view, scale }
 bearcad.drawing_view_section{ drawing, view, cross_section }
 bearcad.drawing_view_size{ drawing, view, width, height, size_x, size_y }
 bearcad.drawing_view_style{ … }
