@@ -56,6 +56,9 @@ bearcad.drawing_page{ drawing = d, width = 297, height = 210, margin = 12 }
 -- Resize a projection card (page fractions 0..1). Aligned views share the matching
 -- axis: Above/Below share width, Left/Right share height.
 bearcad.drawing_view_size{ drawing = d, view = 0, width = 0.3, height = 0.4 }
+-- Print scale (`page:model`); omit/`nil` auto-fits. Arrows and dim-line thickness
+-- stay the same page size when the scale changes.
+bearcad.drawing_view_scale{ drawing = d, view = 0, scale = "2:1" }
 
 bearcad.export_drawing_pdf{ drawing = d, path = "plate.pdf" }
 bearcad.export_drawing_svg{ drawing = d, path = "plate.svg" }

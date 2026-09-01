@@ -1238,8 +1238,21 @@ pub const VIEW_RESIZE_HANDLE_RADIUS_PX: f32 = 6.0;
 /// heavier than the dimension/extension lines so the part outline reads as the primary geometry.
 pub const MODEL_STROKE: f32 = 1.6;
 /// Stroke width for dimension lines, their extension lines, and diameter lines (#327) — thinner
-/// than [`MODEL_STROKE`] so annotations sit visually beneath the model outline.
+/// than [`MODEL_STROKE`] so annotations sit visually beneath the model outline. Applied in
+/// page units after the view's print scale, so thickness never follows the projection (#1924).
 pub const DIM_STROKE: f32 = 0.6;
+
+/// Arrowhead length on the page, in the same units as [`DIM_STROKE`] (export points). The
+/// editor multiplies by the page's on-screen `px_per_pt` so the head matches the PDF (#376).
+/// Converted into the view's millimetres with [`page_len_in_view_mm`] so scaling a projection
+/// moves the tips but never grows the triangles (#1924).
+pub const DIM_ARROW: f32 = 8.0;
+
+/// Map a constant page length (arrow, overshoot, …) into the view's projected millimetres so
+/// `to_screen` (`× view_scale`) leaves it the same size after the print scale changes.
+pub fn page_len_in_view_mm(page_len: f32, view_scale: f32) -> f32 {
+    page_len / view_scale.max(1e-6)
+}
 
 /// Section-hatch stroke width in a drawing (#1784): half the model edges', so the hatch
 /// reads as a fill texture on the cut faces rather than lines competing with the outline.
@@ -1987,8 +2000,8 @@ pub struct DimLineGeometry {
 }
 
 /// Build [`DimLineGeometry`] for an edge from `a` to `b`, offset `outward * offset` from it.
-/// `arrow` is the arrowhead length in the same units, so callers can size features to the
-/// drawing (a proportional fraction of the projected extent keeps them readable at any scale).
+/// `arrow` is the arrowhead length in the same units (projected millimetres). Callers pass
+/// [`page_len_in_view_mm`] of [`DIM_ARROW`] so the head stays a constant page size.
 pub fn dimension_line_geometry(
     a: glam::Vec2,
     b: glam::Vec2,
@@ -3774,7 +3787,6 @@ fn render_view_geometry<C: Canvas>(
         max = max.max(*a).max(*b);
     }
     let extent = (max - min).max(glam::Vec2::splat(1e-3));
-    let _ = extent;
     let (scale, bbox_center, area_center) =
         export_view_transform(doc, views, view_index, scale_text, cell_x, cell_y, cell_w, cell_h);
     // Model +up maps to screen -y (y grows downward).
@@ -3782,6 +3794,10 @@ fn render_view_geometry<C: Canvas>(
         let d = (p - bbox_center) * scale;
         glam::Vec2::new(area_center.x + d.x, area_center.y - d.y)
     };
+    let diag = extent.length().max(1.0);
+    let default_gap = diag * 0.05;
+    // Arrowheads are a constant page length; the gap still tracks the part (#1924).
+    let arrow = page_len_in_view_mm(DIM_ARROW, scale);
 
     // Detect tessellated circles (#313) in world space and project them for this view: round
     // when face-on, a foreshortened line when edge-on (#319). Their segments are drawn as the
@@ -3964,12 +3980,9 @@ fn render_view_geometry<C: Canvas>(
                     continue;
                 }
                 let outward = dimension_outward(ma, mb, c2);
-                // Same sizes the card's own dimensions use (they are set further down, where
-                // the view's dimensions are drawn; a loupe's are the same page distances).
-                let diag = extent.length().max(1.0);
                 let closed = loupe_dim_closed_ends(*a, *b, c1, loupe.radius.abs());
                 let geom = loupe_dimension_geometry(
-                    ma, mb, outward, diag * 0.05, diag * 0.025, closed,
+                    ma, mb, outward, default_gap, arrow, closed,
                 );
                 let stroke_line = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
                     let (sp, sq) = (to_screen(p), to_screen(q));
@@ -4023,12 +4036,9 @@ fn render_view_geometry<C: Canvas>(
         }
     }
     // Length dimensions (#294): architectural dimension lines — extension lines, an offset
-    // dimension line with arrowheads, and the measured length centred on it. Sizes are a
-    // fraction of the projected extent so they read at any scale; a per-edge override
-    // (dimension_offsets) pushes the line further out.
-    let diag = extent.length().max(1.0);
-    let default_gap = diag * 0.05;
-    let arrow = diag * 0.025;
+    // dimension line with arrowheads, and the measured length centred on it. Arrowheads are
+    // a constant page size (#1924); a per-edge override (dimension_offsets) pushes the line
+    // further out.
     // A single diameter dimension per detected circle (#313), replacing its segments' dims — but
     // only for circles whose diameter is shown (#342), so Show/Hide all controls them too.
     for (wc, pc) in world_circles.iter().zip(&pcircles) {
@@ -5689,6 +5699,18 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             (pos.y + 5.0 + 11.0 * DIM_LABEL_MID_EM).abs() < 1e-3,
             "fitting label's visual centre clears the line by gap plus half a glyph"
         );
+    }
+
+    /// #1924: a page-constant arrow is the same canvas length at any view print scale.
+    #[test]
+    fn page_len_in_view_mm_cancels_the_view_scale() {
+        for scale in [0.5_f32, 1.0, 2.83, 8.0] {
+            let mm = page_len_in_view_mm(DIM_ARROW, scale);
+            assert!(
+                (mm * scale - DIM_ARROW).abs() < 1e-4,
+                "scale={scale}: {mm} mm should draw as {DIM_ARROW} page units"
+            );
+        }
     }
 
     /// #1917: a span too short for two arrowheads puts them outside the ticks, pointing in,

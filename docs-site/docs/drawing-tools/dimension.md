@@ -19,6 +19,9 @@ With the **Dimension tool**:
 - Shift+click two lines to show the angle between them.
 - Click and drag dimensions to reposition them. The line snaps to the edge's
   perpendicular or to either face that makes that edge.
+- Arrowheads keep a constant size on the page; dimension lines keep a constant
+  thickness. Scaling a projection lengthens the lines and moves the arrows, but
+  does not grow them.
 - Click two corners to measure between them; after the first, only other corners of the
   same body (on that view) are pickable. **Measure** in the context pane switches that one
   between the direct, horizontal and vertical distance. Esc drops a half-made one; Select

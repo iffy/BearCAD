@@ -11731,6 +11731,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Set a projection's print scale (#300/#1924): `"1:20"` is page mm : model mm.
+    // `scale = nil` (or omit) returns the view to auto-fit.
+    api.set(
+        "drawing_view_scale",
+        lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "drawing_view_scale", &["drawing", "view", "scale"])?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
+            let scale: Option<String> = opts.get("scale")?;
+            unsafe {
+                tick.exec(Instruction::SetDrawingViewScale {
+                    drawing,
+                    view,
+                    scale,
+                })
+            }
+        })?,
+    )?;
+
     // Add a free text annotation to a drawing page (#312), positioned by page fraction.
     api.set(
         "drawing_text",
@@ -11873,6 +11893,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 t.set("pos_y", view.pos_y)?;
                 t.set("size_x", view.size_x)?;
                 t.set("size_y", view.size_y)?;
+                if let Some(scale) = &view.scale {
+                    t.set("scale", scale.as_str())?;
+                }
                 if let Some(parent) = view.aligned_parent {
                     t.set("aligned_to", parent)?;
                 }
@@ -25021,6 +25044,31 @@ pub mod tests {
         );
     }
 
+    /// #300/#1924: `bearcad.drawing_view_scale{}` sets a print scale and clears back to auto-fit.
+    #[test]
+    fn lua_drawing_view_scale_sets_and_clears() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_view_scale{ drawing = d, view = 0, scale = "2:1" }
+            local v = bearcad.drawing_views(d)[1]
+            assert(v.scale == "2:1", "scale is reported, got " .. tostring(v.scale))
+            bearcad.drawing_view_scale{ drawing = d, view = 0, scale = nil }
+            v = bearcad.drawing_views(d)[1]
+            assert(v.scale == nil, "nil scale returns to auto-fit")
+            local ok = pcall(function()
+                bearcad.drawing_view_scale{ drawing = d, view = 0, scale = "nope" }
+            end)
+            assert(not ok, "invalid scale must fail")
+            "#,
+        );
+        assert_eq!(state.doc.drawings[dkey(0)].views[0].scale, None);
+    }
+
     /// #377: `bearcad.drawing_view_align_lines{}` toggles an aligned child's dashed
     /// projection lines; a non-aligned view rejects the toggle.
     #[test]
@@ -25781,6 +25829,79 @@ pub mod tests {
         );
     }
 
+    /// #1924: scaling a projection lengthens its edges and moves the arrow tips, but
+    /// the arrowheads stay the same page size and dimension lines stay `DIM_STROKE` thick.
+    #[test]
+    fn drawing_export_dimension_arrows_ignore_projection_scale() {
+        let measure = |scale: &str| {
+            let state = run_lua(&format!(
+                r#"
+                bearcad.new()
+                bearcad.rect{{ x = 0, y = 0, width = 40, height = 20 }}
+                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 10 }}
+                local d = bearcad.drawing{{}}
+                bearcad.drawing_view{{ drawing = d, body = 0, orientation = "front" }}
+                bearcad.drawing_dimension{{ drawing = d, view = 0, a = {{0,0,0}}, b = {{40,0,0}} }}
+                bearcad.drawing_view_scale{{ drawing = d, view = 0, scale = "{scale}" }}
+            "#
+            ));
+            let svg = crate::drawing::drawing_to_svg(&state.doc, dkey(0)).expect("svg");
+            let arrows = parse_svg_arrow_lengths(&svg);
+            let dim_lens: Vec<f32> = parse_svg_dim_lines(&svg)
+                .into_iter()
+                .map(|(x1, y1, x2, y2)| (x2 - x1).hypot(y2 - y1))
+                .collect();
+            let model_lens: Vec<f32> = parse_svg_lines_with_width(&svg, crate::drawing::MODEL_STROKE)
+                .into_iter()
+                .map(|(x1, y1, x2, y2)| (x2 - x1).hypot(y2 - y1))
+                .collect();
+            (svg, arrows, dim_lens, model_lens)
+        };
+
+        let (svg_1, arrows_1, dims_1, model_1) = measure("1:1");
+        let (svg_2, arrows_2, dims_2, model_2) = measure("2:1");
+
+        assert_eq!(
+            arrows_1.len(),
+            arrows_2.len(),
+            "both scales should draw the same number of arrowheads\n1:1:\n{svg_1}\n2:1:\n{svg_2}"
+        );
+        assert!(
+            arrows_1.len() >= 2,
+            "a length dimension needs two arrowheads, got {} in:\n{svg_1}",
+            arrows_1.len()
+        );
+        for (a, b) in arrows_1.iter().zip(&arrows_2) {
+            assert!(
+                (a - b).abs() < 0.35,
+                "arrow page length should not follow projection scale: 1:1={a:.2} 2:1={b:.2}"
+            );
+        }
+        let longest = |v: &[f32]| v.iter().copied().fold(0.0f32, f32::max);
+        let model_1 = longest(&model_1);
+        let model_2 = longest(&model_2);
+        assert!(
+            model_2 > model_1 * 1.5,
+            "model edges should grow with 2:1 scale, 1:1={model_1:.1} 2:1={model_2:.1}"
+        );
+        let dim_1 = longest(&dims_1);
+        let dim_2 = longest(&dims_2);
+        assert!(
+            dim_2 > dim_1 * 1.5,
+            "dimension lines should lengthen with 2:1 scale, 1:1={dim_1:.1} 2:1={dim_2:.1}"
+        );
+        assert!(
+            svg_1.contains("stroke-width=\"0.6\"") && svg_2.contains("stroke-width=\"0.6\""),
+            "dimension strokes stay DIM_STROKE at both scales"
+        );
+        assert!(
+            !svg_1
+                .lines()
+                .any(|l| l.contains("<line") && l.contains("stroke-width=\"1.2\"")),
+            "dimension lines must not pick up the view scale as thickness"
+        );
+    }
+
     fn parse_svg_text_layout(line: &str) -> (f32, f32, f32, f32) {
         let attr = |name: &str| -> f32 {
             let key = format!("{name}=\"");
@@ -25795,9 +25916,14 @@ pub mod tests {
     }
 
     fn parse_svg_dim_lines(svg: &str) -> Vec<(f32, f32, f32, f32)> {
+        parse_svg_lines_with_width(svg, crate::drawing::DIM_STROKE)
+    }
+
+    fn parse_svg_lines_with_width(svg: &str, width: f32) -> Vec<(f32, f32, f32, f32)> {
+        let needle = format!("stroke-width=\"{width}\"");
         let mut out = Vec::new();
         for line in svg.lines() {
-            if !line.contains("stroke-width=\"0.6\"") || !line.contains("<line") {
+            if !line.contains(&needle) || !line.contains("<line") {
                 continue;
             }
             let attr = |name: &str| -> Option<f32> {
@@ -25810,6 +25936,38 @@ pub mod tests {
             let Some(x2) = attr("x2") else { continue };
             let Some(y2) = attr("y2") else { continue };
             out.push((x1, y1, x2, y2));
+        }
+        out
+    }
+
+    /// Tip-to-base length of each black filled triangle in an exported drawing (arrowheads).
+    fn parse_svg_arrow_lengths(svg: &str) -> Vec<f32> {
+        let mut out = Vec::new();
+        for line in svg.lines() {
+            if !line.contains("<polygon") || !line.contains("fill=\"#000000\"") {
+                continue;
+            }
+            let Some(rest) = line.split_once("points=\"").map(|(_, r)| r) else {
+                continue;
+            };
+            let Some((pts, _)) = rest.split_once('"') else {
+                continue;
+            };
+            let pts: Vec<(f32, f32)> = pts
+                .split_whitespace()
+                .filter_map(|p| {
+                    let (x, y) = p.split_once(',')?;
+                    Some((x.parse().ok()?, y.parse().ok()?))
+                })
+                .collect();
+            if pts.len() != 3 {
+                continue;
+            }
+            let base = (
+                (pts[1].0 + pts[2].0) * 0.5,
+                (pts[1].1 + pts[2].1) * 0.5,
+            );
+            out.push((pts[0].0 - base.0).hypot(pts[0].1 - base.1));
         }
         out
     }
