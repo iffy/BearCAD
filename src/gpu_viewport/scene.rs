@@ -341,10 +341,72 @@ fn flat_boundary_edges(tris: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
     out
 }
 
+/// Keep the part of `tri` with `z >= z0`. A wall that merely grazes below the
+/// ground (float noise on a resting cuboid, #1855) still casts; a triangle
+/// buried past the plane is clipped rather than projected backwards through
+/// the light.
+fn clip_triangle_above_z(tri: [Vec3; 3], z0: f32) -> Vec<[Vec3; 3]> {
+    let mut poly: Vec<Vec3> = Vec::with_capacity(5);
+    let push = |poly: &mut Vec<Vec3>, p: Vec3| {
+        if poly
+            .last()
+            .map(|q| (*q - p).length_squared() > 1e-16)
+            .unwrap_or(true)
+        {
+            poly.push(p);
+        }
+    };
+    for i in 0..3 {
+        let a = tri[i];
+        let b = tri[(i + 1) % 3];
+        let a_up = a.z >= z0;
+        let b_up = b.z >= z0;
+        if a_up {
+            push(&mut poly, a);
+        }
+        if a_up != b_up {
+            let denom = b.z - a.z;
+            if denom.abs() > 1e-20 {
+                let t = ((z0 - a.z) / denom).clamp(0.0, 1.0);
+                push(&mut poly, a.lerp(b, t));
+            }
+        }
+    }
+    if poly.len() >= 2 && (poly[0] - *poly.last().unwrap()).length_squared() <= 1e-16 {
+        poly.pop();
+    }
+    match poly.len() {
+        3 => vec![[poly[0], poly[1], poly[2]]],
+        4 => vec![[poly[0], poly[1], poly[2]], [poly[0], poly[2], poly[3]]],
+        _ => Vec::new(),
+    }
+}
+
+/// Project one body triangle onto z = 0 along `light`. Empty when the triangle
+/// is the contact face, fully below the plane, or degenerate after the clip.
+fn project_triangle_onto_ground(tri: [Vec3; 3], light: Vec3) -> Vec<[Vec3; 3]> {
+    if triangle_on_plane(&tri, Vec3::ZERO, Vec3::Z) {
+        return Vec::new();
+    }
+    clip_triangle_above_z(tri, 0.0)
+        .into_iter()
+        .filter(|t| !triangle_on_plane(t, Vec3::ZERO, Vec3::Z))
+        .map(|t| {
+            std::array::from_fn(|i| {
+                let p = t[i];
+                let z = p.z.max(0.0);
+                Vec3::new(p.x, p.y, z) - light * (z / light.z)
+            })
+        })
+        .filter(|t| (t[1] - t[0]).cross(t[2] - t[0]).length_squared() > 1e-12)
+        .collect()
+}
+
 /// A body's shadow on the ground, as triangles on z = 0 (#1811): its own triangles projected
-/// along the scene light, minus the ones below the plane (a half-buried part shadows only the
-/// half above it) and the ones lying on it (that is the contact face, not a shadow). Empty
-/// when nothing can cast — looking up from below, or a light parallel to the ground.
+/// along the scene light. Triangles that cross the plane are clipped so a half-buried part
+/// shadows only the half above it (#1855); triangles lying on it are the contact face, not a
+/// shadow. Empty when nothing can cast — looking up from below, or a light parallel to the
+/// ground.
 fn ground_shadow_footprint(solid: &crate::extrude::SolidMesh, cam: &Camera) -> Vec<[Vec3; 3]> {
     if cam.eye().z <= 0.0 {
         return Vec::new();
@@ -356,9 +418,7 @@ fn ground_shadow_footprint(solid: &crate::extrude::SolidMesh, cam: &Camera) -> V
     solid
         .triangles
         .iter()
-        .filter(|tri| !tri.iter().any(|p| p.z < 0.0))
-        .filter(|tri| !triangle_on_plane(tri, Vec3::ZERO, Vec3::Z))
-        .map(|tri| std::array::from_fn(|i| tri[i] - light * (tri[i].z / light.z)))
+        .flat_map(|tri| project_triangle_onto_ground(*tri, light))
         .collect()
 }
 
@@ -2969,9 +3029,10 @@ impl<'a> SceneMesh<'a> {
     ///
     /// The receiver is one known plane, so this needs no shadow map and no second depth pass
     /// — the projection is a line-plane intersection per vertex. Triangles that dip below the
-    /// plane are dropped rather than projected backwards through the light, so a half-buried
-    /// part shadows only the half that is above it. Ground-coplanar triangles are the contact
-    /// face, not a shadow, and stay off this layer (#1476).
+    /// plane are *clipped* rather than projected backwards through the light, so a half-buried
+    /// part shadows only the half that is above it, and a wall whose base is a few nanometres
+    /// under z = 0 still casts (#1855). Ground-coplanar triangles are the contact face, not a
+    /// shadow, and stay off this layer (#1476).
     ///
     /// Shadows sit at exact z = 0: the ground fill does not write depth, and a camera-space
     /// lift z-fights the resting cap. The pass depth-tests `Less` without writing, so the
@@ -2994,17 +3055,9 @@ impl<'a> SceneMesh<'a> {
         let prev = self.index_layer;
         self.set_index_layer(MeshIndexLayer::GroundShadow);
         for tri in &solid.triangles {
-            if tri.iter().any(|p| p.z < 0.0) {
-                continue;
+            for flat in project_triangle_onto_ground(*tri, light) {
+                self.push_triangle(flat[0], flat[1], flat[2], GROUND_SHADOW_FILL);
             }
-            if triangle_on_plane(tri, Vec3::ZERO, Vec3::Z) {
-                continue;
-            }
-            let flat: [Vec3; 3] = std::array::from_fn(|i| {
-                let p = tri[i];
-                p - light * (p.z / light.z)
-            });
-            self.push_triangle(flat[0], flat[1], flat[2], GROUND_SHADOW_FILL);
         }
         self.set_index_layer(prev);
     }
@@ -10071,6 +10124,96 @@ mod tests {
         assert!(
             !scene.shadow_indices.is_empty(),
             "ground-plane contact shadows stay"
+        );
+    }
+
+    /// #1855: a wall that crosses z = 0 keeps the above-ground half. Dropping the
+    /// whole triangle used to swallow resting cuboid walls whose base was 15 nm
+    /// under the plane, and would also have projected a buried vertex backwards.
+    #[test]
+    fn clip_triangle_above_z_keeps_the_above_ground_half() {
+        let tri = [
+            Vec3::new(0.0, 0.0, -10.0),
+            Vec3::new(10.0, 0.0, -10.0),
+            Vec3::new(0.0, 0.0, 10.0),
+        ];
+        let clipped = clip_triangle_above_z(tri, 0.0);
+        assert_eq!(clipped.len(), 1, "one triangle above the plane, got {clipped:?}");
+        for p in &clipped[0] {
+            assert!(p.z >= -1e-5, "clipped vertex went below the plane: {p:?}");
+        }
+        let has_peak = clipped[0].iter().any(|p| (p - Vec3::new(0.0, 0.0, 10.0)).length() < 1e-4);
+        assert!(has_peak, "the above-ground vertex must survive the clip");
+        // Buried endpoints must not be projected backwards through the light.
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        let projected = project_triangle_onto_ground(tri, light);
+        assert_eq!(projected.len(), 1);
+        let max_x = projected[0].iter().map(|p| p.x).fold(f32::MIN, f32::max);
+        assert!(
+            max_x < 6.0,
+            "buried (10,0,-10) must not project backwards (x≈14); max_x={max_x}"
+        );
+        for p in &projected[0] {
+            assert!(p.z.abs() < 1e-4, "ground projection must sit on z = 0: {p:?}");
+        }
+    }
+
+    /// #1855: the reported cuboid's base sits a few nanometres below z = 0 (float
+    /// noise on the origin). Dropping any triangle that dipped below dropped the
+    /// walls, so the contact shadow was only the top-face parallelogram instead
+    /// of the hexagon of a box on the ground.
+    #[test]
+    fn realistic_issue_1855_ground_shadow_is_the_projected_box_hexagon() {
+        use crate::camera::ShadingMode;
+        let bytes = include_bytes!("../../tests/fixtures/issue_1855.json");
+        let mut state = AppState::default();
+        state.doc = crate::storage::from_json_bytes(bytes).expect("load issue 1855");
+        state.doc.bump_mesh_rev();
+        let scene = build_scene_with_shading(&state, ShadingMode::Realistic);
+        let shadows = shadow_vertices(&scene);
+        assert!(!shadows.is_empty(), "issue 1855 body must cast a ground shadow");
+
+        let light = SCENE_LIGHT_DIR.normalize_or_zero();
+        let cuboid = state.doc.primitives.iter().next().unwrap().1;
+        let origin = Vec3::from_array(cuboid.origin);
+        let w: f32 = cuboid.width.parse().unwrap();
+        let d: f32 = cuboid.depth.parse().unwrap();
+        let h: f32 = cuboid.height.parse().unwrap();
+        let cuboid_min = Vec3::new(origin.x - w * 0.5, origin.y - d * 0.5, origin.z);
+        let cuboid_max = Vec3::new(origin.x + w * 0.5, origin.y + d * 0.5, origin.z + h);
+
+        let mut hex_min = Vec3::new(f32::MAX, f32::MAX, 0.0);
+        let mut hex_max = Vec3::new(f32::MIN, f32::MIN, 0.0);
+        for x in [cuboid_min.x, cuboid_max.x] {
+            for y in [cuboid_min.y, cuboid_max.y] {
+                for z in [0.0_f32, cuboid_max.z] {
+                    let p = Vec3::new(x, y, z);
+                    let q = p - light * (p.z / light.z);
+                    hex_min = hex_min.min(q);
+                    hex_max = hex_max.max(q);
+                }
+            }
+        }
+        let mut sh_min = Vec3::splat(f32::MAX);
+        let mut sh_max = Vec3::splat(f32::MIN);
+        for p in &shadows {
+            sh_min = sh_min.min(*p);
+            sh_max = sh_max.max(*p);
+        }
+
+        assert!(
+            (sh_max.x - cuboid_max.x).abs() < 2.0 && (sh_max.y - cuboid_max.y).abs() < 2.0,
+            "shadow must reach the cuboid's ground-footprint corners (the hexagon); \
+             shadow max={sh_max:?} cuboid max={cuboid_max:?}"
+        );
+        let extra = (hex_min.x - sh_min.x)
+            .max(hex_min.y - sh_min.y)
+            .max(sh_max.x - hex_max.x)
+            .max(sh_max.y - hex_max.y);
+        assert!(
+            extra < 2.0,
+            "ground shadow sticks out past the projected cuboid by {extra:.2} mm; \
+             hex={hex_min:?}..{hex_max:?} shadow={sh_min:?}..{sh_max:?}"
         );
     }
 
