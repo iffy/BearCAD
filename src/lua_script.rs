@@ -848,6 +848,111 @@ fn parse_hex_color(text: &str) -> mlua::Result<[u8; 3]> {
     Ok([byte(0), byte(2), byte(4)])
 }
 
+fn lua_f32(value: &Value) -> Option<f32> {
+    match value {
+        Value::Integer(i) => Some(*i as f32),
+        Value::Number(n) => Some(*n as f32),
+        _ => None,
+    }
+}
+
+/// Centre of a window-space `{ x, y, w, h }` rect, or `{ x, y }` for an orb (#1880).
+fn window_point_from_table(t: &Table) -> mlua::Result<(f32, f32)> {
+    let x: f32 = t.get("x").map_err(|_| {
+        mlua::Error::external("pointer table needs x (window pixels, like pane_rect)")
+    })?;
+    let y: f32 = t.get("y").map_err(|_| {
+        mlua::Error::external("pointer table needs y (window pixels, like pane_rect)")
+    })?;
+    let w: Option<f32> = t.get("w")?;
+    let h: Option<f32> = t.get("h")?;
+    Ok(match (w, h) {
+        (Some(w), Some(h)) => (x + w * 0.5, y + h * 0.5),
+        _ => (x, y),
+    })
+}
+
+fn window_to_viewport(tick: &ScriptTickData, wx: f32, wy: f32) -> (f32, f32) {
+    match tick.viewport {
+        Some(vp) => (wx - vp.min.x, wy - vp.min.y),
+        None => (wx, wy),
+    }
+}
+
+/// `click(x, y [, mods])` in viewport pixels, or `click(rect_or_orb [, mods])` in window pixels.
+fn parse_pointer_and_opts(
+    tick: &ScriptTickData,
+    args: &[Value],
+    name: &str,
+) -> mlua::Result<(f32, f32, Option<Table>)> {
+    let mods_at = |i: usize| -> mlua::Result<Option<Table>> {
+        match args.get(i) {
+            Some(Value::Table(o)) => Ok(Some(o.clone())),
+            Some(Value::Nil) | None => Ok(None),
+            _ => Err(mlua::Error::external(format!(
+                "{name}: optional modifiers argument is a table (shift/ctrl/cmd)"
+            ))),
+        }
+    };
+    match args.first() {
+        Some(Value::Table(t)) => {
+            let (wx, wy) = window_point_from_table(t)?;
+            let (x, y) = window_to_viewport(tick, wx, wy);
+            Ok((x, y, mods_at(1)?))
+        }
+        Some(a) if lua_f32(a).is_some() => {
+            let x = lua_f32(a).unwrap();
+            let y = args.get(1).and_then(lua_f32).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "{name}(x, y) needs two numbers, or a window-space rect/orb table"
+                ))
+            })?;
+            Ok((x, y, mods_at(2)?))
+        }
+        _ => Err(mlua::Error::external(format!(
+            "{name}(x, y) or {name}(rect) — viewport pixels, or a window-space table with x/y"
+        ))),
+    }
+}
+
+fn parse_drag_args(
+    tick: &ScriptTickData,
+    args: &[Value],
+) -> mlua::Result<(f32, f32, f32, f32)> {
+    match args.first() {
+        Some(Value::Table(a)) => {
+            let b = match args.get(1) {
+                Some(Value::Table(b)) => b,
+                _ => {
+                    return Err(mlua::Error::external(
+                        "drag(rect, rect) needs two window-space tables, or four viewport pixels",
+                    ))
+                }
+            };
+            let (ax, ay) = window_point_from_table(a)?;
+            let (bx, by) = window_point_from_table(b)?;
+            let (x0, y0) = window_to_viewport(tick, ax, ay);
+            let (x1, y1) = window_to_viewport(tick, bx, by);
+            Ok((x0, y0, x1, y1))
+        }
+        Some(a) if lua_f32(a).is_some() => {
+            let x0 = lua_f32(a).unwrap();
+            let y0 = args.get(1).and_then(lua_f32);
+            let x1 = args.get(2).and_then(lua_f32);
+            let y1 = args.get(3).and_then(lua_f32);
+            match (y0, x1, y1) {
+                (Some(y0), Some(x1), Some(y1)) => Ok((x0, y0, x1, y1)),
+                _ => Err(mlua::Error::external(
+                    "drag(x0, y0, x1, y1) needs four numbers, or two window-space tables",
+                )),
+            }
+        }
+        _ => Err(mlua::Error::external(
+            "drag(x0, y0, x1, y1) or drag(from, to) — viewport pixels, or window-space tables",
+        )),
+    }
+}
+
 /// The optional `{ shift = true }` table a scripted click can carry (#835).
 /// A scripted click's `{ shift = …, ctrl = …, cmd = … }` options table (#835/#984).
 /// `cmd` (#1408) is the platform primary modifier (⌘/Ctrl) that the copy/paste shortcuts read.
@@ -7095,8 +7200,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // "dependency", or "related". Rows come out in the order the pane
     // draws them, with the pane's default element filter; pass `{ shadow_bodies = true }` to
     // include shadow bodies the way the filter toggle does. `x/y/w/h` are where the row was
-    // drawn last frame, in the coordinates the pointer calls take (relative to the viewport
-    // origin, so a pane row's `x` is negative) — absent unless the Graph view painted that row.
+    // drawn last frame, in window pixels like `elements_row_rect` — pass the row to `click`
+    // (#1880). Absent unless the Graph view painted that row.
     api.set(
         "elements_graph",
         lua.create_function(|lua, opts: Option<mlua::Table>| {
@@ -7130,14 +7235,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 t.set("name", crate::hierarchy::node_label(&state.doc, entry.node))?;
                 t.set("kind", hierarchy_node_kind_name(entry.node))?;
                 t.set("lane", entry.lane)?;
-                if let (Some((_, rect)), Some(viewport)) = (
-                    painted.iter().find(|(node, _)| *node == entry.node),
-                    tick.viewport,
-                ) {
-                    // Click-space (relative to the 3D viewport's origin, like every pointer
-                    // call takes), so a script can click the row where it actually is.
-                    t.set("x", rect.min.x - viewport.min.x)?;
-                    t.set("y", rect.min.y - viewport.min.y)?;
+                if let Some((_, rect)) = painted.iter().find(|(node, _)| *node == entry.node) {
+                    // Window pixels, like `elements_row_rect` / `pane_rect`. `click(row)`
+                    // converts to the viewport space the pointer events use (#1880).
+                    t.set("x", rect.min.x)?;
+                    t.set("y", rect.min.y)?;
                     t.set("w", rect.width())?;
                     t.set("h", rect.height())?;
                 }
@@ -7230,8 +7332,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // #1712: where the Elements pane's List view drew the row with this label last frame, in
-    // window coordinates (like `pane_rect`) — `{ x, y, w, h }`, or `nil` when there is no such
-    // row on screen (or the pane is showing the Graph).
+    // window pixels (like `pane_rect`) — `{ x, y, w, h }`, or `nil` when there is no such
+    // row on screen (or the pane is showing the Graph). Pass the table to `click` (#1880).
     api.set(
         "elements_row_rect",
         lua.create_function(|lua, label: String| {
@@ -7254,9 +7356,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     // #1856: the items of the context menu that is open right now. `menu_items()` lists
     // their labels in the order shown; `menu_item_rect(label)` says where one landed, in
-    // window coordinates, so a script can click it with the ordinary pointer helpers. Both
-    // are empty/nil when no menu is up — the popup is an egui window a script otherwise has
-    // no way to reach into.
+    // window pixels. Pass that table to `click` (#1880). Both are empty/nil when no menu
+    // is up — the popup is an egui window a script otherwise has no way to reach into.
     api.set(
         "menu_items",
         lua.create_function(|lua, ()| {
@@ -8072,8 +8173,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let t = lua.create_table()?;
             t.set("height", state.viewport_height)?;
             t.set("width", state.viewport_height * state.viewport_aspect)?;
-            // Where that area sits in the window (#1692), so a script can turn a window
-            // coordinate — `bearcad.ui.tutorial_orb()`'s, say — into a click coordinate.
+            // Where that area sits in the window (#1692). Rect helpers speak window pixels;
+            // `click(rect)` converts. `click(x, y)` is still relative to this origin.
             if let Some(vp) = tick.viewport {
                 t.set("x", vp.min.x)?;
                 t.set("y", vp.min.y)?;
@@ -8417,17 +8518,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "move",
-        lua.create_function(|lua, (x, y): (f32, f32)| {
+        lua.create_function(|lua, args: MultiValue| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let args = args.into_vec();
+            let (x, y, _) = parse_pointer_and_opts(&tick, &args, "move")?;
             unsafe { tick.exec(Instruction::Move { x, y }) }
         })?,
     )?;
 
     api.set(
         "click",
-        lua.create_function(|lua, (x, y, opts): (f32, f32, Option<Table>)| {
-            let mods = click_mods(opts)?;
+        lua.create_function(|lua, args: MultiValue| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let args = args.into_vec();
+            let (x, y, opts) = parse_pointer_and_opts(&tick, &args, "click")?;
+            let mods = click_mods(opts)?;
             unsafe { tick.exec(Instruction::Click { x, y, mods }) }
         })?,
     )?;
@@ -8506,10 +8611,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // #1692: a double-click, for the pane rows and labels that open on one.
+    // Accepts the same window-space rect/orb tables as `click` (#1880).
     api.set(
         "double_click",
-        lua.create_function(|lua, (x, y): (f32, f32)| {
+        lua.create_function(|lua, args: MultiValue| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let args = args.into_vec();
+            let (x, y, _) = parse_pointer_and_opts(&tick, &args, "double_click")?;
             unsafe { tick.exec(Instruction::DoubleClick { x, y }) }
         })?,
     )?;
@@ -8639,8 +8747,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "drag",
-        lua.create_function(|lua, (x0, y0, x1, y1): (f32, f32, f32, f32)| {
+        lua.create_function(|lua, args: MultiValue| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let args = args.into_vec();
+            let (x0, y0, x1, y1) = parse_drag_args(&tick, &args)?;
             unsafe { tick.exec(Instruction::Drag { x0, y0, x1, y1 }) }
         })?,
     )?;
@@ -8648,8 +8758,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // #1630: a right-click in the viewport — what opens a context menu.
     api.set(
         "right_click",
-        lua.create_function(|lua, (x, y): (f32, f32)| {
+        lua.create_function(|lua, args: MultiValue| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let args = args.into_vec();
+            let (x, y, _) = parse_pointer_and_opts(&tick, &args, "right_click")?;
             unsafe { tick.exec(Instruction::RightClick { x, y }) }
         })?,
     )?;
@@ -8738,9 +8850,20 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "_wait",
         lua.create_function(|lua, frames: Option<u32>| {
-            // `ui.wait()` defaults to one frame (#1800).
+            // `ui.wait()` defaults to one frame (#1800). Named waits (`"picker"` / `"gizmo"`)
+            // are handled in the Lua wrapper (#1881).
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::WaitFrames(frames.unwrap_or(1))) }
+        })?,
+    )?;
+
+    api.set(
+        "_pending_pointer",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            Ok(unsafe { tick.synthetic() }.pending_frames() > 0)
         })?,
     )?;
 
@@ -12052,7 +12175,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "context_row_rect", "menu_items", "menu_item_rect", "drawing_view_rect", "drawing_loupe_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
             "add_geometric_constraint",
             "apply_construction", "toggle_construction", "apply_visibility", "toggle_visibility",
-            "headless", "_deferred", "palette", "settings",
+            "headless", "_deferred", "_pending_pointer", "palette", "settings",
             "changelog",
             "mcmaster",
             "report_issue", "windows", "focused_window", "viewport",
@@ -12107,7 +12230,6 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 coroutine.yield()
             end
         end
-        yielding("wait", "_wait")
         yielding("wait_ms", "_wait_ms")
         yielding("screenshot", "_screenshot")
         yielding("view", "_view")
@@ -12121,6 +12243,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- against a click that never happened.
         -- Bounded, so a call that can never settle fails loudly instead of spinning the
         -- script forever. Ten seconds at 60 fps is far longer than any camera glide.
+        -- After the call lands, yield until queued pointer batches have been consumed and
+        -- one more frame so pickers/hover from this ui() are current (#1881).
         local SETTLE_FRAMES = 600
         local function settling(name)
             local native = bearcad.ui[name]
@@ -12135,6 +12259,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     coroutine.yield()
                     result = native(...)
                 end
+                while bearcad.ui._pending_pointer() do
+                    if waited >= SETTLE_FRAMES then
+                        error(name .. ": pointer events never drained")
+                    end
+                    waited = waited + 1
+                    coroutine.yield()
+                end
+                coroutine.yield()
                 return result
             end
         end
@@ -12145,6 +12277,55 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "type",
         }) do
             if bearcad.ui[name] then settling(name) end
+        end
+        -- Arming a tool (or selecting) only publishes pickers/hover on the next draw.
+        do
+            local native = bearcad.ui.tool
+            bearcad.ui.tool = function(name)
+                if name == nil then return native() end
+                native(name)
+                coroutine.yield()
+            end
+        end
+        do
+            local native = bearcad.ui.picker_focus
+            bearcad.ui.picker_focus = function(...)
+                native(...)
+                coroutine.yield()
+            end
+        end
+        do
+            local native = bearcad.select
+            bearcad.select = function(...)
+                local result = native(...)
+                coroutine.yield()
+                return result
+            end
+        end
+        do
+            local native = bearcad.ui._wait
+            bearcad.ui.wait = function(arg)
+                if type(arg) == "string" then
+                    local waited = 0
+                    while true do
+                        if arg == "picker" then
+                            if #bearcad.ui.pickers() > 0 then return end
+                        elseif arg == "gizmo" then
+                            if #bearcad.ui.gizmos() > 0 then return end
+                        else
+                            error("wait: unknown '" .. arg .. "' (expected 'picker', 'gizmo', or a frame count)")
+                        end
+                        if waited >= SETTLE_FRAMES then
+                            error("wait(\"" .. arg .. "\"): it never appeared")
+                        end
+                        waited = waited + 1
+                        coroutine.yield()
+                    end
+                else
+                    native(arg)
+                    coroutine.yield()
+                end
+            end
         end
     "#,
     )
@@ -13153,6 +13334,10 @@ pub mod tests {
     }
 
     pub fn run_lua(source: &str) -> AppState {
+        run_lua_with_synthetic(source).0
+    }
+
+    fn run_lua_with_synthetic(source: &str) -> (AppState, SyntheticInput) {
         let mut runner = ScriptRunner::from_lua_source(source).unwrap();
         runner.verbose = false;
         let mut state = AppState::default();
@@ -13161,9 +13346,12 @@ pub mod tests {
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
         // No App frame loop here: advance view transitions so yielding camera ops
         // (view, view_home, zoom_fit) complete instead of spinning forever (#1276).
+        // Drain queued pointer batches the way `raw_input_hook` does, so settle-until-empty
+        // (#1881) does not spin forever in these headless ticks.
         let mut safety = 0u32;
         while !runner.done {
             let _ = state.cam.tick_transition(1.0 / 60.0);
+            let _ = synthetic.take_raw_frame();
             runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
             safety += 1;
             assert!(safety < 100_000, "run_lua spun too long; stuck waiting?");
@@ -13172,24 +13360,11 @@ pub mod tests {
         // exercise rejection paths catch them with `pcall`, so an uncaught error here is
         // always a test bug.
         assert!(runner.error.is_none(), "script error: {:?}", runner.error);
-        state
+        (state, synthetic)
     }
 
     fn run_lua_expect_ok(source: &str) {
-        let mut runner = ScriptRunner::from_lua_source(source).unwrap();
-        runner.verbose = false;
-        let mut state = AppState::default();
-        let mut synthetic = SyntheticInput::default();
-        let ctx = egui::Context::default();
-        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
-        let mut safety = 0u32;
-        while !runner.done {
-            let _ = state.cam.tick_transition(1.0 / 60.0);
-            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
-            safety += 1;
-            assert!(safety < 100_000, "run_lua_expect_ok spun too long; stuck waiting?");
-        }
-        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+        let _ = run_lua_with_synthetic(source);
     }
 
     /// #228: an in-sketch repeat op is a first-class pane element — it appears in the hierarchy
@@ -13232,6 +13407,76 @@ pub mod tests {
         for &ci in &op.circle_outputs {
             assert!(!state.doc.circles.contains(ci), "copy circle {ci:?} removed with the op");
         }
+    }
+
+    /// #1880: `click` takes a window-space rect/orb table and aims at its centre,
+    /// converting to the viewport pixels the pointer events use.
+    #[test]
+    fn lua_click_accepts_a_window_rect() {
+        let (_, synthetic) = run_lua_with_synthetic(
+            r#"
+            bearcad.ui.click({ x = 100, y = 80, w = 20, h = 10 })
+            "#,
+        );
+        // Viewport origin is (0, 40) in these ticks. The rect's centre is window (110, 85).
+        assert_eq!(
+            synthetic.pointer_pos(),
+            Some(egui::pos2(110.0, 85.0)),
+            "click(rect) should land on the window-space centre"
+        );
+    }
+
+    /// #1880: an orb is `{x, y}` in the same window pixels; no `w`/`h` means that point.
+    #[test]
+    fn lua_click_accepts_a_window_orb() {
+        let (_, synthetic) = run_lua_with_synthetic(
+            r#"
+            bearcad.ui.click({ x = 50, y = 90 })
+            "#,
+        );
+        assert_eq!(synthetic.pointer_pos(), Some(egui::pos2(50.0, 90.0)));
+    }
+
+    /// #1881: `wait("gizmo")` yields until a live gizmo exists. Arming Move publishes them
+    /// immediately, so this must not time out in a headless tick.
+    #[test]
+    fn lua_wait_gizmo_sees_a_move_handle() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.ui.begin_move{ bodies = {0} }
+            bearcad.ui.wait("gizmo")
+            assert(#bearcad.ui.gizmos() > 0, "Move should expose gizmos")
+            "#,
+        );
+    }
+
+    /// #1881: unknown wait names fail now, not after a timeout.
+    #[test]
+    fn lua_wait_rejects_an_unknown_name() {
+        let mut runner = ScriptRunner::from_lua_source(
+            r#"
+            local ok, err = pcall(bearcad.ui.wait, "nope")
+            assert(not ok, "wait(\"nope\") should fail")
+            assert(tostring(err):find("picker") or tostring(err):find("gizmo")
+                   or tostring(err):find("nope"), tostring(err))
+            "#,
+        )
+        .unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        let mut safety = 0u32;
+        while !runner.done {
+            let _ = synthetic.take_raw_frame();
+            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+            safety += 1;
+            assert!(safety < 1_000, "unknown wait name should fail immediately");
+        }
+        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
     }
 
     /// #1346: scripts can read the guide orb's screen position (nil until the

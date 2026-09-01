@@ -16,8 +16,10 @@ bearcad.ui.tool("rectangle")            -- select, line, circle, sketch, rectang
 bearcad.ui.tool()                       -- no name: the tool that is armed
 bearcad.ui.click_ground(0, 0)           -- click on the active sketch plane, in millimetres
 bearcad.ui.move_ground(80, 50)
-bearcad.ui.click(x, y)                  -- viewport pixel coordinates instead
+bearcad.ui.click(x, y)                  -- viewport pixel coordinates
+bearcad.ui.click(row)                   -- window-space {x,y} or {x,y,w,h} (centre)
 bearcad.ui.double_click(x, y)           -- opens a sketch / plane / dimension for editing
+bearcad.ui.double_click(row)            -- same, and waits out egui's click counter
 bearcad.ui.repeat_tool{ axis = "x", count = 5, gap = 40 }   -- the Repeat tool's fields
 bearcad.ui.repeat_tool{ offset = true, to_end = false, computed = "gap" }  -- and its toggles
 bearcad.ui.click_world(20, 10, 50)      -- a point in world space: a body's side wall, say
@@ -72,7 +74,7 @@ view bear's gear/shading-modes popup.
 ```lua
 bearcad.ui.pane("hierarchy", "hide")    -- show / hide / toggle a pane
 bearcad.ui.pane("view_bear", "show")    -- panes: hierarchy, context, parameters, view_bear, ai
-local r = bearcad.ui.pane_rect("elements")  -- {x, y, w, h} last frame, or nil if hidden
+local r = bearcad.ui.pane_rect("elements")  -- {x, y, w, h} window px, or nil if hidden
 local v = bearcad.ui.pane_scroll("ai")      -- {offset, content, viewport}, or nil if hidden
 bearcad.ui.scroll_pane("ai", 200)           -- wheel over a pane; positive scrolls down
 bearcad.ui.ai_sections("open")              -- AI pane sections: "open" | "close"
@@ -85,8 +87,7 @@ bearcad.ui.workbench("view")            -- switch, opening the most recent view/
 local g = bearcad.ui.elements_graph()   -- the graph view's one-node-per-line layout
 bearcad.ui.elements_graph{ shadow_bodies = true }  -- include shadow bodies
 -- g.lanes                              -- how many lanes wide it is
--- g.rows[i]  = { name=, kind=, lane=, x=, y=, w=, h= }   -- x/y/w/h: where the row was drawn
---                                                          last frame, in click coordinates
+-- g.rows[i]  = { name=, kind=, lane=, x=, y=, w=, h= }   -- window px; pass the row to click()
 -- g.edges[i] = { from=, to=, lane=, kind = "parent" | "dependency" | "related" }
 --                                                          from/to are row numbers
 ```
@@ -137,7 +138,13 @@ blocking the interpreter:
 
 ```lua
 bearcad.ui.wait(5)        -- wait 5 UI frames
+bearcad.ui.wait("picker") -- until the armed tool has picker rows
+bearcad.ui.wait("gizmo")  -- until a live gizmo exists
 bearcad.ui.wait_ms(100)   -- wait 100 milliseconds
+
+`click` / `tool` / `select` already yield until the pointer queue is empty and pickers/hover
+from the next frame are current. Reach for `wait(N)` only when something slower is still
+moving (a tutorial orb gliding, a menu that has not drawn).
 ```
 
 ## Changelog
@@ -191,7 +198,7 @@ bearcad.ui.tutorial_end()
 local step = bearcad.ui.tutorial_step()  -- nil when none running
 local text = bearcad.ui.tutorial_narration()  -- current step text, or nil
 local orb = bearcad.ui.tutorial_orb()    -- {x=, y=} window px, or nil
-                                         -- subtract viewport().x/y to click it
+bearcad.ui.click(orb)                    -- click converts window → viewport internally
 local bubble = bearcad.ui.tutorial_bubble() -- {x=, y=, w=, h=} screen px, or nil
 bearcad.ui.complete_all_tutorials()     -- mark every walkthrough finished
 bearcad.ui.unstart_all_tutorials()      -- clear every completion check

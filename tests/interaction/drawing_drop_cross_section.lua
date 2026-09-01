@@ -26,16 +26,11 @@ local base0, child0 = sections()
 assert(base0 == nil and child0 == nil, "nothing applied to start")
 
 -- Drag the cross-section view's row ("Cut") onto the base projection's card.
-local vp = bearcad.ui.viewport()
 local row = bearcad.ui.elements_row_rect("Cut")
 assert(type(row) == "table", "the cross-section row is in the Elements pane")
 local card = bearcad.ui.drawing_view_rect(0)
 assert(card, "the base projection has a card on the page")
-bearcad.ui.drag(
-  row.x + row.w / 2 - vp.x, row.y + row.h / 2 - vp.y,
-  card.x + card.w / 2 - vp.x, card.y + card.h / 2 - vp.y
-)
-bearcad.ui.wait(8)
+bearcad.ui.drag(row, card)
 
 local base, child = sections()
 assert(base == cs, "the dropped cross section applies to the projection, got " .. tostring(base))

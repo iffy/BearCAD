@@ -46,10 +46,7 @@ bearcad.ui.wait(6)
 local before = #bearcad.drawing_views(0)
 local orb = settled_orb()
 assert(orb, "the step rings a row in the Elements pane")
--- `bearcad.ui.click` addresses the viewport, `tutorial_orb` reports a window point (#1692).
-local vp = bearcad.ui.viewport()
-bearcad.ui.click(orb.x - vp.x, orb.y - vp.y)
-bearcad.ui.wait(12)
+bearcad.ui.click(orb)
 assert(#bearcad.drawing_views(0) > before,
   string.format("clicking the orb at %.0f,%.0f should land a view, still %d",
     orb.x, orb.y, before))

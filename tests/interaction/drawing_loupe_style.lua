@@ -17,13 +17,10 @@ bearcad.ui.wait(10)
 local l = bearcad.drawing_loupes{ drawing = d, view = 0 }[1]
 assert(l.style == "view", "a new loupe follows the view, got " .. tostring(l.style))
 
-local vp = bearcad.ui.viewport()
 local rect = assert(bearcad.ui.drawing_loupe_rect{ view = 0, index = 0, magnified = true },
   "the page reports where it drew the magnified circle")
-local cx, cy = rect.x + rect.w / 2 - vp.x, rect.y + rect.h / 2 - vp.y
 
-bearcad.ui.right_click(cx, cy)
-bearcad.ui.wait(8)
+bearcad.ui.right_click(rect)
 local items = bearcad.ui.menu_items()
 assert(#items > 0, "right-clicking a loupe should open its menu")
 local function has(label)
@@ -34,8 +31,7 @@ assert(has("Same as the view"), "the menu offers following the view, got "
 local shaded = assert(has("Shaded"), "and every drawing style, got " .. table.concat(items, ", "))
 
 local r = assert(bearcad.ui.menu_item_rect(shaded), "the Shaded item reports where it drew")
-bearcad.ui.click(r.x + r.w / 2 - vp.x, r.y + r.h / 2 - vp.y)
-bearcad.ui.wait(10)
+bearcad.ui.click(r)
 assert(bearcad.drawing_loupes{ drawing = d, view = 0 }[1].style == "shaded",
   "picking Shaded restyles the loupe, got "
   .. tostring(bearcad.drawing_loupes{ drawing = d, view = 0 }[1].style))

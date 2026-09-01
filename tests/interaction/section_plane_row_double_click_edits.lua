@@ -14,11 +14,7 @@ bearcad.ui.wait(5)
 local row = bearcad.ui.elements_row_rect("Cutting plane")
 assert(row, "the cutting plane row exists in Elements")
 
--- Row rects are in window coordinates; pointer calls are viewport-relative.
-local vp = bearcad.ui.viewport()
-assert(vp.x and vp.y, "the viewport reports where it sits in the window")
-bearcad.ui.double_click(row.x + row.w / 2 - vp.x, row.y + row.h / 2 - vp.y)
-bearcad.ui.wait(8)
+bearcad.ui.double_click(row)
 
 assert(bearcad.ui.tool() == "section_plane",
   "double-clicking the cutting plane enters its edit draft, tool is "

@@ -228,7 +228,8 @@ bearcad.ui.shading("loose_pencil")           -- …|realistic|loose_pencil|dark_
 bearcad.ui.pane("ai"|"hierarchy"|"context"|"parameters"|…, "show"|"hide"|"toggle")
 bearcad.ui.click_ground(x, y)               -- sketch-plane millimetres
 bearcad.ui.click_world(x, y, z)             -- any world point: a body's side wall, say
-bearcad.ui.double_click(x, y)               -- opens a sketch / plane / dimension for editing
+bearcad.ui.click(x, y) / click(rect)        -- viewport px, or a window-space rect/orb
+bearcad.ui.double_click(x, y) / (rect)      -- waits out egui's click counter
 bearcad.ui.viewport()                       -- { width, height, x, y } of the area clicks address
 bearcad.ui.right_click_ground(x, y)         -- opens a context menu
 bearcad.ui.context_menu()                   -- { kind, index } of the open menu, or nil

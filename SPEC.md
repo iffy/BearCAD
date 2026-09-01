@@ -5529,7 +5529,7 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   `bearcad.ui.tutorial_assist()` (press the current step's "do it for me" button),
   `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil),
   `bearcad.ui.tutorial_narration()` (current step text, or nil),
-  `bearcad.ui.tutorial_orb()` (`{x, y}` screen position of the guide ring, or nil),
+  `bearcad.ui.tutorial_orb()` (`{x, y}` window px of the guide ring, or nil; pass it to `click`),
   `bearcad.ui.tutorial_bubble()` (`{x, y, w, h}` speech-bubble screen rect, or nil).
   Prompting (#1434): `bearcad.ui.complete_all_tutorials()`, `bearcad.ui.unstart_all_tutorials()`,
   `bearcad.ui.install_age([days|false])`,

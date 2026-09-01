@@ -214,7 +214,9 @@ bearcad.ui.click_ground(0, 0)      -- sketch-plane millimetres
 bearcad.ui.move_ground(80, 50)
 bearcad.ui.key("enter")
 bearcad.ui.click(x, y)             -- viewport pixels
+bearcad.ui.click(row)              -- window-space rect/orb from pane_rect / tutorial_orb
 bearcad.ui.click_ground(20, -10, { shift = true })
+bearcad.ui.wait("picker")          -- until the armed tool has picker rows
 bearcad.ui.pane("ai", "show")      -- hierarchy, context, parameters, tutorials, ai
 bearcad.ui.palette("Export STEP")  -- the command palette
 ```

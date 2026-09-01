@@ -61,13 +61,9 @@ local row = assert(
   bearcad.ui.context_row_rect("Cut depth"),
   "the cutting plane tool has a Cut depth field"
 )
-local vp = bearcad.ui.viewport()
-bearcad.ui.click(row.x + row.w - 24 - vp.x, row.y + row.h / 2 - vp.y)
-bearcad.ui.wait(4)
+bearcad.ui.click({ x = row.x + row.w - 24, y = row.y + row.h / 2 })
 bearcad.ui.type("8")
-bearcad.ui.wait(4)
 bearcad.ui.key("Enter")
-bearcad.ui.wait(6)
 assert(
   math.abs(bearcad.section_planes(0)[1].depth - 8) < 1e-4,
   "the typed cut depth committed, got " .. tostring(bearcad.section_planes(0)[1].depth)

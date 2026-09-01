@@ -202,7 +202,8 @@ bearcad.ui.shading("loose_pencil")           -- …|realistic|loose_pencil|dark_
 bearcad.ui.pane("ai"|"hierarchy"|"context"|"parameters"|…, "show"|"hide"|"toggle")
 bearcad.ui.click_ground(x, y)               -- sketch-plane millimetres
 bearcad.ui.click_world(x, y, z)             -- any world point: a body's side wall, say
-bearcad.ui.double_click(x, y)               -- opens a sketch / plane / dimension for editing
+bearcad.ui.click(x, y) / click(rect)        -- viewport px, or a window-space rect/orb
+bearcad.ui.double_click(x, y) / (rect)      -- waits out egui's click counter
 bearcad.ui.viewport()                       -- { width, height, x, y } of the area clicks address
 bearcad.ui.right_click_ground(x, y)         -- opens a context menu
 bearcad.ui.context_menu()                   -- { kind, index } of the open menu, or nil
@@ -419,7 +420,7 @@ bearcad.ui.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, fra
 bearcad.ui.begin_move{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
 bearcad.ui.camera{ yaw, pitch, distance, target, projection, shading, ground }?   -- no fields = read
 bearcad.ui.changelog(verb?)
-bearcad.ui.click(x, y, { shift?, ctrl?, cmd? }?)
+bearcad.ui.click(x, y, { shift?, ctrl?, cmd? }?)   -- or click(rect_or_orb [, mods]); rects/orbs are window px
 bearcad.ui.click_ground(x, y, { shift?, ctrl?, cmd? }?)
 bearcad.ui.click_world(x, y, z, { shift?, ctrl?, cmd? }?)
 bearcad.ui.close_tab(index?)
@@ -431,8 +432,8 @@ bearcad.ui.constraint_shortcut(key)
 bearcad.ui.context_menu()
 bearcad.ui.context_row_rect(label)
 bearcad.ui.detach_tab(index?)
-bearcad.ui.double_click(x, y)
-bearcad.ui.drag(x0, y0, x1, y1)
+bearcad.ui.double_click(x, y)   -- or double_click(rect_or_orb); waits out egui's click counter
+bearcad.ui.drag(x0, y0, x1, y1)   -- or drag(from, to) window-space tables
 bearcad.ui.drag_gizmo{ name, by }
 bearcad.ui.drag_ground(x0, y0, x1, y1)
 bearcad.ui.drag_world(x0, y0, z0, x1, y1, z1)
@@ -469,7 +470,7 @@ bearcad.ui.mcmaster(verb?, part?)
 bearcad.ui.menu_item_rect(label)   -- { x, y, w, h } of that item, window coords
 bearcad.ui.menu_items()   -- labels of the open context menu's items, in order
 bearcad.ui.menu_structure()
-bearcad.ui.move(x, y)
+bearcad.ui.move(x, y)   -- or move(rect_or_orb) in window px
 bearcad.ui.move_ground(x, y)
 bearcad.ui.move_preview()
 bearcad.ui.move_world(x, y, z)
@@ -487,7 +488,7 @@ bearcad.ui.pickers()
 bearcad.ui.reorder_tab(from, to)
 bearcad.ui.repeat_tool{ axis?, count?, gap?, distance?, offset?, to_end?, computed?, around?, flip? }
 bearcad.ui.report_issue(verb?)
-bearcad.ui.right_click(x, y, { shift?, ctrl?, cmd? }?)
+bearcad.ui.right_click(x, y, { shift?, ctrl?, cmd? }?)   -- or right_click(rect_or_orb [, mods])
 bearcad.ui.right_click_ground(x, y, { shift?, ctrl?, cmd? }?)
 bearcad.ui.right_drag(dx, dy)
 bearcad.ui.right_drag_pan(dx, dy)
@@ -530,7 +531,7 @@ bearcad.ui.update_channel(channel?)
 bearcad.ui.view(…)
 bearcad.ui.view_home()
 bearcad.ui.viewport() -- { width, height, x, y }
-bearcad.ui.wait(frames)
+bearcad.ui.wait(frames)   -- or wait("picker") / wait("gizmo")
 bearcad.ui.wait_ms(ms)
 bearcad.ui.wheel(scroll)
 bearcad.ui.window_count()

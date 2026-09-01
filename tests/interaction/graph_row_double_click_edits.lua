@@ -23,27 +23,14 @@ local function row_named(kind)
   return nil
 end
 
-local function center(row)
-  return row.x + row.w / 2, row.y + row.h / 2
-end
-
--- egui folds rapid same-spot releases into single/double/triple counts over ~0.6 s.
--- Long waits before each probe let those counters reset, so every click below starts
--- from count 1 and each double-click lands on count 2 exactly.
+-- `double_click` waits out egui's click counter, so a single-click then a double-click
+-- at the same row do not collapse into a triple.
 local function fresh_click(row)
-  local x, y = center(row)
-  bearcad.ui.wait(250)
-  bearcad.ui.click(x, y)
-  bearcad.ui.wait(8)
+  bearcad.ui.click(row)
 end
 
 local function fresh_double_click(row)
-  local x, y = center(row)
-  bearcad.ui.wait(250)
-  bearcad.ui.click(x, y)
-  bearcad.ui.wait(5)
-  bearcad.ui.double_click(x, y)
-  bearcad.ui.wait(8)
+  bearcad.ui.double_click(row)
 end
 
 -- Universal path: one click on the cutting-plane row only selects; a double-click reopens
@@ -63,7 +50,6 @@ assert(bearcad.ui.tool() == "section_plane",
 
 -- Enter commits the edit replace-in-place (#1755).
 bearcad.ui.key("Enter")
-bearcad.ui.wait(5)
 local cuts = bearcad.section_planes(0)
 assert(#cuts == 1, "committing the edit replaces the plane, got " .. #cuts)
 

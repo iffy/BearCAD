@@ -26,8 +26,10 @@ assert(body and body.x, "the graph shows the body row and where it drew it")
 
 -- Drop it on the middle of the page, well right of the pane.
 local vp = bearcad.ui.viewport()
-bearcad.ui.drag(body.x + body.w * 0.6, body.y + body.h / 2, vp.width * 0.6, vp.height * 0.5)
-bearcad.ui.wait(10)
+bearcad.ui.drag(
+  { x = body.x + body.w * 0.6, y = body.y + body.h / 2 },
+  { x = vp.x + vp.width * 0.6, y = vp.y + vp.height * 0.5 }
+)
 
 local views = bearcad.drawing_views(d)
 assert(#views == 1,

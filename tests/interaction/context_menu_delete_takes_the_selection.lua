@@ -13,32 +13,21 @@ bearcad.ui.auto_zoom(false)
 bearcad.ui.wait(8)
 assert(bearcad.count("primitive") == 3, "three cuboids, got " .. bearcad.count("primitive"))
 
--- Rects come back in window coordinates; the pointer helpers take viewport ones.
-local function centre(r)
-  local vp = bearcad.ui.viewport()
-  return r.x + r.w / 2 - vp.x, r.y + r.h / 2 - vp.y
-end
 local function row(label)
   local r = bearcad.ui.elements_row_rect(label)
   assert(r, "no Elements row labelled " .. label)
-  return centre(r)
+  return r
 end
 
 -- Select all three rows: plain click, then shift-click the other two.
-local x, y = row("Cuboid 0")
-bearcad.ui.click(x, y)
-bearcad.ui.wait(5)
+bearcad.ui.click(row("Cuboid 0"))
 for _, label in ipairs({ "Cuboid 1", "Cuboid 2" }) do
-  local cx, cy = row(label)
-  bearcad.ui.click(cx, cy, { shift = true })
-  bearcad.ui.wait(5)
+  bearcad.ui.click(row(label), { shift = true })
 end
 assert(#bearcad.selection() == 3, "three rows selected, got " .. #bearcad.selection())
 
 -- Right-click one of them: the menu must offer to take all three.
-local rx, ry = row("Cuboid 1")
-bearcad.ui.right_click(rx, ry)
-bearcad.ui.wait(8)
+bearcad.ui.right_click(row("Cuboid 1"))
 local items = bearcad.ui.menu_items()
 assert(#items > 0, "right-clicking a row should open its context menu")
 local delete
@@ -51,9 +40,7 @@ assert(delete == "Delete 3 elements",
 
 local r = bearcad.ui.menu_item_rect(delete)
 assert(r, "the Delete item should report where it drew")
-local mx, my = centre(r)
-bearcad.ui.click(mx, my)
-bearcad.ui.wait(10)
+bearcad.ui.click(r)
 assert(bearcad.count("primitive") == 0,
   "Delete should take every selected cuboid, got " .. bearcad.count("primitive") .. " left")
 

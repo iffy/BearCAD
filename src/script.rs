@@ -5887,6 +5887,17 @@ impl SyntheticInput {
         self.frames.pop_front()
     }
 
+    /// Where the last scripted pointer event aimed, in window pixels.
+    #[cfg(test)]
+    pub fn pointer_pos(&self) -> Option<egui::Pos2> {
+        self.pointer_pos
+    }
+
+    /// Queued pointer/key batches that have not been fed to egui yet (#1881).
+    pub fn pending_frames(&self) -> usize {
+        self.frames.len()
+    }
+
     fn push_batch(&mut self, events: Vec<egui::Event>) {
         self.frames.push_back(events);
     }
@@ -9831,6 +9842,12 @@ impl ScriptRunner {
                 let Some(vp) = viewport else {
                     return StepResult::Wait;
                 };
+                // egui folds same-spot releases into 1/2/3-click counts over
+                // `max_double_click_delay` (0.3s; triples 0.6s). Retry until a previous
+                // click has aged out so this pair lands as a double, not a triple (#1881).
+                if ctx.input(|i| i.pointer.time_since_last_click()) < 0.65 {
+                    return StepResult::Wait;
+                }
                 synthetic.double_click(vp, x, y);
                 StepResult::Continue
             }

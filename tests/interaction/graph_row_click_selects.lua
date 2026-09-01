@@ -20,8 +20,7 @@ assert(body, "the graph shows the extruded body")
 assert(body.x, "the pane reports where it drew the row")
 
 -- Click well past the icon at the row's lane: the whole row is the target.
-bearcad.ui.click(body.x + body.w * 0.6, body.y + body.h / 2)
-bearcad.ui.wait(5)
+bearcad.ui.click({ x = body.x + body.w * 0.6, y = body.y + body.h / 2 })
 local selection = bearcad.selection()
 assert(#selection == 1 and selection[1].kind == "body",
   "clicking a graph row selects its element, got " .. #selection .. " item(s)")

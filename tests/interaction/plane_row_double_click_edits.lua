@@ -41,11 +41,7 @@ end
 local orb = settled_orb()
 assert(orb, "the reopen step rings the plane's row in Elements")
 
--- The orb is in window coordinates; pointer calls are relative to the viewport's origin.
-local vp = bearcad.ui.viewport()
-assert(vp.x and vp.y, "the viewport reports where it sits in the window")
-bearcad.ui.double_click(orb.x - vp.x, orb.y - vp.y)
-bearcad.ui.wait(8)
+bearcad.ui.double_click(orb)
 
 assert(bearcad.ui.tool() == "construction_plane",
   "double-clicking the plane row reopens it in the Plane tool, tool is "

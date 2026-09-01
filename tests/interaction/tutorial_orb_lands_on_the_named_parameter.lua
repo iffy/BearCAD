@@ -46,10 +46,7 @@ assert(bearcad.count("parameter") == 2,
 local step = bearcad.ui.tutorial_step()
 local orb = settled_orb()
 assert(orb, "the step rings a Parameters row")
--- `bearcad.ui.click` addresses the viewport, `tutorial_orb` reports a window point (#1692).
-local vp = bearcad.ui.viewport()
-bearcad.ui.click(orb.x - vp.x, orb.y - vp.y)
-bearcad.ui.wait(10)
+bearcad.ui.click(orb)
 assert(bearcad.ui.tutorial_step() ~= step,
   string.format("clicking the orb at %.0f,%.0f should open the value it names", orb.x, orb.y))
 
