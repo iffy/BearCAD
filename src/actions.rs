@@ -5484,6 +5484,16 @@ impl AppState {
         }
     }
 
+    /// The single selected zoom loupe `(drawing, view, index)`, either circle (#1910).
+    pub fn selected_drawing_loupe(&self) -> Option<(crate::model::DrawingKey, usize, usize)> {
+        match self.selected_drawing_elements.as_slice() {
+            [(d, crate::context::DrawingElementRef::Loupe { view, index, .. })] => {
+                Some((*d, *view, *index))
+            }
+            _ => None,
+        }
+    }
+
     /// Whether a specific drawing element is currently selected (#346).
     pub fn is_drawing_element_selected(
         &self,

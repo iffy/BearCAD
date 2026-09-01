@@ -1273,11 +1273,12 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
     }
     // A drawing's page items (#1747): a projection (`{ kind = "projection", drawing = d,
     // view = v }`), a text annotation (`{ kind = "annotation", drawing = d, index = i }`),
-    // or a shown dimension (`{ kind = "dimension", drawing = d, view = v }` with world
-    // points `a`/`b` for an edge dimension, or `index = i` for a point dimension).
+    // a shown dimension (`{ kind = "dimension", drawing = d, view = v }` with world
+    // points `a`/`b` for an edge dimension, or `index = i` for a point dimension), or a
+    // zoom loupe (`{ kind = "drawing_loupe", drawing = d, view = v, index = i }`, #1910).
     if matches!(
         kind.to_ascii_lowercase().as_str(),
-        "projection" | "annotation" | "dimension" | "drawing_dimension"
+        "projection" | "annotation" | "dimension" | "drawing_dimension" | "drawing_loupe" | "loupe"
     ) {
         return parse_drawing_element_table(lua, table, &kind);
     }
@@ -1336,6 +1337,12 @@ fn parse_drawing_element_table(lua: &Lua, table: Table, kind: &str) -> mlua::Res
                         ))
                     })?;
                 D::Text(key)
+            }
+            "drawing_loupe" | "loupe" => {
+                let view: usize = table.get("view")?;
+                let index: usize = table.ordinal_req("index")?;
+                let magnified = table.get::<Option<bool>>("magnified")?.unwrap_or(true);
+                D::Loupe { view, index, magnified }
             }
             _ => {
                 // A dimension: world points (`a`/`b`) name an edge dimension; an `index`
@@ -20798,6 +20805,33 @@ pub mod tests {
                 ),
             ],
             "annotation + point dimension selected together"
+        );
+
+        // #1910: a zoom loupe is a page item scripts can name the same way.
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 30, depth = 20, height = 20 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_loupe{ drawing = d, view = 0, at = {0, 0}, radius = 4,
+                                   to = {10, -20}, to_radius = 20 }
+            bearcad.ui.tool("select")
+            bearcad.clear_selection()
+            bearcad.select{ kind = "drawing_loupe", drawing = d, view = 0, index = 0 }
+            "#,
+        );
+        assert_eq!(
+            state.selected_drawing_elements,
+            vec![(
+                dkey(0),
+                crate::context::DrawingElementRef::Loupe {
+                    view: 0,
+                    index: 0,
+                    magnified: true,
+                }
+            )],
+            "the loupe is what the script selected"
         );
     }
 

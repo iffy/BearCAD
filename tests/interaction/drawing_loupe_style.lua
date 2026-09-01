@@ -21,6 +21,7 @@ local rect = assert(bearcad.ui.drawing_loupe_rect{ view = 0, index = 0, magnifie
   "the page reports where it drew the magnified circle")
 
 bearcad.ui.right_click(rect)
+bearcad.ui.wait(4)
 local items = bearcad.ui.menu_items()
 assert(#items > 0, "right-clicking a loupe should open its menu")
 local function has(label)
