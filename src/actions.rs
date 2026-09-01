@@ -5494,7 +5494,12 @@ impl AppState {
     }
 
     /// Replace the drawing selection with exactly this one element (#346).
+    ///
+    /// Also drops the model selection: a projection (or note, or dimension) is not a body,
+    /// so selecting it in the Elements pane or on the page must not leave those bodies
+    /// selected (#1906).
     pub fn select_drawing_only(&mut self, drawing: crate::model::DrawingKey, element: crate::context::DrawingElementRef) {
+        self.scene_selection.clear();
         self.selected_drawing_elements = vec![(drawing, element)];
     }
 
@@ -5511,6 +5516,8 @@ impl AppState {
         {
             self.selected_drawing_elements.remove(pos);
         } else {
+            // Adding a page item is not selecting the bodies it projects (#1906).
+            self.scene_selection.clear();
             self.selected_drawing_elements.push((drawing, element));
         }
     }
@@ -18358,6 +18365,7 @@ op,
                             self.scene_selection.clear();
                             self.scene_selection.insert(element.clone());
                         }
+                        self.clear_drawing_selection();
                         self.begin_dimension_from_selection();
                         return ActionResult::Ok;
                     }
@@ -18378,6 +18386,10 @@ op,
                         elements,
                         additive,
                     );
+                    // A body (or any model element) is not the page projection of it. Selecting
+                    // in the Elements pane — even Shift-adding another body — drops drawing-view
+                    // selection that isn't the thing just picked (#1906).
+                    self.clear_drawing_selection();
                     if let Some((health_status, reason)) =
                         selection_frozen_summary(&self.document_health, &self.scene_selection)
                     {
@@ -33520,6 +33532,80 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert_eq!(s.selected_drawing_annotation(), Some((dkey(0), akey(1))));
         s.deselect_drawing_element(dkey(0), R::Text(akey(1)));
         assert!(s.selected_drawing_elements.is_empty());
+    }
+
+    /// #1906: a body click (Elements pane / Select) replaces drawing-view selection that
+    /// isn't that body, even when the click is additive.
+    #[test]
+    fn selecting_a_body_deselects_an_unrelated_drawing_view() {
+        use crate::context::DrawingElementRef as R;
+        let mut state = AppState::default();
+        let b0 = state.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(
+                state.doc.imported_meshes.insert(crate::model::ImportedMesh {
+                    triangles: Vec::new(),
+                    source_name: "a".into(),
+                    step_bytes: None,
+                }),
+            ),
+            name: None,
+            material: None,
+            shadow: false,
+        });
+        let b1 = state.doc.bodies.insert(crate::model::Body {
+            source: crate::model::BodySource::Imported(
+                state.doc.imported_meshes.insert(crate::model::ImportedMesh {
+                    triangles: Vec::new(),
+                    source_name: "b".into(),
+                    step_bytes: None,
+                }),
+            ),
+            name: None,
+            material: None,
+            shadow: false,
+        });
+        let drawing = state.doc.drawings.insert(crate::model::Drawing {
+            name: None,
+            views: vec![crate::model::DrawingView::from_bodies(
+                vec![b0, b1],
+                crate::model::DrawingOrientation::Front,
+            )],
+            ..Default::default()
+        });
+        state.editing_drawing = Some(drawing);
+        state.tool = Tool::Select;
+        state.select_drawing_only(drawing, R::Projection(0));
+        assert_eq!(state.selected_drawing_view(), Some((drawing, 0)));
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Body(b0),
+            additive: false,
+        });
+        assert!(state.scene_selection.is_selected(SceneElement::Body(b0)));
+        assert!(
+            state.selected_drawing_elements.is_empty(),
+            "a body pick should drop the projection"
+        );
+
+        state.select_drawing_only(drawing, R::Projection(0));
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Body(b0),
+            additive: true,
+        });
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Body(b1),
+            additive: true,
+        });
+        assert!(state.scene_selection.is_selected(SceneElement::Body(b0)));
+        assert!(state.scene_selection.is_selected(SceneElement::Body(b1)));
+        assert!(
+            state.selected_drawing_elements.is_empty(),
+            "additive body picks should drop the projection too"
+        );
+
+        state.select_drawing_only(drawing, R::Projection(0));
+        assert!(state.scene_selection.is_empty(), "selecting the projection drops the bodies");
+        assert_eq!(state.selected_drawing_view(), Some((drawing, 0)));
     }
 
     #[test]
