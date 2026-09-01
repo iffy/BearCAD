@@ -18,7 +18,6 @@ pub mod config;
 #[allow(dead_code)] // Started from the pane in #1606.
 pub mod mcp;
 pub mod panel;
-pub mod signatures;
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)] // Installed by the CLI (#1603) and the pane (#1604).
 pub mod skill;

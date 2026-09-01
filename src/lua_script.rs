@@ -5014,6 +5014,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Option<Table>| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (linked, x, y, z) = if let Some(opts) = opts {
+                check_keys(&opts, "paste", &["linked", "x", "y", "z"])?;
                 let linked: bool = opts.get::<Option<bool>>("linked")?.unwrap_or(false);
                 let doc = unsafe { &tick.state().doc };
                 let x = length_mm_or(lua, doc, &opts, "paste", "x", 0.0)?;
@@ -7494,19 +7495,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             // expression string may name its own unit ("1.2rad").
             let (yaw, pitch, distance, target, projection, shading, ground) = match &opts {
                 Some(t) => {
-                    for pair in t.clone().pairs::<Value, Value>() {
-                        let (key, _) = pair?;
-                        let name = match &key {
-                            Value::String(s) => s.to_str()?.to_string(),
-                            other => format!("{other:?}"),
-                        };
-                        if !CAMERA_KEYS.contains(&name.as_str()) {
-                            return Err(mlua::Error::external(format!(
-                                "camera: unknown key '{name}' (try {})",
-                                CAMERA_KEYS.join(", ")
-                            )));
-                        }
-                    }
+                    check_keys(t, "camera", CAMERA_KEYS)?;
                     let doc = unsafe { &tick.state().doc };
                     (
                         angle_deg_opt(lua, doc, t, "camera", "yaw")?,
