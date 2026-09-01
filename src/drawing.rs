@@ -1999,7 +1999,16 @@ pub fn dimension_line_geometry(
     let da = a + outward * offset;
     let db = b + outward * offset;
     let along = (db - da).normalize_or_zero();
-    // Arrowheads point outward from the line centre toward each end.
+    let span = (db - da).length();
+    // Inside: arrows sit between the ticks, pointing at them. Too short for both
+    // heads (#1917): they sit outside the ticks, pointing in, and the dimension
+    // line continues through those outside arrows.
+    let (dir_a, dir_b) = crate::dimensions::dimension_arrow_dirs(along, span, arrow);
+    let line = if crate::dimensions::dimension_arrows_outside(span, arrow) {
+        (da - along * arrow, db + along * arrow)
+    } else {
+        (da, db)
+    };
     let head = |tip: glam::Vec2, dir: glam::Vec2| {
         let base = tip - dir * arrow;
         let side = glam::Vec2::new(-dir.y, dir.x) * (arrow * 0.4);
@@ -2011,8 +2020,8 @@ pub fn dimension_line_geometry(
             (a + outward * (arrow * 0.4), da + outward * (arrow * 0.7)),
             (b + outward * (arrow * 0.4), db + outward * (arrow * 0.7)),
         ],
-        line: (da, db),
-        arrows: [head(da, -along), head(db, along)],
+        line,
+        arrows: [head(da, dir_a), head(db, dir_b)],
     }
 }
 
@@ -5210,6 +5219,60 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             (pos.y + 5.0 + 11.0 * DIM_LABEL_MID_EM).abs() < 1e-3,
             "fitting label's visual centre clears the line by gap plus half a glyph"
         );
+    }
+
+    /// #1917: a span too short for two arrowheads puts them outside the ticks, pointing in,
+    /// and the dimension line continues through those outside arrows.
+    #[test]
+    fn short_dimension_puts_arrows_outside_pointing_in() {
+        let a = glam::Vec2::new(0.0, 0.0);
+        let b = glam::Vec2::new(5.0, 0.0);
+        let outward = glam::Vec2::new(0.0, 1.0);
+        let arrow = 4.0;
+        let g = dimension_line_geometry(a, b, outward, 10.0, arrow);
+        let tip_a = g.arrows[0][0];
+        let tip_b = g.arrows[1][0];
+        assert!((tip_a - glam::Vec2::new(0.0, 10.0)).length() < 1e-3);
+        assert!((tip_b - glam::Vec2::new(5.0, 10.0)).length() < 1e-3);
+        let base_a = (g.arrows[0][1] + g.arrows[0][2]) * 0.5;
+        let base_b = (g.arrows[1][1] + g.arrows[1][2]) * 0.5;
+        assert!(
+            base_a.x < tip_a.x - 1.0,
+            "left arrow should sit outside the tick, pointing in; base={base_a:?} tip={tip_a:?}"
+        );
+        assert!(
+            base_b.x > tip_b.x + 1.0,
+            "right arrow should sit outside the tick, pointing in; base={base_b:?} tip={tip_b:?}"
+        );
+        assert!(
+            g.line.0.x < tip_a.x - 1.0 && g.line.1.x > tip_b.x + 1.0,
+            "dimension line should run through the outside arrows, got {:?}",
+            g.line
+        );
+    }
+
+    /// #1917: a long span keeps arrowheads between the ticks, pointing at them.
+    #[test]
+    fn long_dimension_keeps_arrows_inside_pointing_at_ticks() {
+        let a = glam::Vec2::new(0.0, 0.0);
+        let b = glam::Vec2::new(100.0, 0.0);
+        let outward = glam::Vec2::new(0.0, 1.0);
+        let arrow = 4.0;
+        let g = dimension_line_geometry(a, b, outward, 10.0, arrow);
+        let tip_a = g.arrows[0][0];
+        let tip_b = g.arrows[1][0];
+        let base_a = (g.arrows[0][1] + g.arrows[0][2]) * 0.5;
+        let base_b = (g.arrows[1][1] + g.arrows[1][2]) * 0.5;
+        assert!(
+            base_a.x > tip_a.x + 1.0,
+            "left arrow should sit inside, pointing at the tick; base={base_a:?} tip={tip_a:?}"
+        );
+        assert!(
+            base_b.x < tip_b.x - 1.0,
+            "right arrow should sit inside, pointing at the tick; base={base_b:?} tip={tip_b:?}"
+        );
+        assert!((g.line.0 - tip_a).length() < 1e-3);
+        assert!((g.line.1 - tip_b).length() < 1e-3);
     }
 
     /// #1716: the label clears the dimension stroke by the gap *plus* half a glyph, so a

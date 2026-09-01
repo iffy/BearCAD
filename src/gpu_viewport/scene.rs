@@ -33,8 +33,9 @@ pub struct PreviewRect {
 }
 use crate::hierarchy::ElementVisibility;
 use crate::dimensions::{
-    dimension_arrow_wing_world, pixels_to_world_distance, LinearDimensionWorldGeom,
-    PlanarLabelView, ARROW_LENGTH, ARROW_WING, LINE_WIDTH,
+    dimension_arrow_dirs, dimension_arrow_wing_world, dimension_arrows_outside,
+    pixels_to_world_distance, LinearDimensionWorldGeom, PlanarLabelView, ARROW_LENGTH, ARROW_WING,
+    LINE_WIDTH,
 };
 use crate::gpu_viewport::dim_labels::ViewportDimLabel;
 use crate::selection::SceneSelection;
@@ -5897,20 +5898,36 @@ fn push_linear_dimension_world(
         viewport,
         view_proj,
     );
+    let span_px = match (project(world.dim_a), project(world.dim_b)) {
+        (Some(a), Some(b)) => (b - a).length(),
+        _ => f32::MAX,
+    };
+    let along = world.along_world.normalize_or_zero();
+    let outside = dimension_arrows_outside(span_px, ARROW_LENGTH);
+    let arrow_len = pixels_to_world_distance(project, world.dim_a, along, ARROW_LENGTH);
+    let (line_a, line_b) = if outside {
+        (
+            world.dim_a - along * arrow_len,
+            world.dim_b + along * arrow_len,
+        )
+    } else {
+        (world.dim_a, world.dim_b)
+    };
     mesh.push_line_segment(
-        world.dim_a,
-        world.dim_b,
+        line_a,
+        line_b,
         color,
         LINE_WIDTH,
         cam,
         viewport,
         view_proj,
     );
+    let (dir_a, dir_b) = dimension_arrow_dirs(along, span_px, ARROW_LENGTH);
     push_arrowhead_world(
         mesh,
         world,
         world.dim_a,
-        -world.along_world,
+        dir_a,
         color,
         cam,
         viewport,
@@ -5921,7 +5938,7 @@ fn push_linear_dimension_world(
         mesh,
         world,
         world.dim_b,
-        world.along_world,
+        dir_b,
         color,
         cam,
         viewport,
