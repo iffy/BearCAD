@@ -20771,6 +20771,50 @@ pub mod tests {
         );
     }
 
+    /// #1906: selecting a body (the Elements pane, or `bearcad.select`) replaces drawing-view
+    /// selection that isn't that body — a projection of those bodies is not the body.
+    #[test]
+    fn lua_selecting_a_body_deselects_an_unrelated_projection() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 30, depth = 20, height = 20 }
+            bearcad.cuboid{ width = 20, depth = 20, height = 20, at = {40, 0, 0} }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, bodies = {0, 1}, orientation = "front" }
+            bearcad.ui.tool("select")
+            bearcad.select{ kind = "projection", drawing = d, view = 0 }
+            local function has(kind)
+              for _, e in ipairs(bearcad.selection()) do
+                if e.kind == kind then return true end
+              end
+              return false
+            end
+            assert(has("projection"), "the projection starts selected")
+            bearcad.select{ kind = "body", index = 0 }
+            assert(not has("projection"), "a body pick should drop the projection")
+            assert(has("body") or has("primitive") or has("shape"),
+              "the body should be selected")
+            bearcad.select{ kind = "projection", drawing = d, view = 0 }
+            bearcad.select({ kind = "body", index = 0 }, { additive = true })
+            bearcad.select({ kind = "body", index = 1 }, { additive = true })
+            assert(not has("projection"),
+              "additive body picks should drop the projection too")
+            local n = 0
+            for _, e in ipairs(bearcad.selection()) do
+              if e.kind == "body" or e.kind == "primitive" or e.kind == "shape" then
+                n = n + 1
+              end
+            end
+            assert(n == 2, "both bodies stay selected, got " .. n)
+            "#,
+        );
+        assert!(
+            state.selected_drawing_elements.is_empty(),
+            "the drawing page should no longer think the projection is selected"
+        );
+    }
+
     /// #402: sizes accept parameter-expression strings anywhere the GUI does — rect
     /// width/height, circle r/radius/diameter, and extrude distance — and store the
     /// expression so the model rebuilds when the parameter changes.
