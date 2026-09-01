@@ -322,6 +322,9 @@ pub enum SectionPlaneEdit {
     /// off clears the list.
     SetExcludeAll(bool),
     FocusConsumed,
+    /// A value field (Offset / Tilt / Turn / Cut depth) took the keyboard, so the
+    /// body-scope pickers must drop their ring (#1904).
+    FocusValue,
     Commit,
 }
 
@@ -5352,6 +5355,7 @@ fn labeled_row_top<R>(
         })
         .inner;
     note_help(ui, &help_key, out.response.rect);
+    note_row(ui, help_key.as_str(), out.response.rect);
     out.inner.inner
 }
 
@@ -6856,6 +6860,56 @@ pub fn show_pane(
         // the blue accept live here — the same controls every other value-gizmo tool uses.
         if control.has_anchor {
             let mut pending_focus_consumed = false;
+            let mut value_took_keyboard = false;
+            // #1904: Cut bodies / Exclude / a re-armed Anchor own the ring; Offset
+            // must not keep a keyboard focus ring at the same time.
+            let picker_armed = content.tool_pickers.iter().any(|v| {
+                matches!(
+                    v.target,
+                    PickerTarget::SectionPlaneCutBodies
+                        | PickerTarget::SectionPlaneExcludeBodies
+                        | PickerTarget::SectionPlaneAnchor
+                ) && v.picker.is_focused()
+            });
+            let ctx = ui.ctx().clone();
+            if picker_armed {
+                for id in [
+                    egui::Id::new("section_plane_offset_ctx"),
+                    egui::Id::new("section_plane_roll_ctx"),
+                    egui::Id::new("section_plane_tilt_v_ctx"),
+                    egui::Id::new("section_plane_depth_ctx"),
+                ] {
+                    if ctx.memory(|m| m.focused()) == Some(id) {
+                        ctx.memory_mut(|m| m.surrender_focus(id));
+                    }
+                }
+            }
+            let mut take_value_focus = |resp: &egui::Response, id: egui::Id, is_offset: bool| {
+                if picker_armed && (resp.clicked() || resp.gained_focus()) {
+                    value_took_keyboard = true;
+                }
+                if !is_offset {
+                    return;
+                }
+                let memory_focused = ctx.memory(|m| m.focused()) == Some(id);
+                let other_widget_focused =
+                    ctx.memory(|m| m.focused().is_some_and(|f| f != id));
+                if picker_armed && !(resp.clicked() || resp.gained_focus()) {
+                    return;
+                }
+                if crate::should_request_pending_tool_focus(
+                    control.pending_focus,
+                    other_widget_focused,
+                ) && !memory_focused
+                {
+                    resp.request_focus();
+                }
+                if control.pending_focus
+                    && (memory_focused || resp.gained_focus() || resp.has_focus())
+                {
+                    pending_focus_consumed = true;
+                }
+            };
             labeled_row(ui, "Offset", |ui| {
                 ui.add_enabled_ui(controls_enabled, |ui| {
                     let mut text = control.offset_text.clone();
@@ -6865,12 +6919,7 @@ pub fn show_pane(
                     )
                     .width(90.0)
                     .show(ui, &mut text, doc);
-                    if control.pending_focus && !resp.has_focus() {
-                        resp.request_focus();
-                    }
-                    if control.pending_focus && resp.gained_focus() {
-                        pending_focus_consumed = true;
-                    }
+                    take_value_focus(&resp, egui::Id::new("section_plane_offset_ctx"), true);
                     if resp.changed() {
                         on_section_plane_edit(SectionPlaneEdit::SetOffset(text));
                     }
@@ -6886,6 +6935,7 @@ pub fn show_pane(
                         )
                         .width(90.0)
                         .show(ui, &mut text, doc);
+                        take_value_focus(&resp, egui::Id::new("section_plane_roll_ctx"), false);
                         if resp.changed() {
                             on_section_plane_edit(SectionPlaneEdit::SetRoll(text));
                         }
@@ -6902,6 +6952,7 @@ pub fn show_pane(
                         )
                         .width(90.0)
                         .show(ui, &mut text, doc);
+                        take_value_focus(&resp, egui::Id::new("section_plane_tilt_v_ctx"), false);
                         if resp.changed() {
                             on_section_plane_edit(SectionPlaneEdit::SetTiltV(text));
                         }
@@ -6920,6 +6971,7 @@ pub fn show_pane(
                     .hint("through")
                     .width(90.0)
                     .show(ui, &mut text, doc);
+                    take_value_focus(&resp, egui::Id::new("section_plane_depth_ctx"), false);
                     if resp.changed() {
                         on_section_plane_edit(SectionPlaneEdit::SetDepth(text));
                     }
@@ -6984,6 +7036,9 @@ pub fn show_pane(
             }
             if pending_focus_consumed {
                 on_section_plane_edit(SectionPlaneEdit::FocusConsumed);
+            }
+            if value_took_keyboard {
+                on_section_plane_edit(SectionPlaneEdit::FocusValue);
             }
         }
     }
@@ -13101,6 +13156,38 @@ mod tests {
             assert!(accepts.contains(&ElementKind::Body), "scopes take bodies");
             assert!(!accepts.contains(&ElementKind::Face));
         }
+    }
+
+    #[test]
+    fn cutting_plane_cut_bodies_override_is_the_only_armed_picker() {
+        // #1904: clicking Cut bodies arms that picker alone; Offset's pending keyboard
+        // grab is a different system and must not leave a second ring on the pickers.
+        use crate::hierarchy::SceneElement;
+        let doc = doc_with_bodies(2);
+        let selection = SceneSelection::default();
+        let face = SceneElement::ConstructionPlane(pkey(0));
+        let input = ContextInput {
+            tool: Tool::SectionPlane,
+            picker_focus: Some(PickerTarget::SectionPlaneCutBodies),
+            section_plane: Some(SectionPlaneControl {
+                anchor: Some(face),
+                has_anchor: true,
+                pending_focus: true,
+                ..Default::default()
+            }),
+            ..input(&doc, &selection)
+        };
+        let pickers = context_pane_content(&input).tool_pickers;
+        let focused: Vec<_> = pickers
+            .iter()
+            .filter(|v| v.picker.is_focused())
+            .map(|v| v.target)
+            .collect();
+        assert_eq!(
+            focused,
+            vec![PickerTarget::SectionPlaneCutBodies],
+            "Cut bodies must be the only armed picker, got {focused:?}"
+        );
     }
 
     #[test]

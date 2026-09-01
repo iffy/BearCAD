@@ -21562,6 +21562,11 @@ pub fn focus_tool_picker(state: &mut AppState, target: crate::context::PickerTar
         // Everything else needs no flag of its own: the override is what arms it.
         _ => {}
     }
+    // #1904: a pane click (or scripted picker_focus) on Cut bodies / Exclude / Anchor
+    // is exclusive — the offset field must not keep requesting the keyboard.
+    if let Some(cs) = state.creating_section.as_mut() {
+        cs.pending_focus = false;
+    }
     // Leaving "Up to" / "Distance to" armed while a different picker takes the click would
     // send that click to the wrong place.
     if target != P::ExtrudeUpTo {
@@ -42238,6 +42243,38 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(
             !gizmos.iter().any(|g| g.name == "roll"),
             "rotation is not around the face normal, got {names:?}"
+        );
+    }
+
+    /// #1904: arming Cut bodies must drop the offset field's pending keyboard grab —
+    /// otherwise Offset keeps requesting focus while the picker also shows a ring.
+    #[test]
+    fn focusing_cut_bodies_clears_section_offset_pending_focus() {
+        use crate::hierarchy::SceneElement;
+        let mut state = AppState::default();
+        state.apply(Action::CreateCrossSection { name: None });
+        state.tool = Tool::SectionPlane;
+        let plane = SceneElement::ConstructionPlane(pkey(0));
+        assert!(apply_pick(
+            &mut state,
+            crate::context::PickerTarget::SectionPlaneAnchor,
+            &plane
+        ));
+        assert!(
+            state.creating_section.as_ref().unwrap().pending_focus,
+            "a face pick hands the keyboard to Offset"
+        );
+        assert!(matches!(
+            state.apply(Action::FocusPicker("Cut bodies".into())),
+            ActionResult::Ok
+        ));
+        assert_eq!(
+            state.picker_focus,
+            Some(crate::context::PickerTarget::SectionPlaneCutBodies)
+        );
+        assert!(
+            !state.creating_section.as_ref().unwrap().pending_focus,
+            "Cut bodies must own focus exclusively — Offset must not keep grabbing the keyboard"
         );
     }
 
