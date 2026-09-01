@@ -2793,7 +2793,14 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   toggles the **angle** between them (drawn at their corner). A dimension **label is draggable** (Select or Dimension tool) to slide the whole
   dimension line further from or closer to the edge; the offset is stored per view as a
   `dimension_offsets` override (`Action::SetDrawingDimensionOffset`), cleared when the
-  dimension is hidden. Hovering a dimension **highlights** it — the
+  dimension is hidden. Dragging also **orbits** the line around the measured edge and
+  **snaps** its outward onto a few meaningful angles (#1916): the edge's 2D
+  perpendicular, and the directions of the two faces that make that edge (other
+  projected edges that share an endpoint). The landed angle is stored as
+  `dimension_offset_angles` (radians of the outward in projected millimetres);
+  absent means the auto perpendicular. Scriptable as
+  `bearcad.drawing_dim_offset{ …, offset, angle }` and
+  `bearcad.get{ kind = "edge_dimension", drawing, view, index }`. Hovering a dimension **highlights** it — the
   dimension line is accented and its label outlined (#326) — so it's obvious which dimension a
   drag will move: with the **Select tool** via its label, and with the **Dimension tool** also
   when hovering its line or its model edge (#375, where a click toggles it). With the Select

@@ -1356,6 +1356,7 @@ enum DimLabelKind {
 
 /// An in-flight drag of a drawing dimension label (#294): the label rides the pointer's
 /// perpendicular offset from its edge, written back as a `dimension_offsets` override.
+/// Edge dims also orbit the edge and snap to a few meaningful angles (#1916).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct DrawingDimLabelDrag {
     drawing: model::DrawingKey,
@@ -1363,11 +1364,57 @@ struct DrawingDimLabelDrag {
     kind: DimLabelKind,
     /// Offset at grab time. `None` means the dim had no override (auto-placed).
     start_offset: Option<f32>,
+    /// Outward `atan2` at grab time. `None` means the auto perpendicular.
+    start_angle: Option<f32>,
     start_pointer: egui::Pos2,
-    /// Outward unit direction in screen space (pixels), for projecting the drag delta.
+    /// Outward unit direction in screen space (pixels), for projecting the drag delta
+    /// of circle/point dims (1D along this).
     outward_screen: egui::Vec2,
     /// Projected-mm per screen pixel (1 / scale), to convert the pixel delta to a mm offset.
     mm_per_px: f32,
+    /// Measured-edge midpoint in screen pixels — origin for an edge-dim orbit. Unused
+    /// (ZERO) for circle/point dims.
+    edge_mid_screen: egui::Pos2,
+    /// Auto-perpendicular in projected millimetres (y-up), so a snap back onto it can
+    /// drop the stored angle. Unused (ZERO) for circle/point dims.
+    default_outward: glam::Vec2,
+    /// Start-of-drag outward in projected millimetres.
+    start_outward: glam::Vec2,
+    default_gap: f32,
+    /// Snap candidate unit directions in projected millimetres. `snap_n == 0` means
+    /// this drag is 1D along `outward_screen` (circle/point).
+    snap_dirs: [glam::Vec2; 8],
+    snap_n: u8,
+}
+
+impl DrawingDimLabelDrag {
+    /// A 1D drag along `outward_screen` (circle Ø and point-to-point labels).
+    fn along_outward(
+        drawing: model::DrawingKey,
+        view: usize,
+        kind: DimLabelKind,
+        start_offset: Option<f32>,
+        start_pointer: egui::Pos2,
+        outward_screen: egui::Vec2,
+        mm_per_px: f32,
+    ) -> Self {
+        Self {
+            drawing,
+            view,
+            kind,
+            start_offset,
+            start_angle: None,
+            start_pointer,
+            outward_screen,
+            mm_per_px,
+            edge_mid_screen: egui::Pos2::ZERO,
+            default_outward: glam::Vec2::ZERO,
+            start_outward: glam::Vec2::ZERO,
+            default_gap: 0.0,
+            snap_dirs: [glam::Vec2::ZERO; 8],
+            snap_n: 0,
+        }
+    }
 }
 
 /// A zoom loupe being placed on the page (#1846): four clicks — the detail circle's centre,
@@ -28017,15 +28064,17 @@ impl App {
                     if !dims.contains(&key) {
                         return None;
                     }
-                    let outward = {
-                        let seg = b - a;
-                        let mut p = egui::vec2(-seg.y, seg.x).normalized();
-                        if p == egui::Vec2::ZERO {
-                            p = egui::vec2(0.0, -1.0);
-                        }
-                        let mid = (a + b) * 0.5;
-                        if p.dot(mid - bbox_center_v) < 0.0 { -p } else { p }
-                    };
+                    let stored_angle = view
+                        .dimension_offset_angles
+                        .iter()
+                        .find(|(k, _)| *k == key)
+                        .map(|(_, a)| *a);
+                    let outward = crate::drawing::effective_dimension_outward(
+                        glam::Vec2::new(a.x, a.y),
+                        glam::Vec2::new(b.x, b.y),
+                        glam::Vec2::new(bbox_center.x, bbox_center.y),
+                        stored_angle,
+                    );
                     let extra = view
                         .dimension_offsets
                         .iter()
@@ -28035,7 +28084,7 @@ impl App {
                     let g = crate::drawing::dimension_line_geometry(
                         glam::Vec2::new(a.x, a.y),
                         glam::Vec2::new(b.x, b.y),
-                        glam::Vec2::new(outward.x, outward.y),
+                        outward,
                         default_gap + extra,
                         arrow,
                     );
@@ -29079,23 +29128,20 @@ impl App {
                                 {
                                     if let Some(pp) = pointer_screen.or(lr.interact_pointer_pos()) {
                                         // Screen up = +offset (projected +v maps to −y).
-                                        self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
-                                            drawing,
-                                            view: vi,
-                                            kind: DimLabelKind::Circle(circle_key),
-                                            start_offset: view
-                                                .circle_dim_offsets
-                                                .iter()
-                                                .find(|(k, _)| *k == circle_key)
-                                                .map(|(_, o)| *o),
-                                            start_pointer: pp,
-                                            outward_screen: egui::vec2(0.0, -1.0),
-                                            mm_per_px: if scale.abs() > 1e-6 {
-                                                1.0 / scale
-                                            } else {
-                                                0.0
-                                            },
-                                        });
+                                        self.drawing_dim_label_drag = Some(
+                                            DrawingDimLabelDrag::along_outward(
+                                                drawing,
+                                                vi,
+                                                DimLabelKind::Circle(circle_key),
+                                                view.circle_dim_offsets
+                                                    .iter()
+                                                    .find(|(k, _)| *k == circle_key)
+                                                    .map(|(_, o)| *o),
+                                                pp,
+                                                egui::vec2(0.0, -1.0),
+                                                if scale.abs() > 1e-6 { 1.0 / scale } else { 0.0 },
+                                            ),
+                                        );
                                         if self.drawing_view_drag == Some((drawing, vi)) {
                                             self.drawing_view_drag = None;
                                         }
@@ -29195,23 +29241,20 @@ impl App {
                                     && press_origin.is_some_and(|o| label_rect.contains(o))
                                 {
                                     if let Some(pp) = pointer_screen.or(lr.interact_pointer_pos()) {
-                                        self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
-                                            drawing,
-                                            view: vi,
-                                            kind: DimLabelKind::Circle(circle_key),
-                                            start_offset: view
-                                                .circle_dim_offsets
-                                                .iter()
-                                                .find(|(k, _)| *k == circle_key)
-                                                .map(|(_, o)| *o),
-                                            start_pointer: pp,
-                                            outward_screen: egui::vec2(out_screen.x, out_screen.y),
-                                            mm_per_px: if scale.abs() > 1e-6 {
-                                                1.0 / scale
-                                            } else {
-                                                0.0
-                                            },
-                                        });
+                                        self.drawing_dim_label_drag = Some(
+                                            DrawingDimLabelDrag::along_outward(
+                                                drawing,
+                                                vi,
+                                                DimLabelKind::Circle(circle_key),
+                                                view.circle_dim_offsets
+                                                    .iter()
+                                                    .find(|(k, _)| *k == circle_key)
+                                                    .map(|(_, o)| *o),
+                                                pp,
+                                                egui::vec2(out_screen.x, out_screen.y),
+                                                if scale.abs() > 1e-6 { 1.0 / scale } else { 0.0 },
+                                            ),
+                                        );
                                         if self.drawing_view_drag == Some((drawing, vi)) {
                                             self.drawing_view_drag = None;
                                         }
@@ -29300,23 +29343,20 @@ impl App {
                                             minor_dir.y,
                                         )) - to_screen(egui::Vec2::ZERO))
                                         .normalized();
-                                        self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
-                                            drawing,
-                                            view: vi,
-                                            kind: DimLabelKind::Circle(circle_key),
-                                            start_offset: view
-                                                .circle_dim_offsets
-                                                .iter()
-                                                .find(|(k, _)| *k == circle_key)
-                                                .map(|(_, o)| *o),
-                                            start_pointer: pp,
-                                            outward_screen: out_screen.normalized(),
-                                            mm_per_px: if scale.abs() > 1e-6 {
-                                                1.0 / scale
-                                            } else {
-                                                0.0
-                                            },
-                                        });
+                                        self.drawing_dim_label_drag = Some(
+                                            DrawingDimLabelDrag::along_outward(
+                                                drawing,
+                                                vi,
+                                                DimLabelKind::Circle(circle_key),
+                                                view.circle_dim_offsets
+                                                    .iter()
+                                                    .find(|(k, _)| *k == circle_key)
+                                                    .map(|(_, o)| *o),
+                                                pp,
+                                                out_screen.normalized(),
+                                                if scale.abs() > 1e-6 { 1.0 / scale } else { 0.0 },
+                                            ),
+                                        );
                                         if self.drawing_view_drag == Some((drawing, vi)) {
                                             self.drawing_view_drag = None;
                                         }
@@ -29410,15 +29450,17 @@ impl App {
                         // Architectural dimension line (#294): extension lines, an offset
                         // dimension line with arrowheads, and the length centred on it.
                         let (av, bv) = (egui::vec2(a.x, a.y), egui::vec2(b.x, b.y));
-                        let outward = {
-                            let seg = bv - av;
-                            let mut p = egui::vec2(-seg.y, seg.x).normalized();
-                            if p == egui::Vec2::ZERO {
-                                p = egui::vec2(0.0, -1.0);
-                            }
-                            let mid = (av + bv) * 0.5;
-                            if p.dot(mid - bbox_center_v) < 0.0 { -p } else { p }
-                        };
+                        let stored_angle = view
+                            .dimension_offset_angles
+                            .iter()
+                            .find(|(k, _)| *k == key)
+                            .map(|(_, ang)| *ang);
+                        let outward = crate::drawing::effective_dimension_outward(
+                            glam::Vec2::new(av.x, av.y),
+                            glam::Vec2::new(bv.x, bv.y),
+                            glam::Vec2::new(bbox_center.x, bbox_center.y),
+                            stored_angle,
+                        );
                         let extra = view
                             .dimension_offsets
                             .iter()
@@ -29429,7 +29471,7 @@ impl App {
                         let g = crate::drawing::dimension_line_geometry(
                             glam::Vec2::new(av.x, av.y),
                             glam::Vec2::new(bv.x, bv.y),
-                            glam::Vec2::new(outward.x, outward.y),
+                            outward,
                             off,
                             arrow,
                         );
@@ -29550,8 +29592,35 @@ impl App {
                                 && press_origin.is_some_and(|o| label_rect.contains(o))
                             {
                                 if let Some(pp) = pointer_screen.or(lr.interact_pointer_pos()) {
-                                    let om = sp(g.line.0 + glam::Vec2::new(outward.x, outward.y))
-                                        - sp(g.line.0);
+                                    let om = sp(g.line.0 + outward) - sp(g.line.0);
+                                    let mm_per_px = if scale.abs() > 1e-6 {
+                                        1.0 / scale
+                                    } else {
+                                        0.0
+                                    };
+                                    let default_outward = crate::drawing::dimension_outward(
+                                        glam::Vec2::new(av.x, av.y),
+                                        glam::Vec2::new(bv.x, bv.y),
+                                        glam::Vec2::new(bbox_center.x, bbox_center.y),
+                                    );
+                                    let edges: Vec<(glam::Vec2, glam::Vec2)> = proj
+                                        .iter()
+                                        .map(|(p, q)| {
+                                            (glam::Vec2::new(p.x, p.y), glam::Vec2::new(q.x, q.y))
+                                        })
+                                        .collect();
+                                    let dirs = crate::drawing::dimension_snap_dirs(
+                                        glam::Vec2::new(av.x, av.y),
+                                        glam::Vec2::new(bv.x, bv.y),
+                                        glam::Vec2::new(bbox_center.x, bbox_center.y),
+                                        &edges,
+                                    );
+                                    let mut snap_dirs = [glam::Vec2::ZERO; 8];
+                                    let snap_n = dirs.len().min(8) as u8;
+                                    for (i, d) in dirs.iter().take(8).enumerate() {
+                                        snap_dirs[i] = *d;
+                                    }
+                                    let mid = (av + bv) * 0.5;
                                     self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
                                         drawing,
                                         view: vi,
@@ -29561,13 +29630,16 @@ impl App {
                                             .iter()
                                             .find(|(k, _)| *k == key)
                                             .map(|(_, o)| *o),
+                                        start_angle: stored_angle,
                                         start_pointer: pp,
                                         outward_screen: om.normalized(),
-                                        mm_per_px: if scale.abs() > 1e-6 {
-                                            1.0 / scale
-                                        } else {
-                                            0.0
-                                        },
+                                        mm_per_px,
+                                        edge_mid_screen: to_screen(mid),
+                                        default_outward,
+                                        start_outward: outward,
+                                        default_gap,
+                                        snap_dirs,
+                                        snap_n,
                                     });
                                     if self.drawing_view_drag == Some((drawing, vi)) {
                                         self.drawing_view_drag = None;
@@ -29664,19 +29736,17 @@ impl App {
                         {
                             if let Some(pp) = pointer_screen.or(lr.interact_pointer_pos()) {
                                 let om = sp(pa + out) - sp(pa);
-                                self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
-                                    drawing,
-                                    view: vi,
-                                    kind: DimLabelKind::Point(pi),
-                                    start_offset: Some(dim.offset),
-                                    start_pointer: pp,
-                                    outward_screen: om.normalized(),
-                                    mm_per_px: if scale.abs() > 1e-6 {
-                                        1.0 / scale
-                                    } else {
-                                        0.0
-                                    },
-                                });
+                                self.drawing_dim_label_drag = Some(
+                                    DrawingDimLabelDrag::along_outward(
+                                        drawing,
+                                        vi,
+                                        DimLabelKind::Point(pi),
+                                        Some(dim.offset),
+                                        pp,
+                                        om.normalized(),
+                                        if scale.abs() > 1e-6 { 1.0 / scale } else { 0.0 },
+                                    ),
+                                );
                                 if self.drawing_view_drag == Some((drawing, vi)) {
                                     self.drawing_view_drag = None;
                                 }
@@ -30239,20 +30309,46 @@ impl App {
 
         // Follow / end an in-flight dimension-label drag (#294/#1228): live-write the offset
         // without undo snapshots (cloning the doc every frame was the lag), then land one
-        // undoable apply on release — same pattern as joint select-drag.
+        // undoable apply on release — same pattern as joint select-drag. Edge dims also
+        // snap the outward onto the edge's perpendicular or a face that makes it (#1916).
         if let Some(d) = self.drawing_dim_label_drag {
             let base = d.start_offset.unwrap_or(0.0);
-            let delta_mm = pointer_screen
-                .map(|pp| (pp - d.start_pointer).dot(d.outward_screen) * d.mm_per_px)
-                .unwrap_or(0.0);
-            // Treat tiny motion as a click (select only) — don't leave a zero override.
-            let moved = delta_mm.abs() > 1e-3;
-            let live_offset = if moved {
-                Some(base + delta_mm)
+            let (moved, live_offset, live_angle) = if d.snap_n > 0 {
+                let to_proj = |screen: egui::Pos2| {
+                    let delta = screen - d.edge_mid_screen;
+                    glam::Vec2::new(delta.x * d.mm_per_px, -delta.y * d.mm_per_px)
+                };
+                let grab = to_proj(d.start_pointer);
+                let live = pointer_screen.map(to_proj).unwrap_or(grab);
+                let old_dim = d.start_outward * (d.default_gap + base);
+                let target = old_dim + (live - grab);
+                let moved = (live - grab).length() > 1e-3;
+                if !moved {
+                    (false, d.start_offset, d.start_angle)
+                } else {
+                    let dirs = &d.snap_dirs[..d.snap_n as usize];
+                    let snapped = crate::drawing::snap_dimension_outward(target, dirs);
+                    if snapped.dot(d.default_outward).abs() > 0.999 {
+                        let extra = target.dot(d.default_outward) - d.default_gap;
+                        (true, Some(extra), None)
+                    } else {
+                        let extra = target.dot(snapped) - d.default_gap;
+                        (true, Some(extra), Some(snapped.y.atan2(snapped.x)))
+                    }
+                }
             } else {
-                d.start_offset
+                let delta_mm = pointer_screen
+                    .map(|pp| (pp - d.start_pointer).dot(d.outward_screen) * d.mm_per_px)
+                    .unwrap_or(0.0);
+                let moved = delta_mm.abs() > 1e-3;
+                let live_offset = if moved {
+                    Some(base + delta_mm)
+                } else {
+                    d.start_offset
+                };
+                (moved, live_offset, d.start_angle)
             };
-            let write = |state: &mut actions::AppState, offset: Option<f32>| {
+            let write = |state: &mut actions::AppState, offset: Option<f32>, angle: Option<f32>| {
                 match d.kind {
                     DimLabelKind::Circle(center) => {
                         let _ = actions::set_drawing_circle_dim_offset(
@@ -30271,6 +30367,7 @@ impl App {
                             a,
                             b,
                             offset,
+                            Some(angle),
                         );
                     }
                     // A point dim always has an offset (its default gap); a tiny motion
@@ -30288,18 +30385,23 @@ impl App {
             };
             if ui.input(|i| i.pointer.primary_down()) {
                 if moved {
-                    write(&mut self.state, live_offset);
+                    write(&mut self.state, live_offset, live_angle);
                 }
                 pan_suppressed_by_card = true;
             } else {
                 // Release: restore the pre-drag value, then apply the landed offset once.
-                write(&mut self.state, d.start_offset);
-                let changed = match (d.start_offset, live_offset) {
+                write(&mut self.state, d.start_offset, d.start_angle);
+                let offset_changed = match (d.start_offset, live_offset) {
                     (None, None) => false,
                     (Some(a), Some(b)) => (a - b).abs() > 1e-6,
                     _ => true,
                 };
-                if changed {
+                let angle_changed = match (d.start_angle, live_angle) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => (a - b).abs() > 1e-4,
+                    _ => true,
+                };
+                if offset_changed || angle_changed {
                     match d.kind {
                         DimLabelKind::Circle(center) => {
                             self.state.apply(Action::SetDrawingCircleDimOffset {
@@ -30316,6 +30418,7 @@ impl App {
                                 a,
                                 b,
                                 offset: live_offset,
+                                angle: Some(live_angle),
                             });
                         }
                         DimLabelKind::Point(index) => {

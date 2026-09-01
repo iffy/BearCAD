@@ -33,6 +33,10 @@ or a diagonal like `front-right`. `bearcad.count("drawing")` is the number of dr
 ```lua
 -- Dimension an edge of view 0 by its two world endpoints.
 bearcad.drawing_dimension{ drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0} }
+-- Offset (projected mm past the default gap) and optional snap angle (radians).
+bearcad.drawing_dim_offset{ drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0},
+  offset = 8, angle = 1.5708 }
+local dim = bearcad.get{ kind = "edge_dimension", drawing = d, view = 0, index = 0 }
 bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = {20, 10, 10} }
 -- A smooth curve (a cut edge) toggles as one length dimension.
 bearcad.drawing_curve_dimension{ drawing = d, view = 0,
