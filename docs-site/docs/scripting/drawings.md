@@ -66,7 +66,9 @@ and radii are in the view's projected millimetres.
 bearcad.drawing_loupe{ drawing = d, view = 0, at = {0, 0}, radius = 8,
                        to = {10, -50}, to_radius = 20 }
 bearcad.edit_drawing_loupe{ drawing = d, view = 0, index = 0, to_radius = 30 }
-local ls = bearcad.drawing_loupes{ drawing = d, view = 0 }  -- at, radius, to, to_radius, zoom
+local ls = bearcad.drawing_loupes{ drawing = d, view = 0 }
+-- at, radius, to, to_radius, zoom; each dimension has a, b, open_a, open_b
+bearcad.drawing_loupe_dimension{ drawing = d, view = 0, index = 0, a = {0,0,0}, b = {40,0,0} }
 bearcad.delete_drawing_loupe{ drawing = d, view = 0, index = 0 }
 ```
 

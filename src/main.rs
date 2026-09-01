@@ -28645,10 +28645,10 @@ impl App {
                                 egui::Stroke::new(crate::drawing::HATCH_STROKE, INK),
                             );
                         }
-                        // Dimensions on the loupe (#1849): the magnified copy of an edge
-                        // gets an ordinary architectural dimension, labelled with the edge's
-                        // real length. This is what a loupe is for — the detail is too small
-                        // to dimension on the card.
+                        // Dimensions on the loupe (#1849/#1913): the magnified copy of an
+                        // edge gets an architectural dimension labelled with the edge's real
+                        // length. Ends that sit outside the detail circle finish in dashes
+                        // instead of an arrow, so the crop is not read as the whole measurement.
                         {
                             let (c1, c2) = (d.detail.0, d.magnified.0);
                             let zoom = crate::drawing::loupe_zoom(loupe);
@@ -28746,8 +28746,14 @@ impl App {
                                 if outward.dot((ma + mb) * 0.5 - c2) < 0.0 {
                                     outward = -outward;
                                 }
-                                let g = crate::drawing::dimension_line_geometry(
-                                    ma, mb, outward, default_gap, arrow,
+                                let closed = crate::drawing::loupe_dim_closed_ends(
+                                    glam::Vec2::new(a.x, a.y),
+                                    glam::Vec2::new(b.x, b.y),
+                                    c1,
+                                    loupe.radius.abs(),
+                                );
+                                let g = crate::drawing::loupe_dimension_geometry(
+                                    ma, mb, outward, default_gap, arrow, closed,
                                 );
                                 let sp = |p: glam::Vec2| sv(p);
                                 for (p, q) in g.extensions {
@@ -28756,10 +28762,20 @@ impl App {
                                         egui::Stroke::new(crate::drawing::DIM_STROKE, INK),
                                     );
                                 }
-                                painter.line_segment(
-                                    [sp(g.line.0), sp(g.line.1)],
-                                    egui::Stroke::new(crate::drawing::DIM_STROKE, INK),
-                                );
+                                if let Some((p, q)) = g.solid {
+                                    painter.line_segment(
+                                        [sp(p), sp(q)],
+                                        egui::Stroke::new(crate::drawing::DIM_STROKE, INK),
+                                    );
+                                }
+                                for (p, q) in g.dashes {
+                                    painter.add(egui::Shape::dashed_line(
+                                        &[sp(p), sp(q)],
+                                        egui::Stroke::new(crate::drawing::DIM_STROKE, INK),
+                                        4.0,
+                                        3.0,
+                                    ));
+                                }
                                 for tri in g.arrows {
                                     painter.add(egui::Shape::convex_polygon(
                                         tri.iter().map(|p| sp(*p)).collect(),

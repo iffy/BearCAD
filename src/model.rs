@@ -5290,7 +5290,8 @@ pub struct DrawingLoupe {
     /// Edges dimensioned **on this loupe** (#1849), keyed by quantized world endpoints the
     /// way a view's own dimensions are. The dimension is drawn against the magnified copy of
     /// the edge — which is the point: the detail a loupe exists for is too small to dimension
-    /// on the card itself.
+    /// on the card itself. An end that is not inside the detail circle dashes instead of
+    /// closing with an arrow (#1913), so the cropped bit is not read as the whole measurement.
     #[serde(default)]
     pub dimensioned_edges: Vec<DrawingEdgeKey>,
 }

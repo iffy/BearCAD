@@ -2523,6 +2523,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   `bearcad.delete_drawing_loupe{ drawing, view, index }`, and
   `bearcad.drawing_loupes{ drawing, view }` reads them back (with the derived `zoom`);
   `bearcad.ui.drawing_loupe_rect{ view, index, magnified? }` reports where a circle was drawn.
+  A length dimension on a loupe (#1849) is labelled with the edge's real length. If a
+  measured end sits outside the detail circle, that end dashes instead of closing with an
+  arrow (#1913) — ISO 129 keeps arrows only at shown feature ends, so the crop is not read
+  as the whole measurement. `drawing_loupes` reports `open_a`/`open_b` on each dimension.
 - **Text annotations (#312):** the **Text** tool (the same tool, `T` shortcut, brought into
   the Drawing workbench) places **free text on the page** — click for a growing single-line
   box, drag a rectangle for one that word-wraps to that width. Annotations

@@ -12004,15 +12004,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let view: usize = opts.ordinal_req("view")?;
             let state = unsafe { tick.state() };
             let out = lua.create_table()?;
-            let Some(v) = state
+            let Some(d) = state
                 .doc
                 .drawings
                 .keys()
                 .nth(drawing)
-                .and_then(|k| state.doc.drawings[k].views.get(view))
+                .and_then(|k| state.doc.drawings.get(k))
             else {
                 return Ok(out);
             };
+            let Some(v) = d.views.get(view) else {
+                return Ok(out);
+            };
+            let (right, up) = crate::drawing::resolved_view_axes(&d.views, v);
             for (i, loupe) in v.loupes.iter().enumerate() {
                 let t = lua.create_table()?;
                 t.set("at", vec![loupe.at.0, loupe.at.1])?;
@@ -12027,15 +12031,27 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     loupe.style.map(|s| s.script_name()).unwrap_or("view"),
                 )?;
                 // #1849: the edges dimensioned on this loupe, as {a, b} world-point pairs.
+                // #1913: `open_a`/`open_b` say that measured end continues past the detail
+                // circle, so the dimension dashes there instead of closing with an arrow.
                 let dims = lua.create_table()?;
+                let c1 = glam::Vec2::new(loupe.at.0, loupe.at.1);
+                let r = loupe.radius.abs();
                 for (n, (a, b)) in loupe.dimensioned_edges.iter().enumerate() {
                     let pair = lua.create_table()?;
-                    let point = |q: &[i32; 3]| {
-                        let p = crate::hierarchy::dequantize_body_point(*q);
-                        vec![p.x, p.y, p.z]
-                    };
-                    pair.set("a", point(a))?;
-                    pair.set("b", point(b))?;
+                    let world = |q: [i32; 3]| crate::hierarchy::dequantize_body_point(q);
+                    let project = |p: glam::Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+                    let wa = world(*a);
+                    let wb = world(*b);
+                    pair.set("a", vec![wa.x, wa.y, wa.z])?;
+                    pair.set("b", vec![wb.x, wb.y, wb.z])?;
+                    let closed = crate::drawing::loupe_dim_closed_ends(
+                        project(wa),
+                        project(wb),
+                        c1,
+                        r,
+                    );
+                    pair.set("open_a", !closed[0])?;
+                    pair.set("open_b", !closed[1])?;
                     dims.set(n + 1, pair)?;
                 }
                 t.set("dimensions", dims)?;
@@ -24598,6 +24614,38 @@ pub mod tests {
         assert!(
             hidden.doc.drawings[dkey(0)].views[0].dimensioned_edges.is_empty(),
             "toggling the same edge twice hides it again"
+        );
+    }
+
+    /// #1913: a loupe dimension whose edge is not fully inside the detail circle reports
+    /// `open_a`/`open_b`, so a script can tell the measurement continues past the crop.
+    #[test]
+    fn lua_drawing_loupe_dimension_reports_open_ends() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 60, depth = 40, height = 30 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            local lines = bearcad.drawing_view_lines{ drawing = d, view = 0 }
+            local edge
+            for _, l in ipairs(lines) do
+              if math.abs(l.y1 - l.y2) < 1e-3 and math.abs(l.x2 - l.x1) > 30 then edge = l end
+            end
+            assert(edge, "front view has a long horizontal edge")
+            local mx, my = (edge.x1 + edge.x2) / 2, edge.y1
+            bearcad.drawing_loupe{ drawing = d, view = 0, at = {mx, my}, radius = 6,
+                                   to = {mx + 45, my - 45}, to_radius = 26 }
+            bearcad.drawing_loupe_dimension{ drawing = d, view = 0, index = 0,
+              a = {edge.x1, 0, edge.y1}, b = {edge.x2, 0, edge.y2} }
+            local dim = bearcad.drawing_loupes{ drawing = d, view = 0 }[1].dimensions[1]
+            assert(dim.open_a and dim.open_b,
+              "a 60 mm edge through a 6 mm ring continues both ways")
+            bearcad.edit_drawing_loupe{ drawing = d, view = 0, index = 0, radius = 80 }
+            dim = bearcad.drawing_loupes{ drawing = d, view = 0 }[1].dimensions[1]
+            assert(not dim.open_a and not dim.open_b,
+              "a ring that covers the whole edge closes both ends")
+            "#,
         );
     }
 

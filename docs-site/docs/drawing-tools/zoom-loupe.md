@@ -21,4 +21,9 @@ thinner than the model outline.
 With **Select**, click either circle to select it. Drag it by the middle to move it, or by
 its outer ring to resize. **Delete** on either drops the pair.
 
+The **Dimension** tool can dimension a magnified edge. The label is the edge's real
+length. If the edge isn't fully inside the ring, that end of the dimension line
+finishes in dashes instead of an arrow — the number is the whole edge, not the
+cropped bit.
+
 The Lua API is under [Scripting](/docs/scripting/drawings#zoom-loupes).
