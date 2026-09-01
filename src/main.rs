@@ -29812,57 +29812,65 @@ impl App {
         // A grabbed loupe circle follows the pointer (#1846): dragged by its middle it moves,
         // dragged by its rim it resizes — and resizing the magnified circle is how the zoom is
         // set, since the zoom is the ratio of the two.
+        //
+        // Press on the rim claims the pointer so the card doesn't slide, but the geometry
+        // waits until this is a drag (#1909). A click in the resize band used to snap the
+        // radius to the pointer on the press frame.
         if let Some(grab) = self.drawing_loupe_drag {
-            let released = ui.input(|i| !i.pointer.primary_down());
-            if let (Some((scale, bbox, center)), Some(pp)) = (
-                view_transforms.get(grab.view).copied().flatten(),
-                pointer_screen,
-            ) {
-                if scale.abs() > 1e-6 {
-                    let mm = |sp: egui::Pos2| {
-                        let d = sp - center;
-                        bbox + egui::vec2(d.x, -d.y) / scale
-                    };
-                    let loupe = self
-                        .state
-                        .doc
-                        .drawings
-                        .get(drawing)
-                        .and_then(|d| d.views.get(grab.view))
-                        .and_then(|v| v.loupes.get(grab.index))
-                        .cloned();
-                    if let Some(loupe) = loupe {
-                        let (at, to) = (
-                            egui::vec2(loupe.at.0, loupe.at.1),
-                            egui::vec2(loupe.to.0, loupe.to.1),
-                        );
-                        let centre = if grab.magnified { to } else { at };
-                        let (mut new_at, mut new_to) = (None, None);
-                        let (mut new_r, mut new_to_r) = (None, None);
-                        if grab.resizing {
-                            let r = (mm(pp) - centre).length();
-                            if grab.magnified {
-                                new_to_r = Some(r);
+            let (released, dragging) = ui.input(|i| {
+                (!i.pointer.primary_down(), i.pointer.is_decidedly_dragging())
+            });
+            if dragging {
+                if let (Some((scale, bbox, center)), Some(pp)) = (
+                    view_transforms.get(grab.view).copied().flatten(),
+                    pointer_screen,
+                ) {
+                    if scale.abs() > 1e-6 {
+                        let mm = |sp: egui::Pos2| {
+                            let d = sp - center;
+                            bbox + egui::vec2(d.x, -d.y) / scale
+                        };
+                        let loupe = self
+                            .state
+                            .doc
+                            .drawings
+                            .get(drawing)
+                            .and_then(|d| d.views.get(grab.view))
+                            .and_then(|v| v.loupes.get(grab.index))
+                            .cloned();
+                        if let Some(loupe) = loupe {
+                            let (at, to) = (
+                                egui::vec2(loupe.at.0, loupe.at.1),
+                                egui::vec2(loupe.to.0, loupe.to.1),
+                            );
+                            let centre = if grab.magnified { to } else { at };
+                            let (mut new_at, mut new_to) = (None, None);
+                            let (mut new_r, mut new_to_r) = (None, None);
+                            if grab.resizing {
+                                let r = (mm(pp) - centre).length();
+                                if grab.magnified {
+                                    new_to_r = Some(r);
+                                } else {
+                                    new_r = Some(r);
+                                }
                             } else {
-                                new_r = Some(r);
+                                let moved = mm(pp - grab.grab_offset);
+                                if grab.magnified {
+                                    new_to = Some((moved.x, moved.y));
+                                } else {
+                                    new_at = Some((moved.x, moved.y));
+                                }
                             }
-                        } else {
-                            let moved = mm(pp - grab.grab_offset);
-                            if grab.magnified {
-                                new_to = Some((moved.x, moved.y));
-                            } else {
-                                new_at = Some((moved.x, moved.y));
-                            }
+                            self.state.apply(Action::SetDrawingLoupe {
+                                drawing,
+                                view: grab.view,
+                                index: grab.index,
+                                at: new_at,
+                                radius: new_r,
+                                to: new_to,
+                                to_radius: new_to_r,
+                            });
                         }
-                        self.state.apply(Action::SetDrawingLoupe {
-                            drawing,
-                            view: grab.view,
-                            index: grab.index,
-                            at: new_at,
-                            radius: new_r,
-                            to: new_to,
-                            to_radius: new_to_r,
-                        });
                     }
                 }
             }
