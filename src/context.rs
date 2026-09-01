@@ -140,6 +140,8 @@ pub struct ContextInput<'a> {
     pub drawing_default_style: Option<crate::model::DrawingViewStyle>,
     /// Selected drawing text annotation editor (#312).
     pub drawing_annotation: Option<DrawingAnnotationControl>,
+    /// Selected zoom loupe (#1910): its own drawing style, independent of the view.
+    pub drawing_loupe: Option<DrawingLoupeControl>,
     /// Selected free point-to-point dimension (#1645): which way it measures.
     pub drawing_point_dim: Option<crate::model::PointDimAxis>,
     /// The Select tool's drawing element picker rows (#346): one `(drawing, element, label)` per
@@ -933,6 +935,15 @@ pub struct DrawingViewControl {
     pub cross_section: Option<String>,
 }
 
+/// Editor for a selected zoom loupe (#1910): its own drawing style, independent of the view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawingLoupeControl {
+    pub view: usize,
+    pub index: usize,
+    /// `None` follows the view's style.
+    pub style: Option<crate::model::DrawingViewStyle>,
+}
+
 /// Editor for a selected drawing text annotation (#312).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrawingAnnotationControl {
@@ -1001,6 +1012,10 @@ pub enum DrawingViewEdit {
     /// Un-section this projection: drop the cross section applied to it (#1778).
     RemoveCrossSection,
     Remove,
+    /// Draw a selected zoom loupe's detail in this style; `None` follows the view (#1910).
+    LoupeStyle(Option<crate::model::DrawingViewStyle>),
+    /// Drop the selected zoom loupe (#1910).
+    RemoveLoupe,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1273,6 +1288,8 @@ pub struct ContextPaneContent {
     pub drawing_default_style: Option<crate::model::DrawingViewStyle>,
     /// Selected drawing text annotation editor (#312).
     pub drawing_annotation: Option<DrawingAnnotationControl>,
+    /// Selected zoom loupe (#1910): its own drawing style, independent of the view.
+    pub drawing_loupe: Option<DrawingLoupeControl>,
     /// Selected free point-to-point dimension (#1645): which way it measures.
     pub drawing_point_dim: Option<crate::model::PointDimAxis>,
     /// The Select tool's always-visible drawing element picker (#346): `(drawing, element, label)`
@@ -3503,6 +3520,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         .filter(|_| {
             drawing_view.is_none()
                 && input.drawing_annotation.is_none()
+                && input.drawing_loupe.is_none()
                 && input.tool != Tool::Dimension
         });
     let drawing_annotation = input.drawing_annotation.clone();
@@ -3583,6 +3601,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             drawing_view: drawing_view.clone(),
             drawing_default_style,
             drawing_annotation: drawing_annotation.clone(),
+            drawing_loupe: input.drawing_loupe.clone(),
             drawing_point_dim: input.drawing_point_dim,
             drawing_selection: None,
             drawing_align: None,
@@ -3652,6 +3671,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             drawing_view: drawing_view.clone(),
             drawing_default_style,
             drawing_annotation: drawing_annotation.clone(),
+            drawing_loupe: input.drawing_loupe.clone(),
             drawing_point_dim: input.drawing_point_dim,
             drawing_selection: None,
             drawing_align: None,
@@ -3723,6 +3743,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             drawing_view: drawing_view.clone(),
             drawing_default_style,
             drawing_annotation: drawing_annotation.clone(),
+            drawing_loupe: input.drawing_loupe.clone(),
             drawing_point_dim: input.drawing_point_dim,
             drawing_selection: None,
             drawing_align: None,
@@ -3812,6 +3833,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         drawing_view,
         drawing_default_style,
         drawing_annotation,
+        drawing_loupe: input.drawing_loupe.clone(),
         drawing_point_dim: input.drawing_point_dim,
         drawing_selection,
         drawing_align,
@@ -9301,6 +9323,61 @@ pub fn show_pane(
                 on_drawing_view_edit(DrawingViewEdit::Remove);
             }
         });
+    } else if let Some(control) = &content.drawing_loupe {
+        any_control = true;
+        ui.separator();
+        section_label(ui, "Zoom loupe");
+        let current = control
+            .style
+            .map(|s| s.label())
+            .unwrap_or("Same as the view");
+        let style_combo = labeled_row(ui, "Style", |ui| {
+            egui::ComboBox::from_id_salt("drawing_loupe_style")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    let follows = control.style.is_none();
+                    let follow = ui.selectable_label(follows, "Same as the view");
+                    crate::hierarchy::publish_menu_item(
+                        ui.ctx(),
+                        if follows {
+                            "✓ Same as the view"
+                        } else {
+                            "Same as the view"
+                        },
+                        follow.rect,
+                    );
+                    if follow.clicked() {
+                        on_drawing_view_edit(DrawingViewEdit::LoupeStyle(None));
+                    }
+                    for style in crate::model::DrawingViewStyle::ALL {
+                        let selected = control.style == Some(style);
+                        let resp = ui.selectable_label(selected, style.label());
+                        crate::hierarchy::publish_menu_item(
+                            ui.ctx(),
+                            if selected {
+                                format!("✓ {}", style.label())
+                            } else {
+                                style.label().to_string()
+                            },
+                            resp.rect,
+                        );
+                        if resp.clicked() {
+                            on_drawing_view_edit(DrawingViewEdit::LoupeStyle(Some(style)));
+                        }
+                    }
+                })
+                .response
+                .rect
+        });
+        if style_combo.width() > 1.0 {
+            let ctx = ui.ctx().clone();
+            ctx.data_mut(|d| d.insert_temp(drawing_view_style_rect_id(), style_combo));
+        }
+        labeled_row_salted(ui, Some("remove_loupe"), "", |ui| {
+            if ui.button("Remove loupe").clicked() {
+                on_drawing_view_edit(DrawingViewEdit::RemoveLoupe);
+            }
+        });
     } else if content.drawing_add_active {
         any_control = true;
         ui.separator();
@@ -11344,6 +11421,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
@@ -11954,6 +12032,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
@@ -13848,6 +13927,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: None,
             drawing_align: None,
@@ -13934,6 +14014,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
@@ -14013,6 +14094,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: None,
             drawing_align: None,
@@ -14099,6 +14181,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
@@ -14238,6 +14321,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: None,
             drawing_align: None,
@@ -14372,6 +14456,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
@@ -14458,6 +14543,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,
@@ -14547,6 +14633,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: None,
             drawing_align: None,
@@ -14624,6 +14711,7 @@ mod tests {
             drawing_view: None,
             drawing_default_style: None,
             drawing_annotation: None,
+            drawing_loupe: None,
             drawing_point_dim: None,
             drawing_selection: Vec::new(),
             drawing_align_active: false,

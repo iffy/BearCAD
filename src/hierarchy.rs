@@ -74,7 +74,13 @@ fn elements_row_id(node: HierarchyNode) -> egui::Id {
 pub(crate) fn menu_button(ui: &mut egui::Ui, label: impl Into<String>) -> egui::Response {
     let label = label.into();
     let response = ui.button(label.clone());
-    let ctx = ui.ctx().clone();
+    publish_menu_item(ui.ctx(), label, response.rect);
+    response
+}
+
+/// Record a popup/combo item so scripts can click it (#1856/#1910).
+pub(crate) fn publish_menu_item(ctx: &egui::Context, label: impl Into<String>, rect: egui::Rect) {
+    let label = label.into();
     let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| {
         let items = d.get_temp_mut_or_default::<MenuItemRects>(menu_item_rects_id());
@@ -84,9 +90,8 @@ pub(crate) fn menu_button(ui: &mut egui::Ui, label: impl Into<String>) -> egui::
             items.pass = pass;
             items.rects.clear();
         }
-        items.rects.push((label, response.rect));
+        items.rects.push((label, rect));
     });
-    response
 }
 
 /// Where the open context menu drew the item labelled `label`, this frame (#1856).
@@ -780,6 +785,27 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::Component(i) => SceneElement::Component(i),
         HierarchyNode::UnitInstance(i) => SceneElement::UnitInstance(i),
         HierarchyNode::Joint(i) => SceneElement::Joint(i),
+    })
+}
+
+/// The page item an Elements-pane drawing leaf selects (#341/#1910).
+pub fn drawing_element_for_node(
+    node: HierarchyNode,
+) -> Option<(crate::model::DrawingKey, crate::context::DrawingElementRef)> {
+    use crate::context::DrawingElementRef as R;
+    Some(match node {
+        HierarchyNode::DrawingProjection { drawing, view } => (drawing, R::Projection(view)),
+        HierarchyNode::DrawingAnnotation { drawing, annotation } => (drawing, R::Text(annotation)),
+        HierarchyNode::DrawingDimension { drawing, view, a, b } => {
+            (drawing, R::Dimension { view, a, b })
+        }
+        HierarchyNode::DrawingPointDim { drawing, view, index } => {
+            (drawing, R::PointDim { view, index })
+        }
+        HierarchyNode::DrawingLoupe { drawing, view, index, magnified } => {
+            (drawing, R::Loupe { view, index, magnified })
+        }
+        _ => return None,
     })
 }
 
@@ -2630,9 +2656,8 @@ pub fn build_hierarchy(
                 .views
                 .iter()
                 .enumerate()
-                .map(|(vi, view)| HierarchyEntry {
-                    node: HierarchyNode::DrawingProjection { drawing: di, view: vi },
-                    children: view
+                .map(|(vi, view)| {
+                    let mut kids: Vec<HierarchyEntry> = view
                         .dimensioned_edges
                         .iter()
                         .map(|(a, b)| HierarchyEntry {
@@ -2644,7 +2669,24 @@ pub fn build_hierarchy(
                             },
                             children: Vec::new(),
                         })
-                        .collect(),
+                        .collect();
+                    // One Elements-pane row per loupe (#1910): the pair is one page item;
+                    // either circle still selects on the sheet.
+                    for li in 0..view.loupes.len() {
+                        kids.push(HierarchyEntry {
+                            node: HierarchyNode::DrawingLoupe {
+                                drawing: di,
+                                view: vi,
+                                index: li,
+                                magnified: true,
+                            },
+                            children: Vec::new(),
+                        });
+                    }
+                    HierarchyEntry {
+                        node: HierarchyNode::DrawingProjection { drawing: di, view: vi },
+                        children: kids,
+                    }
                 })
                 .collect();
             for ai in drawing.annotations.keys() {
@@ -2875,7 +2917,7 @@ pub struct ElementFilter {
     pub operations: bool,
     pub images: bool,
     pub drawings: bool,
-    /// A drawing's **components** — its projections, text notes, and dimensions — separately
+    /// A drawing's **components** — its projections, text notes, dimensions, and loupes — separately
     /// from the drawing rows themselves (#381): page details are noise while modeling, so
     /// the Model workbench hides them by default (the Drawing workbench shows them).
     pub drawing_components: bool,
@@ -4186,8 +4228,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::DrawingDimension { .. } | HierarchyNode::DrawingPointDim { .. } => {
             IconId::Dimension
         }
-        // A loupe is a circle drawn on the page (#1846).
-        HierarchyNode::DrawingLoupe { .. } => IconId::Circle,
+        HierarchyNode::DrawingLoupe { .. } => IconId::ZoomLoupe,
         // A placed unit is an assembly of parts, not the import action (#923).
         HierarchyNode::UnitInstance(_) => IconId::Assembly,
         HierarchyNode::UnitChild { instance, ordinal } => {
@@ -6258,12 +6299,14 @@ fn show_row(
         return;
     }
 
-    // A drawing projection (#281), text note (#333), or dimension (#341): a display-only leaf.
-    // Clicking opens the drawing and selects that element (like clicking a sketch's child), so
-    // its editor opens and it highlights on the page.
+    // A drawing projection (#281), text note (#333), dimension (#341), or zoom loupe (#1910):
+    // a display-only leaf. Clicking opens the drawing and selects that element (like clicking
+    // a sketch's child), so its editor opens and it highlights on the page.
     if let HierarchyNode::DrawingProjection { drawing, .. }
     | HierarchyNode::DrawingAnnotation { drawing, .. }
-    | HierarchyNode::DrawingDimension { drawing, .. } = node
+    | HierarchyNode::DrawingDimension { drawing, .. }
+    | HierarchyNode::DrawingPointDim { drawing, .. }
+    | HierarchyNode::DrawingLoupe { drawing, .. } = node
     {
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 18.0);
@@ -7873,6 +7916,86 @@ label_hidden: false,
             projection.children.iter().map(|c| c.node).collect::<Vec<_>>(),
             vec![HierarchyNode::DrawingDimension { drawing: dkey(0), view: 0, a, b }],
             "the dimension nests under its projection"
+        );
+    }
+
+    /// #1910: a zoom loupe is an Elements-pane child of its projection, labelled as one
+    /// loupe (not two circles).
+    #[test]
+    fn drawing_loupes_nest_under_their_projection() {
+        let mut doc = Document::default();
+        doc.drawings.insert(crate::model::Drawing {
+            views: vec![crate::model::DrawingView {
+                cross_section: None,
+                bodies: vec![bkey(0)],
+                sketch: None,
+                orientation: crate::model::DrawingOrientation::Front,
+                dimensioned_edges: Vec::new(),
+                angle_dims: Vec::new(),
+                dimension_offsets: Vec::new(),
+                dimensioned_circles: Vec::new(),
+                dimensioned_curves: Vec::new(),
+                circle_dim_offsets: Vec::new(),
+                point_dims: Vec::new(),
+                loupes: vec![crate::model::DrawingLoupe {
+                    at: (0.0, 0.0),
+                    radius: 4.0,
+                    to: (10.0, -20.0),
+                    to_radius: 20.0,
+                    style: None,
+                    dimensioned_edges: Vec::new(),
+                }],
+                aligned_parent: None,
+                aligned_dir: None,
+                scale: None,
+                style: Default::default(),
+                align_lines: false,
+                label_hidden: false,
+                label_pos: Default::default(),
+                label_text: None,
+                pos_x: 0.5,
+                pos_y: 0.5,
+                size_x: crate::drawing::CELL_FRAC,
+                size_y: crate::drawing::CELL_FRAC,
+            }],
+            ..Default::default()
+        });
+        let tree = build_hierarchy(&doc, None);
+        let drawing = tree[0]
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Drawings)
+            .expect("Drawings section")
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Drawing(dkey(0)))
+            .expect("drawing node");
+        let projection = drawing
+            .children
+            .iter()
+            .find(|e| matches!(e.node, HierarchyNode::DrawingProjection { .. }))
+            .expect("projection node");
+        assert_eq!(
+            projection.children.iter().map(|c| c.node).collect::<Vec<_>>(),
+            vec![HierarchyNode::DrawingLoupe {
+                drawing: dkey(0),
+                view: 0,
+                index: 0,
+                magnified: true,
+            }],
+            "the loupe nests under its projection as one row"
+        );
+        assert_eq!(
+            node_label(
+                &doc,
+                HierarchyNode::DrawingLoupe {
+                    drawing: dkey(0),
+                    view: 0,
+                    index: 0,
+                    magnified: true,
+                }
+            ),
+            "Loupe 0 (5.0×)"
         );
     }
 

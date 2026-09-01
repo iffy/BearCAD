@@ -15790,6 +15790,16 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     self.state.selected_drawing_dimension().map(|(d, v, a, b)| {
                         hierarchy::HierarchyNode::DrawingDimension { drawing: d, view: v, a, b }
                     })
+                })
+                .or_else(|| {
+                    self.state.selected_drawing_loupe().map(|(d, v, i)| {
+                        hierarchy::HierarchyNode::DrawingLoupe {
+                            drawing: d,
+                            view: v,
+                            index: i,
+                            magnified: true,
+                        }
+                    })
                 });
             let mut export_body: Option<model::BodyKey> = None;
             let mut export_body_step: Option<model::BodyKey> = None;
@@ -16174,34 +16184,13 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             }
             // Hovering a drawing-element row highlights it on the page (#341); cleared each frame
             // so it only shows while actually hovering.
-            self.state.hovered_drawing_element = hover_drawing_element.and_then(|n| match n {
-                hierarchy::HierarchyNode::DrawingProjection { view, .. } => {
-                    Some(context::DrawingElementRef::Projection(view))
-                }
-                hierarchy::HierarchyNode::DrawingAnnotation { annotation, .. } => {
-                    Some(context::DrawingElementRef::Text(annotation))
-                }
-                hierarchy::HierarchyNode::DrawingDimension { view, a, b, .. } => {
-                    Some(context::DrawingElementRef::Dimension { view, a, b })
-                }
-                _ => None,
-            });
+            self.state.hovered_drawing_element = hover_drawing_element
+                .and_then(hierarchy::drawing_element_for_node)
+                .map(|(_, e)| e);
             // Selecting a drawing element from the Elements pane (#341): mirror the on-page
             // selection so its context editor opens and it highlights.
             if let Some(node) = select_drawing_element {
-                use context::DrawingElementRef as R;
-                let picked = match node {
-                    hierarchy::HierarchyNode::DrawingProjection { drawing, view } => {
-                        Some((drawing, R::Projection(view)))
-                    }
-                    hierarchy::HierarchyNode::DrawingAnnotation { drawing, annotation } => {
-                        Some((drawing, R::Text(annotation)))
-                    }
-                    hierarchy::HierarchyNode::DrawingDimension { drawing, view, a, b } => {
-                        Some((drawing, R::Dimension { view, a, b }))
-                    }
-                    _ => None,
-                };
+                let picked = hierarchy::drawing_element_for_node(node);
                 if let Some((drawing, element)) = picked {
                     // While the Aligned-view tool is active, clicking a projection picks it as the
                     // base to align to (#365) rather than changing the Select tool's selection.
@@ -16992,6 +16981,23 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         .get(d)
                         .and_then(|dr| dr.annotations.get(a))
                         .map(|ann| context::DrawingAnnotationControl { text: ann.text.clone() })
+                }),
+            drawing_loupe: self
+                .state
+                .selected_drawing_loupe()
+                .filter(|(d, _, _)| self.state.editing_drawing == Some(*d))
+                .and_then(|(d, view, index)| {
+                    self.state
+                        .doc
+                        .drawings
+                        .get(d)
+                        .and_then(|dr| dr.views.get(view))
+                        .and_then(|v| v.loupes.get(index))
+                        .map(|loupe| context::DrawingLoupeControl {
+                            view,
+                            index,
+                            style: loupe.style,
+                        })
                 }),
             // The selected free point-to-point dimension's measure mode (#1645).
             drawing_point_dim: self.state.selected_drawing_elements.iter().find_map(
@@ -18404,12 +18410,32 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 }
                 drawing_view_edit = None;
             }
+            if let Some(context::DrawingViewEdit::LoupeStyle(style)) = drawing_view_edit {
+                if let Some((drawing, view, index)) = self.state.selected_drawing_loupe() {
+                    self.state.apply(Action::SetDrawingLoupeStyle {
+                        drawing,
+                        view,
+                        index,
+                        style,
+                    });
+                }
+                drawing_view_edit = None;
+            }
+            if let Some(context::DrawingViewEdit::RemoveLoupe) = drawing_view_edit {
+                if let Some((drawing, view, index)) = self.state.selected_drawing_loupe() {
+                    self.state
+                        .apply(Action::RemoveDrawingLoupe { drawing, view, index });
+                }
+                drawing_view_edit = None;
+            }
             if let Some(edit) = drawing_view_edit {
                 if let Some((drawing, view)) = self.state.selected_drawing_view() {
                     match edit {
-                        // Handled above, against the open drawing / selected dimension.
+                        // Handled above, against the open drawing / selected dimension / loupe.
                         context::DrawingViewEdit::DefaultStyle(_) => {}
                         context::DrawingViewEdit::PointDimAxis(_) => {}
+                        context::DrawingViewEdit::LoupeStyle(_) => {}
+                        context::DrawingViewEdit::RemoveLoupe => {}
                         context::DrawingViewEdit::Orientation(orientation) => {
                             self.state.apply(Action::SetDrawingViewOrientation {
                                 drawing,

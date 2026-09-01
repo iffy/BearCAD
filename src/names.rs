@@ -752,8 +752,8 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 None => "Dim".to_string(),
             }
         }
-        // A loupe's two circles are told apart by which is which and how far it magnifies
-        // (#1846).
+        // One Elements-pane row per loupe (#1910); the page still names a selected detail
+        // circle "Loupe detail" in the picker.
         HierarchyNode::DrawingLoupe { drawing, view, index, magnified } => {
             let loupe = doc
                 .drawings

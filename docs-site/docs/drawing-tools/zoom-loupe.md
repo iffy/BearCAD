@@ -18,8 +18,13 @@ The magnification is the ratio of the two circles, so growing the big one zooms 
 further rather than showing more. Both circles and the line joining their rims stroke
 thinner than the model outline.
 
-With **Select**, click either circle to select it. Drag it by the middle to move it, or by
-its outer ring to resize. **Delete** on either drops the pair.
+With **Select**, click either circle — or the loupe's row in the Elements pane — to select
+it. Drag it by the middle to move it, or by its outer ring to resize. **Delete** on either
+drops the pair.
+
+A selected loupe has its own **Style** in the Context pane, independent of the projection.
+**Same as the view** follows the card; any other style draws only the magnified detail that
+way. Right-click the loupe for the same list.
 
 The **Dimension** tool can dimension a magnified edge. The label is the edge's real
 length. If the edge isn't fully inside the ring, that end of the dimension line
