@@ -1229,6 +1229,11 @@ pub fn instruction_from_json(
             } else {
                 None
             },
+            side: if o.get("side").is_some() {
+                Some(opt_f32(o, "side")?.map(|v| if v < 0.0 { -1 } else { 1 }))
+            } else {
+                None
+            },
         }),
         "drawing_circle_dim_offset" => Ok(Instruction::SetDrawingCircleDimOffset {
             drawing: req_usize(o, "drawing", "drawing_circle_dim_offset")?,

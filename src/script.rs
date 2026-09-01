@@ -506,7 +506,7 @@ pub enum Instruction {
     /// Set (or clear) a drawing edge dimension's label offset (#294/#1228).
     /// `offset = None` restores the auto-placed default. `angle` is the outward
     /// `atan2` (#1916); omitted leaves a stored angle, `Some(None)` restores the
-    /// auto perpendicular.
+    /// auto perpendicular. `side` is which end a too-short label hangs past (#1926).
     SetDrawingDimensionOffset {
         drawing: usize,
         view: usize,
@@ -514,6 +514,7 @@ pub enum Instruction {
         b: (f32, f32, f32),
         offset: Option<f32>,
         angle: Option<Option<f32>>,
+        side: Option<Option<i8>>,
     },
     /// Set (or clear) a drawing circle Ø-label offset (#397/#1228).
     SetDrawingCircleDimOffset {
@@ -1842,6 +1843,7 @@ impl Instruction {
                 b,
                 offset,
                 angle,
+                side,
             } => {
                 let off = match offset {
                     Some(o) => format!("{o}"),
@@ -1852,9 +1854,14 @@ impl Instruction {
                     Some(None) => ", angle = nil".into(),
                     None => String::new(),
                 };
+                let side = match side {
+                    Some(Some(s)) => format!(", side = {s}"),
+                    Some(None) => ", side = nil".into(),
+                    None => String::new(),
+                };
                 format!(
                     "bearcad.drawing_dim_offset{{ drawing = {drawing}, view = {view}, \
-                     a = {{ {}, {}, {} }}, b = {{ {}, {}, {} }}, offset = {off}{ang} }}",
+                     a = {{ {}, {}, {} }}, b = {{ {}, {}, {} }}, offset = {off}{ang}{side} }}",
                     a.0, a.1, a.2, b.0, b.1, b.2
                 )
             }
@@ -8130,6 +8137,7 @@ impl ScriptRunner {
                 b,
                 offset,
                 angle,
+                side,
             } => {
                 let Some(drawing) = drawing_key(&state.doc, drawing) else {
                     self.last_action_error = Some(format!("No drawing {drawing}"));
@@ -8145,6 +8153,7 @@ impl ScriptRunner {
                     b: q(b),
                     offset,
                     angle,
+                    side,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

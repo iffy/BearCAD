@@ -18,7 +18,8 @@ With the **Dimension tool**:
   the piece between the faces that meet it.
 - Shift+click two lines to show the angle between them.
 - Click and drag dimensions to reposition them. The line snaps to the edge's
-  perpendicular or to either face that makes that edge.
+  perpendicular or to either face that makes that edge. A label that does not
+  fit along the line sits on the line, past either end — drag it to pick the end.
 - Click two corners to measure between them; after the first, only other corners of the
   same body (on that view) are pickable. **Measure** in the context pane switches that one
   between the direct, horizontal and vertical distance. Esc drops a half-made one; Select

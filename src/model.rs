@@ -5215,6 +5215,11 @@ pub struct DrawingView {
     /// landed angle here.
     #[serde(default)]
     pub dimension_offset_angles: Vec<(([i32; 3], [i32; 3]), f32)>,
+    /// Per-edge overflow-label end (#1926), keyed like `dimension_offsets`. `-1` hangs
+    /// a too-short label past the edge's first endpoint, `1` past the second. Absent →
+    /// past the second (the auto far end).
+    #[serde(default)]
+    pub dimension_label_sides: Vec<(([i32; 3], [i32; 3]), i8)>,
     /// Detected circles (holes, cylinders) whose **diameter** dimension is shown, keyed by the
     /// circle's quantized world centre (#342). Like `dimensioned_edges`, a new view starts empty
     /// and "Show all dimensions" populates it; "Hide all" clears it, so a circle's Ø dimension is
@@ -5382,6 +5387,7 @@ impl DrawingView {
             angle_dims: Vec::new(),
             dimension_offsets: Vec::new(),
             dimension_offset_angles: Vec::new(),
+            dimension_label_sides: Vec::new(),
             dimensioned_circles: Vec::new(),
             circle_dim_offsets: Vec::new(),
             dimensioned_curves: Vec::new(),
@@ -5413,6 +5419,7 @@ impl DrawingView {
             angle_dims: Vec::new(),
             dimension_offsets: Vec::new(),
             dimension_offset_angles: Vec::new(),
+            dimension_label_sides: Vec::new(),
             dimensioned_circles: Vec::new(),
             circle_dim_offsets: Vec::new(),
             dimensioned_curves: Vec::new(),

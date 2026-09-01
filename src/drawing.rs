@@ -3271,9 +3271,10 @@ pub const DIM_LABEL_MID_EM: f32 = 0.35;
 
 /// Where and how to draw a dimension's label (#314): `(pos, angle_radians)`. If the text fits
 /// along the dimension line it runs centred along it (rotated, kept upright); otherwise it's
-/// placed just beyond the line's far end, still lettered along the line so a short isometric
-/// edge doesn't go horizontal (#1918). Everything is in device units (screen px for the
-/// editor, points for export).
+/// placed just beyond one end, still lettered along the line so a short isometric edge
+/// doesn't go horizontal (#1918), with the text centreline on the dimension line (#1926).
+/// `side < 0` hangs the overflow past `a`; otherwise past `b`. Device units (screen px for
+/// the editor, points for export).
 pub fn dimension_label_layout(
     a: glam::Vec2,
     b: glam::Vec2,
@@ -3281,6 +3282,19 @@ pub fn dimension_label_layout(
     text_w: f32,
     text_h: f32,
     gap: f32,
+) -> (glam::Vec2, f32) {
+    dimension_label_layout_sided(a, b, outward, text_w, text_h, gap, 1)
+}
+
+/// [`dimension_label_layout`] with an explicit overflow end (#1926).
+pub fn dimension_label_layout_sided(
+    a: glam::Vec2,
+    b: glam::Vec2,
+    outward: glam::Vec2,
+    text_w: f32,
+    text_h: f32,
+    gap: f32,
+    side: i8,
 ) -> (glam::Vec2, f32) {
     let along = b - a;
     let len = along.length();
@@ -3295,8 +3309,36 @@ pub fn dimension_label_layout(
     if text_w + gap <= len {
         (mid + outward * clear, angle)
     } else {
-        // Too short: sit just past the far end, on the outward side, still along the line.
-        (b + dir * (text_w * 0.5 + gap) + outward * clear, angle)
+        // Too short: sit just past one end, on the line, still lettered along it (#1926).
+        let (end, along_dir) = if side < 0 { (a, -dir) } else { (b, dir) };
+        (end + along_dir * (text_w * 0.5 + gap), angle)
+    }
+}
+
+/// Which end a too-short dimension's label hangs past (#1926): `-1` past `a`, `1` past `b`.
+pub fn dimension_label_side_sign(stored: Option<i8>) -> i8 {
+    match stored {
+        Some(s) if s < 0 => -1,
+        _ => 1,
+    }
+}
+
+/// Overflow-label end in dimension-line space: `-1` past `line_a`, `1` past `line_b`.
+/// `stored` is relative to the order-normalized edge key; `line_a_is_key_a` is whether
+/// the dimension line's first end is that key's first endpoint.
+pub fn dimension_label_layout_side(stored: Option<i8>, line_a_is_key_a: bool) -> i8 {
+    let s = dimension_label_side_sign(stored);
+    if line_a_is_key_a { s } else { -s }
+}
+
+/// Store a layout-space overflow end back onto the order-normalized edge key.
+pub fn dimension_label_stored_side(layout_side: i8, line_a_is_key_a: bool) -> i8 {
+    if line_a_is_key_a {
+        if layout_side < 0 { -1 } else { 1 }
+    } else if layout_side < 0 {
+        1
+    } else {
+        -1
     }
 }
 
@@ -3907,6 +3949,13 @@ fn render_view_geometry<C: Canvas>(
             .find(|(k, _)| *k == key)
             .map(|(_, o)| *o)
             .unwrap_or(0.0);
+        let stored_side = view
+            .dimension_label_sides
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, s)| *s);
+        let line_a_is_key_a = crate::hierarchy::quantize_body_point(wa) == key.0;
+        let label_side = dimension_label_layout_side(stored_side, line_a_is_key_a);
         let geom = dimension_line_geometry(*a, *b, outward, default_gap + extra, arrow);
         let stroke_line = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
             let (sp, sq) = (to_screen(p), to_screen(q));
@@ -3926,17 +3975,19 @@ fn render_view_geometry<C: Canvas>(
                 .collect();
             canvas.poly(&pts, BLACK);
         }
-        // The label runs along the dimension line, or sits past its end if too short (#314/#1918).
+        // The label runs along the dimension line, or sits past one end if too short
+        // (#314/#1918/#1926).
         let label = crate::value::format_length_display_in((wa - wb).length(), unit);
         let (sa, sb) = (to_screen(geom.line.0), to_screen(geom.line.1));
         let out_screen = (to_screen(geom.line.0 + outward) - to_screen(geom.line.0)).normalize();
-        let (lp, ang) = dimension_label_layout(
+        let (lp, ang) = dimension_label_layout_sided(
             sa,
             sb,
             out_screen,
             text_device_width(11.0, &label),
             11.0,
             5.0,
+            label_side,
         );
         canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
     }
@@ -5275,6 +5326,7 @@ mod tests {
             bodies: vec![bkey(0)], sketch: None, orientation: O::Top,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimension_offset_angles: Vec::new(),
+            dimension_label_sides: Vec::new(),
             dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
 circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
@@ -5343,6 +5395,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Front,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimension_offset_angles: Vec::new(),
+            dimension_label_sides: Vec::new(),
             dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
 circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
@@ -5406,7 +5459,8 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
     }
 
     /// #314: a label that fits runs centred along the dimension line (angle matches, kept
-    /// upright); one too wide sits past the far end, still lettered along the line (#1918).
+    /// upright); one too wide sits past the far end, still lettered along the line (#1918),
+    /// with its centreline on the dimension line (#1926).
     #[test]
     fn dimension_label_runs_along_or_beside_the_line() {
         use std::f32::consts::FRAC_PI_2;
@@ -5452,6 +5506,13 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         );
         assert!(ang_s.abs() < 1e-3, "short horizontal line → horizontal label");
         assert!(pos_s.x > 4.0, "label sits past the far end");
+        // #1926: a side-placed label's visual centre sits on the dimension line, not
+        // offset outward the way a fitting label does.
+        assert!(
+            pos_s.y.abs() < 1e-3,
+            "short label centreline is on the dimension line, got y={}",
+            pos_s.y
+        );
         let short_diag = glam::Vec2::new(4.0, 4.0);
         let (pos_d, ang_d) = dimension_label_layout(
             glam::Vec2::ZERO,
@@ -5474,12 +5535,45 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             (pos_d - short_diag).dot(short_diag.normalize()) > 0.0,
             "short diagonal label sits past the far end"
         );
+        let short_out = glam::Vec2::new(-1.0, 1.0).normalize();
+        assert!(
+            (pos_d - short_diag).dot(short_out).abs() < 1e-3,
+            "short diagonal label sits on the line, not offset outward"
+        );
         // The returned point is the visual centre, offset `gap` plus half a glyph off the
         // line so a centred 11 pt box clears the stroke (#1350, #1716).
         assert!(
             (pos.y + 5.0 + 11.0 * DIM_LABEL_MID_EM).abs() < 1e-3,
             "fitting label's visual centre clears the line by gap plus half a glyph"
         );
+        // #1926: overflow can hang past either end, still on the line.
+        let (pos_a, _) = dimension_label_layout_sided(
+            glam::Vec2::new(0.0, 0.0),
+            glam::Vec2::new(4.0, 0.0),
+            out,
+            30.0,
+            11.0,
+            5.0,
+            -1,
+        );
+        assert!(pos_a.x < 0.0, "negative side hangs past a, got x={}", pos_a.x);
+        assert!(pos_a.y.abs() < 1e-3, "either side stays on the line");
+        let (pos_b, _) = dimension_label_layout_sided(
+            glam::Vec2::new(0.0, 0.0),
+            glam::Vec2::new(4.0, 0.0),
+            out,
+            30.0,
+            11.0,
+            5.0,
+            1,
+        );
+        assert!(pos_b.x > 4.0, "positive side hangs past b, got x={}", pos_b.x);
+        assert!(pos_b.y.abs() < 1e-3);
+        // Stored side is relative to the order-normalized key, not the line walk.
+        assert_eq!(dimension_label_layout_side(Some(-1), true), -1);
+        assert_eq!(dimension_label_layout_side(Some(-1), false), 1);
+        assert_eq!(dimension_label_stored_side(-1, false), 1);
+        assert_eq!(dimension_label_stored_side(1, false), -1);
     }
 
     /// #1917: a span too short for two arrowheads puts them outside the ticks, pointing in,
@@ -5926,6 +6020,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
                 dimension_offset_angles: Vec::new(),
+            dimension_label_sides: Vec::new(),
                 dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
 circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(),
                 aligned_parent: None,
