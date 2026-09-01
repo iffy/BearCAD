@@ -15,6 +15,41 @@ pub const LABEL_OUTSET: f32 = 6.0;
 pub const LABEL_HIT_PAD: f32 = 4.0;
 pub const LABEL_FONT_SIZE: f32 = 12.0;
 
+/// True when two arrowheads of length `arrow` cannot sit between the ticks.
+pub fn dimension_arrows_outside(span: f32, arrow: f32) -> bool {
+    span < 2.0 * arrow
+}
+
+/// Direction each arrowhead points, `along` running from tick A toward tick B.
+/// Inside: arrows sit between the ticks, pointing at them. Outside: past the ticks, pointing in.
+pub fn dimension_arrow_dirs<V>(along: V, span: f32, arrow: f32) -> (V, V)
+where
+    V: std::ops::Neg<Output = V> + Copy,
+{
+    if dimension_arrows_outside(span, arrow) {
+        (along, -along)
+    } else {
+        (-along, along)
+    }
+}
+
+/// Screen-space arrow directions for a modeling dimension (`ARROW_LENGTH` pixels).
+pub fn linear_dimension_arrow_dirs(along: Vec2, span: f32) -> (Vec2, Vec2) {
+    dimension_arrow_dirs(along, span, ARROW_LENGTH)
+}
+
+/// Dimension-line endpoints, extended past the ticks when the arrows sit outside.
+pub fn linear_dimension_line_ends(dim_a: Pos2, dim_b: Pos2, along: Vec2) -> (Pos2, Pos2) {
+    if dimension_arrows_outside((dim_b - dim_a).length(), ARROW_LENGTH) {
+        (
+            dim_a - along * ARROW_LENGTH,
+            dim_b + along * ARROW_LENGTH,
+        )
+    } else {
+        (dim_a, dim_b)
+    }
+}
+
 /// Camera and sketch-plane context for orienting labels on the visible face.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlanarLabelView {
@@ -1028,9 +1063,12 @@ where
     let stroke = Stroke::new(LINE_WIDTH, color);
     painter.line_segment([geom.ext_a_near, geom.ext_a_far], stroke);
     painter.line_segment([geom.ext_b_near, geom.ext_b_far], stroke);
-    painter.line_segment([geom.dim_a, geom.dim_b], stroke);
-    draw_arrowhead(painter, geom.dim_a, -geom.along, color);
-    draw_arrowhead(painter, geom.dim_b, geom.along, color);
+    let span = (geom.dim_b - geom.dim_a).length();
+    let (line_a, line_b) = linear_dimension_line_ends(geom.dim_a, geom.dim_b, geom.along);
+    painter.line_segment([line_a, line_b], stroke);
+    let (dir_a, dir_b) = linear_dimension_arrow_dirs(geom.along, span);
+    draw_arrowhead(painter, geom.dim_a, dir_a, color);
+    draw_arrowhead(painter, geom.dim_b, dir_b, color);
 
     if let Some((world_geom, view, project)) = planar {
         return draw_planar_dimension_label(painter, world_geom, view, label, color, project);
@@ -1117,6 +1155,32 @@ mod tests {
             sweep > 0.0 && sweep <= std::f32::consts::FRAC_PI_2 + 0.01,
             "sweep={sweep}"
         );
+    }
+
+    #[test]
+    fn short_span_puts_arrow_dirs_outside_pointing_in() {
+        let along = Vec2::new(1.0, 0.0);
+        assert!(dimension_arrows_outside(5.0, ARROW_LENGTH));
+        let (dir_a, dir_b) = linear_dimension_arrow_dirs(along, 5.0);
+        assert!(dir_a.dot(along) > 0.9, "A points in toward B");
+        assert!(dir_b.dot(along) < -0.9, "B points in toward A");
+        let (line_a, line_b) =
+            linear_dimension_line_ends(Pos2::new(0.0, 0.0), Pos2::new(5.0, 0.0), along);
+        assert!(line_a.x < -1.0, "line extends past tick A, got {line_a:?}");
+        assert!(line_b.x > 6.0, "line extends past tick B, got {line_b:?}");
+    }
+
+    #[test]
+    fn long_span_keeps_arrow_dirs_inside_pointing_at_ticks() {
+        let along = Vec2::new(1.0, 0.0);
+        assert!(!dimension_arrows_outside(40.0, ARROW_LENGTH));
+        let (dir_a, dir_b) = linear_dimension_arrow_dirs(along, 40.0);
+        assert!(dir_a.dot(along) < -0.9, "A points at its tick from inside");
+        assert!(dir_b.dot(along) > 0.9, "B points at its tick from inside");
+        let (line_a, line_b) =
+            linear_dimension_line_ends(Pos2::new(0.0, 0.0), Pos2::new(40.0, 0.0), along);
+        assert!((line_a.x - 0.0).abs() < 1e-4);
+        assert!((line_b.x - 40.0).abs() < 1e-4);
     }
 
     #[test]

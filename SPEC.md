@@ -2770,7 +2770,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   (on the side away from the geometry centroid) with **arrowheads** at each end, and the
   measurement centred beside it (the label's visual centre is offset off the
   dimension line so the glyphs never sit on the stroke — editor and both
-  exports) — from one shared `drawing::dimension_line_geometry`. Dimension lines, their extension lines, and diameter lines
+  exports) — from one shared `drawing::dimension_line_geometry`. When the span is
+  too short for both arrowheads, they sit **outside the ticks, pointing in**, and
+  the dimension line continues through those outside arrows (modeling dimensions
+  do the same). Dimension lines, their extension lines, and diameter lines
   are stroked **thinner than the model outline** (#327): the projected model edges and detected
   circles use `drawing::MODEL_STROKE` and the annotations use the lighter `drawing::DIM_STROKE`,
   so the part reads as the primary geometry and the dimensions sit visually beneath it (editor
@@ -5147,7 +5150,9 @@ The model in one place:
     take **no** bias (#1088/#1121); body faces that lie on a plane are re-drawn after the
     plane wash so coplanar solid/plane pairs stay clean (#1215).
   - **In-plane dimension-label text (#454):** committed dimension labels lie **in the
-    dimension's plane**, flat with their dimension lines and arrows. Glyphs are laid out
+    dimension's plane**, flat with their dimension lines and arrows. Linear dimensions
+    whose span is shorter than two arrowheads put those arrows **outside the ticks,
+    pointing in** (same convention as drawing dimensions). Glyphs are laid out
     on orthonormal in-plane axes with **one uniform** world-per-pixel scale taken at the
     label center (`dimensions::planar_label_frame`), sized like screen text there and
     foreshortening naturally with the plane under perspective — but never shearing (the
