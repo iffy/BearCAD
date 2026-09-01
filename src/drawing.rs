@@ -2472,6 +2472,7 @@ impl StyledViewGeometry {
 
 /// One coplanar run of a shaded view's front faces, with the grey it's painted in
 /// (0..1, 1 = white).
+#[derive(Clone)]
 pub struct ShadedFace {
     /// Projected 2D triangles, all sharing one plane of the solid.
     pub tris: Vec<[glam::Vec2; 3]>,
@@ -2485,6 +2486,260 @@ pub struct ShadedFace {
     pub plane: (Vec3, f32),
 }
 
+fn shaded_face_bbox(tris: &[[glam::Vec2; 3]]) -> (glam::Vec2, glam::Vec2) {
+    let mut lo = glam::Vec2::splat(f32::INFINITY);
+    let mut hi = glam::Vec2::splat(f32::NEG_INFINITY);
+    for t in tris {
+        for p in t {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+    }
+    (lo, hi)
+}
+
+fn point_inside_tris(tris: &[[glam::Vec2; 3]], p: glam::Vec2) -> bool {
+    tris.iter().any(|t| {
+        let area2 = (t[1] - t[0]).perp_dot(t[2] - t[0]);
+        if area2.abs() < 1e-9 {
+            return false;
+        }
+        let w0 = (t[1] - p).perp_dot(t[2] - p) / area2;
+        let w1 = (t[2] - p).perp_dot(t[0] - p) / area2;
+        let w2 = 1.0 - w0 - w1;
+        w0 >= -BARY_TOL && w1 >= -BARY_TOL && w2 >= -BARY_TOL
+    })
+}
+
+/// How deep this flat's plane is under a point on the page. The view basis is orthonormal,
+/// so a page point `(u, v)` is the world ray `u·right + v·up + d·toward`; solving the plane
+/// equation for `d` gives the depth. Front-facing flats have `n · toward > 0`.
+fn plane_depth_at(
+    (nrm, c): (Vec3, f32),
+    p: glam::Vec2,
+    right: Vec3,
+    up: Vec3,
+    toward: Vec3,
+) -> Option<f32> {
+    let denom = nrm.dot(toward);
+    (denom.abs() > 1e-6).then(|| (c - p.x * nrm.dot(right) - p.y * nrm.dot(up)) / denom)
+}
+
+fn page_on_plane(
+    plane: (Vec3, f32),
+    p: glam::Vec2,
+    right: Vec3,
+    up: Vec3,
+    toward: Vec3,
+) -> Option<Vec3> {
+    plane_depth_at(plane, p, right, up, toward).map(|d| p.x * right + p.y * up + d * toward)
+}
+
+/// Sample grid across the overlap of two flats' bounds. Coarse on purpose: it only has to
+/// find *a* point the two share, not measure the overlap. Vertices and centroids of each
+/// flat fill in what a regular grid misses — a thin isometric sliver of a big cut face
+/// behind a smaller body in front (#1908).
+const PAINT_OVERLAP_GRID: usize = 6;
+/// Depth gap (mm along `toward`) that counts as one flat sitting in front of the other.
+/// Smaller than this is a shared edge or noise; larger on *both* signs means the two planes
+/// cross on the page and no single paint order can draw them (#1908).
+const PAINT_DEPTH_FLIP: f32 = 1e-2;
+
+/// Greatest `depth(a) − depth(b)` and `depth(b) − depth(a)` at page samples both flats cover.
+fn overlap_depth_extrema(
+    a: &ShadedFace,
+    b: &ShadedFace,
+    box_a: (glam::Vec2, glam::Vec2),
+    box_b: (glam::Vec2, glam::Vec2),
+    right: Vec3,
+    up: Vec3,
+    toward: Vec3,
+) -> (f32, f32) {
+    let (lo, hi) = (box_a.0.max(box_b.0), box_a.1.min(box_b.1));
+    if lo.x > hi.x || lo.y > hi.y {
+        return (0.0, 0.0);
+    }
+    let mut ab = 0.0f32;
+    let mut ba = 0.0f32;
+    let mut consider = |p: glam::Vec2| {
+        if !point_inside_tris(&a.tris, p) || !point_inside_tris(&b.tris, p) {
+            return;
+        }
+        let (Some(da), Some(db)) = (
+            plane_depth_at(a.plane, p, right, up, toward),
+            plane_depth_at(b.plane, p, right, up, toward),
+        ) else {
+            return;
+        };
+        ab = ab.max(da - db);
+        ba = ba.max(db - da);
+    };
+    for gy in 0..=PAINT_OVERLAP_GRID {
+        for gx in 0..=PAINT_OVERLAP_GRID {
+            consider(glam::Vec2::new(
+                lo.x + (hi.x - lo.x) * gx as f32 / PAINT_OVERLAP_GRID as f32,
+                lo.y + (hi.y - lo.y) * gy as f32 / PAINT_OVERLAP_GRID as f32,
+            ));
+        }
+    }
+    for face in [a, b] {
+        for t in &face.tris {
+            consider((t[0] + t[1] + t[2]) / 3.0);
+            for p in t {
+                consider(*p);
+            }
+        }
+    }
+    (ab, ba)
+}
+
+fn keep_area(t: [glam::Vec2; 3]) -> bool {
+    (t[1] - t[0]).perp_dot(t[2] - t[0]).abs() > 1e-12
+}
+
+/// Clip a triangle by the sign of `s` at each vertex. On-plane vertices (`|s| ≤ eps`) go to
+/// both pieces so the split edge is shared.
+fn split_triangle(p: [glam::Vec2; 3], s: [f32; 3]) -> (Vec<[glam::Vec2; 3]>, Vec<[glam::Vec2; 3]>) {
+    const EPS: f32 = 1e-4;
+    let class = |v: f32| -> i8 {
+        if v > EPS {
+            1
+        } else if v < -EPS {
+            -1
+        } else {
+            0
+        }
+    };
+    let c = [class(s[0]), class(s[1]), class(s[2])];
+    let any_pos = c.iter().any(|&x| x > 0);
+    let any_neg = c.iter().any(|&x| x < 0);
+    if !any_neg {
+        return (vec![p], Vec::new());
+    }
+    if !any_pos {
+        return (Vec::new(), vec![p]);
+    }
+    let mut pos_poly: Vec<glam::Vec2> = Vec::new();
+    let mut neg_poly: Vec<glam::Vec2> = Vec::new();
+    for i in 0..3 {
+        let j = (i + 1) % 3;
+        if c[i] >= 0 {
+            pos_poly.push(p[i]);
+        }
+        if c[i] <= 0 {
+            neg_poly.push(p[i]);
+        }
+        if c[i] == 0 || c[j] == 0 || c[i] == c[j] {
+            continue;
+        }
+        let t = s[i] / (s[i] - s[j]);
+        let hit = p[i] + (p[j] - p[i]) * t;
+        pos_poly.push(hit);
+        neg_poly.push(hit);
+    }
+    let fan = |poly: Vec<glam::Vec2>| -> Vec<[glam::Vec2; 3]> {
+        if poly.len() < 3 {
+            return Vec::new();
+        }
+        (1..poly.len() - 1)
+            .map(|i| [poly[0], poly[i], poly[i + 1]])
+            .filter(|t| keep_area(*t))
+            .collect()
+    };
+    (fan(pos_poly), fan(neg_poly))
+}
+
+/// Split `face` into the parts on either side of `plane`. `None` if every triangle stays on
+/// one side — including a shared edge, which is not a crossing.
+fn partition_face_by_plane(
+    face: &ShadedFace,
+    plane: (Vec3, f32),
+    right: Vec3,
+    up: Vec3,
+    toward: Vec3,
+) -> Option<(ShadedFace, ShadedFace)> {
+    let mut pos = Vec::new();
+    let mut neg = Vec::new();
+    for tri in &face.tris {
+        let mut s = [0.0f32; 3];
+        let mut ok = true;
+        for i in 0..3 {
+            match page_on_plane(face.plane, tri[i], right, up, toward) {
+                Some(w) => s[i] = plane.0.dot(w) - plane.1,
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            pos.push(*tri);
+            continue;
+        }
+        let (p, n) = split_triangle(*tri, s);
+        pos.extend(p);
+        neg.extend(n);
+    }
+    if pos.is_empty() || neg.is_empty() {
+        return None;
+    }
+    Some((
+        ShadedFace {
+            tris: pos,
+            shade: face.shade,
+            tint: face.tint,
+            plane: face.plane,
+        },
+        ShadedFace {
+            tris: neg,
+            shade: face.shade,
+            tint: face.tint,
+            plane: face.plane,
+        },
+    ))
+}
+
+/// Two planes that overlap on the page with *both* depth orders (a body that straddles a
+/// section cut, #1908) cannot be painted as wholes: whichever goes last covers the region
+/// where it is behind. Split along the intersection until each pair agrees.
+fn split_crossing_flats(
+    mut flats: Vec<ShadedFace>,
+    right: Vec3,
+    up: Vec3,
+    toward: Vec3,
+) -> Vec<ShadedFace> {
+    for _ in 0..32 {
+        let boxes: Vec<(glam::Vec2, glam::Vec2)> =
+            flats.iter().map(|f| shaded_face_bbox(&f.tris)).collect();
+        let mut split_at = None;
+        'pairs: for i in 0..flats.len() {
+            for j in (i + 1)..flats.len() {
+                let (ij, ji) =
+                    overlap_depth_extrema(&flats[i], &flats[j], boxes[i], boxes[j], right, up, toward);
+                if ij > PAINT_DEPTH_FLIP && ji > PAINT_DEPTH_FLIP {
+                    split_at = Some((i, j));
+                    break 'pairs;
+                }
+            }
+        }
+        let Some((i, j)) = split_at else {
+            break;
+        };
+        if let Some((a, b)) = partition_face_by_plane(&flats[i], flats[j].plane, right, up, toward) {
+            flats[i] = a;
+            flats.push(b);
+            continue;
+        }
+        if let Some((a, b)) = partition_face_by_plane(&flats[j], flats[i].plane, right, up, toward) {
+            flats[j] = a;
+            flats.push(b);
+            continue;
+        }
+        break;
+    }
+    flats
+}
+
 /// Back-to-front paint order for a set of coplanar flats (#1820).
 ///
 /// A depth sort alone only orders flats that don't overlap on the page: one flat spans a range
@@ -2494,7 +2749,8 @@ pub struct ShadedFace {
 /// flat's own plane how deep it is there, and records "this one must be painted first". A
 /// topological sort then honours those constraints, falling back on the depth order for pairs
 /// that never meet and for any cycle (two flats that genuinely pass through each other, which
-/// no single order can draw correctly anyway).
+/// no single order can draw correctly anyway). Callers split those crossings first
+/// ([`split_crossing_flats`]) so a cycle is the last resort.
 ///
 /// `flats` arrives in the fallback order; the returned indices point back into it.
 fn painter_order(flats: &[ShadedFace], right: Vec3, up: Vec3, toward: Vec3) -> Vec<usize> {
@@ -2502,93 +2758,22 @@ fn painter_order(flats: &[ShadedFace], right: Vec3, up: Vec3, toward: Vec3) -> V
     if n < 2 {
         return (0..n).collect();
     }
-    let bbox = |tris: &[[glam::Vec2; 3]]| {
-        let mut lo = glam::Vec2::splat(f32::INFINITY);
-        let mut hi = glam::Vec2::splat(f32::NEG_INFINITY);
-        for t in tris {
-            for p in t {
-                lo = lo.min(*p);
-                hi = hi.max(*p);
-            }
-        }
-        (lo, hi)
-    };
-    let boxes: Vec<(glam::Vec2, glam::Vec2)> = flats.iter().map(|f| bbox(&f.tris)).collect();
-    let inside = |tris: &[[glam::Vec2; 3]], p: glam::Vec2| {
-        tris.iter().any(|t| {
-            let area2 = (t[1] - t[0]).perp_dot(t[2] - t[0]);
-            if area2.abs() < 1e-9 {
-                return false;
-            }
-            let w0 = (t[1] - p).perp_dot(t[2] - p) / area2;
-            let w1 = (t[2] - p).perp_dot(t[0] - p) / area2;
-            let w2 = 1.0 - w0 - w1;
-            w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0
-        })
-    };
-    // How deep this flat's plane is under a point on the page. The view basis is orthonormal,
-    // so a page point `(u, v)` is the world ray `u·right + v·up + d·toward`; solving the plane
-    // equation for `d` gives the depth. Front-facing flats have `n · toward > 0`.
-    let depth_at = |(nrm, c): (Vec3, f32), p: glam::Vec2| {
-        let denom = nrm.dot(toward);
-        (denom.abs() > 1e-6)
-            .then(|| (c - p.x * nrm.dot(right) - p.y * nrm.dot(up)) / denom)
-    };
-    /// Sample grid across the overlap of two flats' bounds. Coarse on purpose: it only has to
-    /// find *a* point the two share, not measure the overlap. Vertices and centroids of each
-    /// flat fill in what a regular grid misses — a thin isometric sliver of a big cut face
-    /// behind a smaller body in front (#1908).
-    const GRID: usize = 6;
+    let boxes: Vec<(glam::Vec2, glam::Vec2)> =
+        flats.iter().map(|f| shaded_face_bbox(&f.tris)).collect();
     // `before[i]` = the flats that must be painted before `i`.
     let mut edges: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut indegree = vec![0usize; n];
     for i in 0..n {
         for j in (i + 1)..n {
-            let (lo, hi) = (boxes[i].0.max(boxes[j].0), boxes[i].1.min(boxes[j].1));
-            if lo.x > hi.x || lo.y > hi.y {
-                continue; // never meet on the page
-            }
+            let (ij, ji) =
+                overlap_depth_extrema(&flats[i], &flats[j], boxes[i], boxes[j], right, up, toward);
             // The sample where the two are furthest apart in depth decides: a shared edge
             // (where they meet exactly) says nothing about which is in front.
-            let mut best = 0.0f32;
-            let mut front = i;
-            let consider = |p: glam::Vec2, best: &mut f32, front: &mut usize| {
-                if !inside(&flats[i].tris, p) || !inside(&flats[j].tris, p) {
-                    return;
-                }
-                let (Some(di), Some(dj)) =
-                    (depth_at(flats[i].plane, p), depth_at(flats[j].plane, p))
-                else {
-                    return;
-                };
-                if (di - dj).abs() > *best {
-                    *best = (di - dj).abs();
-                    *front = if di > dj { i } else { j };
-                }
-            };
-            for gy in 0..=GRID {
-                for gx in 0..=GRID {
-                    consider(
-                        glam::Vec2::new(
-                            lo.x + (hi.x - lo.x) * gx as f32 / GRID as f32,
-                            lo.y + (hi.y - lo.y) * gy as f32 / GRID as f32,
-                        ),
-                        &mut best,
-                        &mut front,
-                    );
-                }
-            }
-            for flat in [i, j] {
-                for t in &flats[flat].tris {
-                    consider((t[0] + t[1] + t[2]) / 3.0, &mut best, &mut front);
-                    for p in t {
-                        consider(*p, &mut best, &mut front);
-                    }
-                }
-            }
+            let best = ij.max(ji);
             if best <= 0.0 {
                 continue; // touching, or no shared sample — leave them to the depth order
             }
+            let front = if ij > ji { i } else { j };
             let back = if front == i { j } else { i };
             edges[back].push(front);
             indegree[front] += 1;
@@ -2633,6 +2818,53 @@ const OCCLUSION_SAMPLES: usize = 32;
 /// Bisection steps run at each visibility change, halving the interval each time: 2⁻²⁰ of an
 /// edge is far finer than any page can show.
 const OCCLUSION_REFINE_STEPS: usize = 20;
+
+/// Stretches of `a`–`b` where `visible` is true, as `t` in 0..1. Samples find each run;
+/// bisection pins the boundaries (#1841).
+fn world_segment_visible_runs(a: Vec3, b: Vec3, visible: impl Fn(Vec3) -> bool) -> Vec<(f32, f32)> {
+    let vis_at = |t: f32| visible(a.lerp(b, t));
+    let refine = |lo: f32, hi: f32, lo_visible: bool| {
+        let (mut lo, mut hi) = (lo, hi);
+        for _ in 0..OCCLUSION_REFINE_STEPS {
+            let mid = (lo + hi) * 0.5;
+            if vis_at(mid) == lo_visible {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (lo + hi) * 0.5
+    };
+    let mut runs = Vec::new();
+    let mut run_start: Option<f32> = None;
+    let mut prev: Option<(f32, bool)> = None;
+    for i in 0..OCCLUSION_SAMPLES {
+        let t = (i as f32 + 0.5) / OCCLUSION_SAMPLES as f32;
+        let vis = vis_at(t);
+        match (vis, run_start) {
+            (true, None) => {
+                run_start = Some(match prev {
+                    Some((pt, pv)) => refine(pt, t, pv),
+                    None => 0.0,
+                })
+            }
+            (false, Some(s)) => {
+                let end = match prev {
+                    Some((pt, pv)) => refine(pt, t, pv),
+                    None => 0.0,
+                };
+                runs.push((s, end));
+                run_start = None;
+            }
+            _ => {}
+        }
+        prev = Some((t, vis));
+    }
+    if let Some(s) = run_start {
+        runs.push((s, 1.0));
+    }
+    runs
+}
 
 /// A drawing view's own solid, projected, as a test for whether a point of the model is
 /// hidden behind it — the hidden-line removal every style but Wireframe does (#1713).
@@ -2707,52 +2939,7 @@ impl ViewOcclusion {
     /// line overrunning the block that hides it (#1841); each change of visibility between
     /// two samples is bisected down to where the solid's outline really crosses.
     pub fn visible_runs(&self, a: Vec3, b: Vec3) -> Vec<(f32, f32)> {
-        let visible = |t: f32| {
-            let p = a.lerp(b, t);
-            !self.hides(p)
-        };
-        let refine = |lo: f32, hi: f32, lo_visible: bool| {
-            let (mut lo, mut hi) = (lo, hi);
-            for _ in 0..OCCLUSION_REFINE_STEPS {
-                let mid = (lo + hi) * 0.5;
-                if visible(mid) == lo_visible {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-            (lo + hi) * 0.5
-        };
-        let mut runs = Vec::new();
-        let mut run_start: Option<f32> = None;
-        let mut prev: Option<(f32, bool)> = None;
-        for i in 0..OCCLUSION_SAMPLES {
-            let t = (i as f32 + 0.5) / OCCLUSION_SAMPLES as f32;
-            let vis = visible(t);
-            match (vis, run_start) {
-                // The first sample stands for the edge's start: nothing before it to bisect.
-                (true, None) => {
-                    run_start = Some(match prev {
-                        Some((pt, pv)) => refine(pt, t, pv),
-                        None => 0.0,
-                    })
-                }
-                (false, Some(s)) => {
-                    let end = match prev {
-                        Some((pt, pv)) => refine(pt, t, pv),
-                        None => 0.0,
-                    };
-                    runs.push((s, end));
-                    run_start = None;
-                }
-                _ => {}
-            }
-            prev = Some((t, vis));
-        }
-        if let Some(s) = run_start {
-            runs.push((s, 1.0));
-        }
-        runs
+        world_segment_visible_runs(a, b, |p| !self.hides(p))
     }
 }
 
@@ -2921,16 +3108,38 @@ pub fn styled_view_geometry(
         // page: a big face spans a range of depths, so its farthest point can sit behind a
         // small face it actually covers — that is how a bar's shaded side leaked through onto
         // the top of the solid it grows out of (#1820). So sort by depth for a deterministic
-        // starting order, then reorder every overlapping *pair* by which one is really in
-        // front where they meet.
+        // starting order, split pairs whose planes cross on the page (#1908 — a section cut
+        // behind a body that straddles the cut), then reorder every overlapping *pair* by
+        // which one is really in front where they meet.
         planes.sort_by(|a, b| a.depth.total_cmp(&b.depth));
         let mut faces: Vec<ShadedFace> = planes
             .into_iter()
             .map(|f| ShadedFace { tris: f.tris, shade: f.shade, tint: f.key.1, plane: f.plane })
             .collect();
+        faces = split_crossing_flats(faces, right, up, toward);
         let order = painter_order(&faces, right, up, toward);
         let mut slots: Vec<Option<ShadedFace>> = faces.drain(..).map(Some).collect();
         fills = order.into_iter().filter_map(|i| slots[i].take()).collect();
+        // Mesh hidden-line removal can miss a hatch run whose page projection sits on a
+        // nearer fill (a body that straddles the cut, #1908). Clip again against the
+        // painted flats, the same surfaces the reader sees.
+        let visible_hatch: Vec<(Vec3, Vec3)> = visible_hatch
+            .iter()
+            .flat_map(|(a, b)| {
+                world_segment_visible_runs(*a, *b, |p| {
+                    let q = project(p);
+                    let hd = p.dot(toward);
+                    !fills.iter().any(|f| {
+                        point_inside_tris(&f.tris, q)
+                            && plane_depth_at(f.plane, q, right, up, toward)
+                                .is_some_and(|d| d > hd + PAINT_DEPTH_FLIP)
+                    })
+                })
+                .into_iter()
+                .map(|(from, to)| (a.lerp(*b, from), a.lerp(*b, to)))
+            })
+            .collect();
+        hatch = hatch_from(&visible_hatch);
     }
 
     // Loose pencil (#1809): the same visible edges, drawn the way a hand draws them —
@@ -6302,6 +6511,32 @@ label_hidden: false,
         (a + ab * t - p).length() < tol
     }
 
+    #[test]
+    fn split_triangle_keeps_covering_the_original() {
+        let t = [
+            glam::Vec2::new(0.0, 0.0),
+            glam::Vec2::new(6.0, 0.0),
+            glam::Vec2::new(0.0, 6.0),
+        ];
+        let (pos, neg) = super::split_triangle(t, [-1.0, 2.0, -0.5]);
+        assert!(!pos.is_empty() && !neg.is_empty());
+        let mut hit = 0usize;
+        for gy in 0..12 {
+            for gx in 0..12 {
+                let p = glam::Vec2::new((gx as f32 + 0.5) * 0.5, (gy as f32 + 0.5) * 0.5);
+                if !super::point_inside_tris(&[t], p) {
+                    continue;
+                }
+                hit += 1;
+                assert!(
+                    super::point_inside_tris(&pos, p) || super::point_inside_tris(&neg, p),
+                    "split left a hole at {p:?}"
+                );
+            }
+        }
+        assert!(hit >= 20, "should sample the triangle, hit {hit}");
+    }
+
     /// #1908: a Colorful drawing's section hatch is a fill texture, but it still has to
     /// lose to whatever solid stands in front of the cut — otherwise the hash marks (and the
     /// cut body's color) read through an occluding body.
@@ -6461,18 +6696,7 @@ label_hidden: false,
             "occluded hatch still stroked on the reported drawing: {leaked}/{hidden}"
         );
 
-        let inside = |tris: &[[glam::Vec2; 3]], p: glam::Vec2| {
-            tris.iter().any(|t| {
-                let area2 = (t[1] - t[0]).perp_dot(t[2] - t[0]);
-                if area2.abs() < 1e-9 {
-                    return false;
-                }
-                let w0 = (t[1] - p).perp_dot(t[2] - p) / area2;
-                let w1 = (t[2] - p).perp_dot(t[0] - p) / area2;
-                let w2 = 1.0 - w0 - w1;
-                w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0
-            })
-        };
+        let inside = |tris: &[[glam::Vec2; 3]], p: glam::Vec2| super::point_inside_tris(tris, p);
         let depth_at = |(n, c): (Vec3, f32), p: glam::Vec2| {
             (c - p.x * n.dot(right) - p.y * n.dot(up)) / n.dot(toward)
         };
@@ -6518,13 +6742,30 @@ label_hidden: false,
                     "at {q:?} the red body is in front but the page shows {:?}",
                     geo.faces[painted].tint
                 );
-                assert!(
-                    !on_hatch(q),
-                    "hatch still strokes over the red body at {q:?}"
-                );
             }
         }
         assert!(checked >= 20, "should land on the red body, hit {checked}");
+
+        // Endpoints sit on the clip against the red silhouette. Interior samples must not
+        // land where red is the nearest fill.
+        for (ha, hb) in &geo.hatch {
+            for i in 1..8 {
+                let p = ha.lerp(*hb, i as f32 / 8.0);
+                let covering: Vec<usize> = (0..geo.faces.len())
+                    .filter(|&i| inside(&geo.faces[i].tris, p))
+                    .collect();
+                let Some(&nearest) = covering.iter().max_by(|&&i, &&j| {
+                    depth_at(geo.faces[i].plane, p).total_cmp(&depth_at(geo.faces[j].plane, p))
+                }) else {
+                    continue;
+                };
+                assert_ne!(
+                    geo.faces[nearest].tint,
+                    red,
+                    "hatch still strokes over the red body at {p:?}"
+                );
+            }
+        }
     }
 
     /// #1854: extruding onto a body consumes it and produces a new one. A drawing view of
