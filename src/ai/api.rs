@@ -171,7 +171,7 @@ bearcad.image_corners(i)           -- tracing image quad in world mm, live Move 
 bearcad.body_stats(i)              -- volume, triangles, bbox = { min = {x,y,z}, max = {x,y,z} }
                                    -- missing body → nil; body with no mesh → error
 bearcad.body_faces(i)              -- pass an entry to begin_sketch / extrude_face / fillet
-bearcad.drawing_views(i)           -- a drawing's page: orientation, style, dimensions
+bearcad.drawing_views(i)           -- a drawing's page: orientation, style, bodies, dimensions
 bearcad.body_edges(i)              -- pass entries to fillet{ body, edges } / chamfer{ body, edges }
 bearcad.body_cylinders(i)
 bearcad.selection()                -- { kind, index, … } tables that work as handles;

@@ -2563,7 +2563,8 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   of prose don't trigger it.
 - **Projection tool (#289):** the workbench's **Projection** tool (the film-projector
   icon — named "Add view" with a ＋ icon until #753; tool name `drawing_add`, unchanged)
-  replaces the old inline "Add view:" combo row. With it active, clicking a
+  replaces the old inline "Add view:" combo row. Bodies already selected when the tool
+  is activated start a projection of them, ready to place (#1915). With it active, clicking a
   **body or sketch** in the Elements pane drops a projection of it onto the page and selects
   it; the **context pane** then shows the view editor — source label, **orientation**
   dropdown, **Scale** field, and **Remove view** — and the card can be dragged into place.

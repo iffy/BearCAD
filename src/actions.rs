@@ -10065,6 +10065,56 @@ impl AppState {
             .to_string();
     }
 
+    /// Live bodies a Projection-tool handoff should take (#1915): selected bodies, plus
+    /// every live body in a selected component, in pick order.
+    fn drawing_add_bodies_from_elements(
+        &self,
+        elements: &[crate::hierarchy::SceneElement],
+    ) -> Vec<crate::model::BodyKey> {
+        use crate::hierarchy::SceneElement;
+        let mut bodies = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for element in elements {
+            match element {
+                SceneElement::Body(bi) => {
+                    if self.doc.bodies.get(*bi).is_some_and(|b| !b.shadow) && seen.insert(*bi) {
+                        bodies.push(*bi);
+                    }
+                }
+                SceneElement::Component(ci) => {
+                    for bi in self.component_body_indices(*ci) {
+                        if seen.insert(bi) {
+                            bodies.push(bi);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        bodies
+    }
+
+    /// #1915: activating Projection with bodies already selected starts placing a view of them.
+    fn seed_drawing_add_from_selection(&mut self, handoff: &[crate::hierarchy::SceneElement]) {
+        if self.placing_drawing_view.is_some() {
+            return;
+        }
+        let Some(drawing) = self.editing_drawing else {
+            return;
+        };
+        let bodies = self.drawing_add_bodies_from_elements(handoff);
+        if bodies.is_empty() {
+            return;
+        }
+        let orientation = crate::model::DrawingOrientation::default();
+        let _ = self.apply(Action::AddDrawingView {
+            drawing,
+            bodies,
+            orientation,
+        });
+        self.arm_drawing_view_placement(drawing);
+    }
+
     /// Advance the running tutorial past every step whose predicate is now satisfied
     /// (a user who worked ahead skips ahead), stopping at manual steps or the end.
     pub fn advance_tutorial(&mut self) {
@@ -11021,6 +11071,7 @@ impl AppState {
             Action::SetTool(tool) => {
                 // A hand-armed picker belongs to the tool that showed it (#1485).
                 self.picker_focus = None;
+                let entering_drawing_add = tool == Tool::DrawingAdd && self.tool != Tool::DrawingAdd;
                 // What the outgoing tool's **primary** picker was holding (#956) — its first,
                 // the main set the tool works on. The new tool's primary picker walks this and
                 // keeps whatever it can accept, so gathering a set in one tool and then
@@ -11325,6 +11376,11 @@ impl AppState {
                     // derived-parameter block — the context pane shows its value, and the
                     // "Derive parameter" button records it (nothing fires automatically,
                     // so the parameter can be named first).
+                }
+                // #1915: bodies selected before picking Projection become the view you place.
+                // Only when *entering* the tool — re-arming it must not drop another card.
+                if entering_drawing_add {
+                    self.seed_drawing_add_from_selection(&handoff);
                 }
                 ActionResult::Ok
             }
@@ -42557,6 +42613,68 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             label.contains("Frame"),
             "caption should name the component, got {label:?}"
         );
+    }
+
+    /// #1915: bodies selected in the Elements pane before picking the Projection tool seed
+    /// the new view, so you can place a projection of them immediately.
+    #[test]
+    fn set_tool_drawing_add_seeds_from_selection() {
+        use crate::hierarchy::SceneElement;
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        let drawing = state.editing_drawing.expect("drawing open");
+        for bi in state.doc.bodies.keys().collect::<Vec<_>>() {
+            crate::selection::click_scene_selection(
+                &mut state.scene_selection,
+                SceneElement::Body(bi),
+                true,
+            );
+        }
+        assert_eq!(state.doc.drawings[drawing].views.len(), 0);
+        state.apply(Action::SetTool(Tool::DrawingAdd));
+        assert_eq!(
+            state.doc.drawings[drawing].views.len(),
+            1,
+            "activating Projection with two bodies selected should place one view"
+        );
+        assert_eq!(
+            state.doc.drawings[drawing].views[0].bodies,
+            vec![bkey(0), bkey(1)],
+            "both selected bodies seed the projection"
+        );
+        assert_eq!(
+            state.placing_drawing_view,
+            Some((drawing, 0)),
+            "the view should ride the cursor until it is placed"
+        );
+        assert_eq!(state.tool, Tool::DrawingAdd);
+        // Re-arming with the bodies still selected must not drop a second card.
+        for bi in state.doc.bodies.keys().collect::<Vec<_>>() {
+            crate::selection::click_scene_selection(
+                &mut state.scene_selection,
+                SceneElement::Body(bi),
+                true,
+            );
+        }
+        state.apply(Action::SetTool(Tool::DrawingAdd));
+        assert_eq!(
+            state.doc.drawings[drawing].views.len(),
+            1,
+            "re-picking Projection should not place another view"
+        );
+    }
+
+    /// #1915: with nothing selected, the Projection tool still waits for a body click.
+    #[test]
+    fn set_tool_drawing_add_without_selection_does_not_place() {
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        let drawing = state.editing_drawing.expect("drawing open");
+        state.apply(Action::SetTool(Tool::DrawingAdd));
+        assert_eq!(state.doc.drawings[drawing].views.len(), 0);
+        assert!(state.placing_drawing_view.is_none());
     }
 
     #[test]

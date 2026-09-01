@@ -11786,7 +11786,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // #1640: what is on a drawing's page — one entry per view, in page order, so a script can
-    // check a drawing the way it checks geometry. `bearcad.drawing_views(drawing)`.
+    // check a drawing the way it checks geometry. `bearcad.drawing_views(drawing)` reports
+    // orientation, style, page placement, and the `bodies` (or `sketch`) each view projects.
     api.set(
         "drawing_views",
         lua.create_function(|lua, index: Ordinal| {
@@ -11821,6 +11822,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 // The cross section this projection shows, if any (#1776).
                 if let Some(key) = view.cross_section {
                     t.set("cross_section", key.index())?;
+                }
+                // The bodies this view projects (#1915), as creation-order ordinals.
+                let bodies: Vec<usize> = view
+                    .bodies
+                    .iter()
+                    .map(|&k| doc.bodies.keys().position(|b| b == k).unwrap_or(0))
+                    .collect();
+                t.set("bodies", bodies)?;
+                if let Some(si) = view.sketch {
+                    t.set(
+                        "sketch",
+                        doc.sketches.keys().position(|s| s == si).unwrap_or(0),
+                    )?;
                 }
                 out.set(i + 1, t)?;
             }
@@ -25191,6 +25205,32 @@ pub mod tests {
         assert_eq!(
             view.orientation,
             DrawingOrientation::Corner(CornerView::FrontRightTop)
+        );
+    }
+
+    /// #1915: selecting bodies then arming the Projection tool places a view of them.
+    #[test]
+    fn lua_drawing_add_seeds_from_selected_bodies() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 30, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.exit_sketch()
+            bearcad.rect{ width = 20, height = 20, x = 40 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 10 }
+            bearcad.exit_sketch()
+            local d = bearcad.drawing{}
+            bearcad.select{ kind = "body", index = 0 }
+            bearcad.select({ kind = "body", index = 1 }, true)
+            bearcad.ui.tool("drawing_add")
+            local views = bearcad.drawing_views(d)
+            assert(#views == 1, "activating Projection should place one view, got " .. #views)
+            local bodies = views[1].bodies
+            table.sort(bodies)
+            assert(#bodies == 2 and bodies[1] == 0 and bodies[2] == 1,
+              "both selected bodies should seed the view, got " .. table.concat(bodies, ","))
+            "#,
         );
     }
 
