@@ -9,12 +9,7 @@ import useBaseUrl from "@docusaurus/useBaseUrl";
 # View styles
 
 How the model is *drawn*, never what it is. Pick one from the **gear icon** under the
-[view bear](/docs/tools/navigation#the-view-bear), or from a script:
-
-```lua
-bearcad.ui.shading("realistic")
-print(bearcad.ui.camera{}.shading)   -- reads it back
-```
+[view bear](/docs/tools/navigation#the-view-bear).
 
 Every picture below is the same nine cubes, from the same camera.
 
@@ -186,8 +181,3 @@ the font; PDF exports keep the drawing's usual sans.
 
 With nothing selected, the pane's **Drawing → New views** sets what the *next* projection on
 the page starts as. Views already placed keep theirs.
-
-```lua
-bearcad.drawing_style{ drawing = 0, style = "colorful" }        -- new views
-bearcad.drawing_view_style{ drawing = 0, view = 0, style = "colorful" }  -- this one
-```

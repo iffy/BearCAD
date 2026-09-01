@@ -30,13 +30,3 @@ type, **Enter** runs it, **Esc** goes back to the list with your search still th
 **Search McMaster-Carr** works this way: type what you're after — `socket head screw`, or a
 part number — and the [catalog window](/docs/files#mcmaster-carr-parts) opens with that
 search already run.
-
-## Scripting
-
-```lua
-bearcad.ui.palette{ open = true }     -- the window; open = false hides it
-bearcad.ui.palette("view top")        -- run the best-matching entry for a query
-
--- A command that asks for something takes it as a second value.
-bearcad.ui.palette("mcmaster", "socket head screw")
-```

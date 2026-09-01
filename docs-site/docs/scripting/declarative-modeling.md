@@ -295,10 +295,31 @@ bearcad.dimension{ kind = "line", index = sides[2], value = "leg = 40mm" }
 -- Repeating `dimension` on an already-dimensioned line or circle updates the value.
 bearcad.dimension{ kind = "angle", a = sides[1], b = sides[2], value = "90" }
 
-bearcad.add_parameter("A", "5mm")
-bearcad.set_parameter("A", "A + 5in")
-bearcad.edit_parameter{ name = "A", rename = "Len" }
+local p = bearcad.add_parameter("A", "5mm")
+bearcad.set_parameter("A", "A + 5in")        -- name or handle
+bearcad.edit_parameter{ name = p, rename = "Len", private = true,
+  min = "1mm", max = "100mm", step = "0.5mm" }  -- min+max ⇒ slider
+bearcad.parameter_options("Len", true)       -- open the row's gear-options
+bearcad.parameter_edit("Len", "min")         -- focus a bound field (Tab → max → step)
+bearcad.parameter_editing()                  -- {name=, field="min"|"max"|"step"} or nil
+bearcad.parameter_slider("Len")              -- {min=, max=, value=, step?} or nil
+bearcad.parameter_slider("Len", 15)          -- set via the slider (mm / degrees, snapped)
+bearcad.edit_parameter{ name = "Len", min = false }  -- clear a bound
 bearcad.delete_parameter("Len")
+
+bearcad.derive_parameter{ kind = "line_length", a = 0, name = "leg" }
+bearcad.derive_parameter{ kind = "line_distance", a = 0, b = 1 }
+bearcad.derive_parameter{ kind = "line_angle", a = 0, b = 2 }
+bearcad.derive_parameter{ kind = "point_distance",
+  a = { kind = "line", index = 0, endpoint = "start" },
+  b = { kind = "line", index = 0, endpoint = "end" } }
+-- Body geometry: a/b are mm points on the picked edge's ends or the corners.
+bearcad.derive_parameter{ kind = "body_edge_length", body = 0, a = {0, 0, 0}, b = {30, 0, 0} }
+bearcad.derive_parameter{ kind = "body_vertex_distance", body = 0,
+  a = {0, 0, 0}, b = {30, 40, 0} }
+
+bearcad.set_units{ length = "in", angle = "deg" }          -- document defaults
+bearcad.set_units{ sketch = 0, length = "mm" }             -- per-sketch override
 ```
 
 ## Editing dimensions while drawing
@@ -430,6 +451,9 @@ See [Drawings](./drawings) for the rest of the page API:
 bearcad.drawing_view{ drawing = 0, cross_section = 0 }            -- the whole view
 bearcad.drawing_view{ drawing = 0, body = 0, cross_section = 0 }  -- one body, cut by it
 bearcad.drawing_view_section{ drawing = 0, view = 1, cross_section = false }  -- un-section
+bearcad.drawing_style{ drawing = 0, style = "colorful" }          -- next projection on the page
+bearcad.drawing_view_style{ drawing = 0, view = 0, style = "colorful" }  -- this view
+-- visible | wireframe | shaded | colorful | loose_pencil | color_pencil | watercolor
 ```
 
 ## Materials
@@ -443,6 +467,8 @@ bearcad.set_material{ body = 1, material = 0 }
 bearcad.set_material{ body = 1 }        -- back to the default material
 ```
 
+`set_material` names a material by its order in the document. Unobtainium is `0`.
+
 ## Visibility, construction, and shadow bodies
 
 ```lua
@@ -454,6 +480,18 @@ bearcad.ui.toggle_visibility()         -- current selection
 -- Shadow body: hidden in the viewport (except hover/select) and omitted from export.
 bearcad.set_body_shadow{ body = 0, shadow = true }
 bearcad.set_body_shadow{ body = 0, shadow = false }  -- back to a live body
+```
+
+## Components
+
+```lua
+local frame = bearcad.component{ name = "Frame" }          -- returns a handle
+local legs  = bearcad.component{ name = "Legs", parent = frame }
+bearcad.move_to_component{ kind = "extrusion", index = 0, component = frame }
+bearcad.move_to_component{ kind = "body", index = 0, component = false }  -- back to root
+bearcad.set_units{ component = frame, length = "in" }
+bearcad.select{ kind = "component", index = frame }
+bearcad.count("component")
 ```
 
 ## Import
@@ -504,5 +542,7 @@ bearcad.count("body")          -- live
 bearcad.count_saved("body")    -- last committed file
 bearcad.clear()
 bearcad.undo()
+bearcad.rebuild_geometry()     -- File → Rebuild Geometry: drop tessellation cache
+bearcad.export_preview("preview.png")  -- Home zoom-to-fit PNG (also embedded on save)
 bearcad.quit()                 -- close the app when the script ends
 ```

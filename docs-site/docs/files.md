@@ -18,7 +18,7 @@ registers the association for the running binary.
 
 On save, BearCAD writes a **Home zoom-to-fit preview** (black outline so it reads on light
 and dark backgrounds) into the file and publishes it as the OS thumbnail — Finder on macOS,
-free-desktop file managers on Linux. `bearcad.export_preview(path)` writes the same PNG.
+free-desktop file managers on Linux.
 
 On macOS, Space-bar **Quick Look** opens an interactive 3D view of the model (rotate / pan /
 zoom, same gestures as STL). Save the file once so the mesh snapshot is embedded.
@@ -33,7 +33,8 @@ asks whether to **Save**, **Don't Save**, or **Cancel** so a stray ⌘Q doesn't 
 
 Open shows cached tessellation when the body's fingerprint (inputs + OCCT version)
 still matches. **File → Rebuild Geometry** (or `bearcad --rebuild`) discards that
-cache and rebuilds. `bearcad.rebuild_geometry()` does the same from a script.
+cache and rebuilds. See [Scripting](/docs/scripting/declarative-modeling#document-lifecycle)
+to rebuild or export a preview from a script.
 
 ## Tabs
 
@@ -139,28 +140,20 @@ warmer tone so it reads as not-yours-to-edit.
   operation input.
 - Exports include unit geometry, so an assembly prints whole.
 
-```lua
-bearcad.import_unit("bracket.bearcad")
-bearcad.import_unit{ path = "bracket.bearcad", link = "static", name = "left_bracket" }
-```
-
-`link = "dynamic"` (the default) follows later changes to the source file: the unit
+**Dynamic** (the default) follows later changes to the source file: the unit
 updates when you open the document and whenever the source is saved while it's open —
 including saves from another BearCAD window, which land immediately. A burst of rapid
 saves rebuilds once.
-`"static"` freezes the imported copy — an amber dot on the instance row shows when the
+**Static** freezes the imported copy — an amber dot on the instance row shows when the
 source has moved on, and right-click → **Update from source file** picks it up (every
 instance of the unit updates together; one undo puts the previous copy back). Either way
 the document embeds its own copy, so it opens and builds with the source file absent.
-
-```lua
-bearcad.sync_unit(0)   -- update unit 0's embedded copy now
-```
+See [Scripting](/docs/scripting/declarative-modeling#import) to import or sync a unit
+from a script.
 
 ## Export as Lua
 
 **File → Export → Lua Script…** writes a deterministic script that recreates the current
 document (no `bearcad.ui` steps) — see [Scripting](/docs/scripting). **File → Import →
-Lua Script…** (or `bearcad.import_lua`) runs one; a non-blank document warns first
-(`force = true` in scripts). Running with `--show-commands` still echoes each GUI action as
-its `bearcad.*` call live.
+Lua Script…** runs one; a non-blank document warns first. Running with `--show-commands`
+still echoes each GUI action as its `bearcad.*` call live.
