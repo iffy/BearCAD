@@ -22,6 +22,8 @@ mod ai;
 mod arena;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_probe;
+#[cfg(not(target_arch = "wasm32"))]
+mod macos_imageio;
 mod projection;
 mod app_icon;
 mod camera;
@@ -424,6 +426,20 @@ fn native_options() -> eframe::NativeOptions {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
+    macos_imageio::protect();
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("BEARCAD_IMAGEIO_SELFTEST").is_some() {
+        match macos_imageio::selftest_png_decode() {
+            Ok(()) => {
+                println!("imageio-ok");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("bearcad: imageio selftest: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     match script::parse_cli(std::env::args()) {
         script::CliOutcome::Help => {
             script::print_usage();
@@ -20055,10 +20071,10 @@ impl eframe::App for App {
             }
         }
 
-        // macOS ImageIO SIGBUS guard (#533): the private resize cursors winit sets for a
-        // pane-resize hover are decoded through ImageIO, which bus-errors on some macOS setups
-        // (the same corruption `app_icon` sidesteps for the window icon). Remap them to the
-        // standard arrow — resizing still works, it just loses the ↔ cursor hint on macOS.
+        // macOS ImageIO SIGBUS guard (#533 / #1900): pane-resize cursors winit sets are
+        // decoded through ImageIO. Homebrew `libpng.dylib` on DYLD_LIBRARY_PATH can still
+        // SIGBUS the *OS* window-edge cursor (`NSThemeFrame`); `macos_imageio::protect`
+        // re-execs without those dirs. Remap egui resize icons to the arrow as a backup.
         #[cfg(target_os = "macos")]
         {
             let unsafe_cursor = matches!(
