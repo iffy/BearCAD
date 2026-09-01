@@ -51,16 +51,7 @@ The image's corners, edge midpoints, centre, calibration points, and edges are r
 sketch geometry: with the [Constraint](/docs/tools/constraint) tool in a sketch on the
 image's plane, hold a point coincident to a vertex, a line, or the origin/axes — the
 whole image translates to follow (scale never changes). Pin sketch geometry to an image
-edge to hold it on the picture. From scripts:
-
-```lua
-bearcad.constrain("coincident",
-  { kind = "image", index = 0, anchor = "center" },   -- or "top_left", …
-  { kind = "origin" })
-
-bearcad.select{ kind = "image", index = 0, point = 0 }              -- calibration 0 or 1
-bearcad.select{ kind = "image", index = 0, edge = "left" }          -- or "right"/"top"/"bottom"
-```
+edge to hold it on the picture.
 
 ## Tracing
 
@@ -68,12 +59,8 @@ Click the image with Sketch, Line, Rectangle, or Circle to start a sketch on its
 and trace what you need. Because the image is calibrated, the traced geometry is in
 real units — dimension it, extrude it, print it.
 
-```lua
-bearcad.import_image("plate.png")
-bearcad.begin_sketch{ kind = "image", index = 0 }
-bearcad.line{ x1 = -10, y1 = 0, x2 = 10, y2 = 0 }
-```
-
 ## Help
 
 ![A tracing image's Context pane, each field explained](/img/screenshots/pane-tracing.png)
+
+See [Scripting](/docs/scripting).

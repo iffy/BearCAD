@@ -72,18 +72,6 @@ The operation is an element with the new bodies nested under it. **Edit operatio
 changes the kind, inputs, or leftovers; deleting it restores the inputs. Result bodies
 are ordinary bodies, so operations chain.
 
-## Scripting
-
-```lua
-bearcad.combine{ op = "cut", a = {0}, b = {1}, name = "Notched block" }
-bearcad.combine{ op = "union", a = {0, 1, 2} }
-bearcad.combine{ op = "intersect", a = {0}, b = {1}, keep_b = true }
-bearcad.edit_combine{ index = 0, op = "xor", a = {0}, b = {1} }
--- `begin_combine` takes the same arguments but leaves the tool armed rather than
--- committing, so the result preview is on screen for a screenshot.
-bearcad.ui.begin_combine{ op = "cut", a = {0}, b = {1} }
-```
-
 ## Good to know
 
 - Switching from Union to Cut, Intersect, or Xor after Side A is filled focuses Side B.
@@ -93,3 +81,5 @@ bearcad.ui.begin_combine{ op = "cut", a = {0}, b = {1} }
   refused — the inputs stay as they were.
 - Shadow bodies can't be picked into another operation — edit or delete the operation
   that owns them instead.
+
+See [Scripting](/docs/scripting).

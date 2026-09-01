@@ -54,39 +54,13 @@ an input: moving the path updates the fragments. A cutter that misses a body lea
 
 ![The Slice tool's Context pane, each field explained](/img/screenshots/pane-slice.png)
 
-## Scripting
-
-```lua
-bearcad.slice{ bodies = {0}, cutters = {{ kind = "plane", index = 1 }} }
-bearcad.slice{ bodies = {0}, cutters = {{ kind = "line", index = 4 }} }
-bearcad.slice{ bodies = {0, 1},
-               cutters = {{ kind = "plane", index = 1 }},
-               extend = false, name = "Split" }
-bearcad.edit_slice{ index = 0, bodies = {0},
-                    cutters = {{ kind = "plane", index = 2 }} }
-```
-
-A planar cutter is a face-spec table (same shape `bearcad.begin_sketch` accepts). A line
-cutter is `{ kind = "line", index = i }`.
-
 ## Slicing sketch geometry in 2D
 
 Split lines where other lines cross them. The sliced line becomes a *shadow* — no longer
 part of any face, but still editable — and each crossing produces a fragment line.
-Double-click the operation (or right-click → **Edit**) to reopen the pickers. From
-scripts:
-
-```lua
--- Split line 0 wherever line 1 crosses it, in sketch 0:
-bearcad.slice_sketch{ sketch = 0, lines = {0}, cutters = {1} }
-
--- Slice several targets with several cutters at once, then re-point:
-bearcad.slice_sketch{ sketch = 0, lines = {0, 2}, cutters = {1, 3} }
-bearcad.edit_sketch_slice{ index = 0, lines = {0}, cutters = {1} }
-
--- Circles and curves slice too — a line through circle 0 splits it into arcs:
-bearcad.slice_sketch{ sketch = 0, circles = {0}, cutters = {1} }
-```
+Double-click the operation (or right-click → **Edit**) to reopen the pickers.
 
 Bezier targets stay curved when split; a sliced circle becomes arcs. A shadowed original
 no longer forms a face — its fragments do, so they extrude independently.
+
+See [Scripting](/docs/scripting).

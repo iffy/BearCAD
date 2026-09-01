@@ -50,10 +50,6 @@ A path runs both ways, and picking one doesn't say which you meant. Tick **Flip*
 **Path** picker to send the copies the other way — back along a straight axis, the other way
 round a turn, or from the far end of a curve.
 
-```lua
-bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 4, spacing = 5, flip = true }
-```
-
 ## Around the path
 
 Under the **Path** picker, two icons choose how the copies run: **along** the path, or
@@ -63,21 +59,9 @@ distance handle and **Distance to** picker stand down. Click the **Angle** icon 
 to toggle where the last copy sits: *at* the angle (a 360°/5 pattern stacks the fifth on
 the first) or ending there so five items space 72° apart.
 
-```lua
-bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
-                       mode = "count_fit_ends", count = 5, length = 360 }
-bearcad.repeat_bodies{ bodies = {0}, axis = "z", around = true,
-                       mode = "count_gap", count = 6, spacing = "60deg" }
-```
-
 A **circle's own normal** is the easiest axis to turn about: with the Path picker focused,
 hover the circle's centre and its normal appears; click it and the pattern turns around it.
 Since that is the only thing a normal is for, picking one switches to **around**.
-
-```lua
-bearcad.repeat_bodies{ bodies = {0}, axis = { circle_normal = 0 }, around = true,
-                       mode = "count_gap", count = 6, spacing = "60deg" }
-```
 
 ## Along a curve
 
@@ -116,24 +100,6 @@ right-click → **Edit**) to reopen it.
 
 ![The Repeat tool's Context pane in a sketch, each field explained](/img/screenshots/pane-repeat-sketch.png)
 
-From scripts:
-
-```lua
--- Four circles in a row, 10mm gap, along the sketch's +X:
-bearcad.repeat_sketch{ sketch = 0, circles = {0}, angle = 0,
-                       mode = "count_gap", count = 4, spacing = 10 }
-
--- Duplicate two lines up the sketch's +Y at a fixed pitch:
-bearcad.repeat_sketch{ sketch = 0, lines = {0, 1}, angle = 90,
-                       mode = "fill_pitch", length = 60, spacing = 12 }
-
-bearcad.edit_sketch_repeat{ index = 0, circles = {0}, angle = 0,
-                            mode = "count_gap", count = 6, spacing = 10 }
-```
-
-Direction is an `angle` in degrees (0 = the sketch's +X/u) or an explicit
-`dir = {du, dv}`. `gap` is accepted as an alias for `spacing` in every repeat call.
-
 ## Repeating a cut (drilling a row of holes)
 
 A repeat can replay a **cut** along the axis — one hole becomes a row of holes. Spacing is
@@ -141,46 +107,16 @@ centre-to-centre, and each extra hole ghosts where it will be punched.
 
 Repeating a **new-body** extrude (one that isn't a cut or a merge onto another body) makes
 one body per instance — disjoint copies stay separate, and each can take its own material.
-From scripts:
-
-```lua
--- extrusion 1 is a hole cut through a plate; drill it 4 times, 12mm apart along X:
-bearcad.repeat_cut{ cuts = {1}, axis = "x", mode = "count_gap", count = 4, spacing = 12 }
-```
 
 ## Repeating a whole sketch along an axis
 
 Copy an entire sketch along an axis — each copy lands on its own parallel construction
 plane with copies of the sketch's lines and circles. With the Repeat tool active, click a
 sketch, set the axis and spacing, and commit. Delete the repeat element and the copies go
-away. From scripts:
-
-```lua
--- Copy sketch 0 three times, 10mm apart up the Z axis:
-bearcad.repeat_sketches{ sketches = {0}, axis = "z", mode = "count_gap", count = 3, spacing = 10 }
-```
+away.
 
 ## Help
 
 ![The Repeat tool's Context pane, each field explained](/img/screenshots/pane-repeat.png)
 
-## Scripting
-
-```lua
-bearcad.repeat_bodies{ bodies = {0}, axis = "x", mode = "count_gap", count = 4, spacing = 8 }
-bearcad.repeat_bodies{ bodies = {0}, axis = "x", mode = "fill_max_pitch",
-                       length = "wall", spacing = "16in", name = "Studs" }
-bearcad.edit_repeat{ index = 0, bodies = {0}, axis = "x", mode = "count_gap", count = 6, spacing = 8 }
-```
-
-`axis` is `"x"`/`"y"`/`"z"`, a sketch line (`{ line = 0 }`), or a body edge given by its world
-endpoints (`{ body = 0, from = {0, 0, 0}, to = {20, 0, 0} }`) — the same three the picker takes.
-Revolve and Move accept all three too.
-
-`to` measures the fill length to a plane, face, or vertex instead of taking `length` — the same
-target table [Extrude](./extrude.md) uses:
-
-```lua
-bearcad.repeat_bodies{ bodies = {0}, axis = "x", mode = "fill_pitch", spacing = 10,
-                       to = { plane = 1 } }
-```
+See [Scripting](/docs/scripting).
