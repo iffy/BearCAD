@@ -219,7 +219,7 @@ bearcad.ui.right_click_ground(x, y)         -- opens a context menu
 bearcad.ui.context_menu()                   -- { kind, index } of the open menu, or nil
 bearcad.ui.key("enter")
 bearcad.ui.palette("Export STEP")
-bearcad.ui.begin_move{ … } / begin_combine / begin_joint   -- arm a tool; do not commit
+bearcad.ui.begin_move{ … } / begin_combine / begin_joint / begin_edit_shape   -- arm a tool; do not commit
 bearcad.ui.pickers() / picker("Targets")                  -- armed tool pickers
 bearcad.ui.gizmos() / gizmo("move_rz")                    -- live gizmo rows
 bearcad.ui.hovered() / exploder()                         -- viewport hover / Selection Exploder
@@ -427,6 +427,7 @@ bearcad.ui.apply_visibility(visible)
 bearcad.ui.auto_zoom(on?)
 bearcad.ui.begin_combine{ op, a, b, keep_b }
 bearcad.ui.begin_edit_section_plane{ view, cut }
+bearcad.ui.begin_edit_shape{ index }
 bearcad.ui.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }
 bearcad.ui.begin_move{ bodies, images, x, y, z, rotate, rx, ry, rz, roll, flip, spin, gap, from, to }
 bearcad.ui.camera{ yaw, pitch, distance, target, projection, shading, ground }?

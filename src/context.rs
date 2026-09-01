@@ -469,6 +469,8 @@ pub struct ShapeControl {
     /// Arm a one-shot focus request (phase just advanced); cleared once the target lands.
     pub pending_focus: bool,
     pub editing: bool,
+    /// Current placement phase. A reopened shape is [`crate::actions::ShapePhase::Done`].
+    pub phase: crate::actions::ShapePhase,
     pub can_commit: bool,
 }
 
@@ -1939,7 +1941,8 @@ fn tool_context_title(input: &ContextInput<'_>) -> Option<&'static str> {
         || input.repeat_op.as_ref().is_some_and(|c| c.editing)
         || input.slice_op.as_ref().is_some_and(|c| c.editing)
         || input.shell_op.as_ref().is_some_and(|c| c.editing)
-        || input.sketch_offset.as_ref().is_some_and(|c| c.editing);
+        || input.sketch_offset.as_ref().is_some_and(|c| c.editing)
+        || input.shape.as_ref().is_some_and(|c| c.editing);
     Some(match input.tool {
         Tool::Select => return None,
         Tool::Rectangle => "Rectangle",
@@ -7435,11 +7438,7 @@ pub fn show_pane(
                 } else if (resp.clicked() || resp.gained_focus())
                     && crate::actions::shape_field_click_advances_height(
                         control.kind,
-                        if control.focus_field == Some(D::Height) {
-                            crate::actions::ShapePhase::Height
-                        } else {
-                            crate::actions::ShapePhase::Base
-                        },
+                        control.phase,
                         field,
                     )
                 {
@@ -7494,7 +7493,11 @@ pub fn show_pane(
             on_shape_edit(ShapeEdit::Commit);
         } else if enter_commit || (create && enter_pressed) {
             ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            if crate::actions::shape_enter_finishes_placement(control.kind, control.focus_field)
+            if (control.editing
+                || crate::actions::shape_enter_finishes_placement(
+                    control.kind,
+                    control.focus_field,
+                ))
                 && control.can_commit
             {
                 on_shape_edit(ShapeEdit::Commit);

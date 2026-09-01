@@ -376,6 +376,36 @@ impl CreatingShape {
             || self.first_corner.is_some()
             || self.typed.iter().any(|&t| t)
     }
+
+    /// Reload a committed shape into the tool for editing (#909/#1901).
+    pub fn from_committed(
+        shape: crate::model::Primitive,
+        index: crate::model::PrimitiveKey,
+    ) -> Self {
+        let kind = shape.kind;
+        Self {
+            shape,
+            editing: Some(index),
+            phase: ShapePhase::Done,
+            typed: [true; 4],
+            ..Self::new(kind)
+        }
+    }
+}
+
+/// Next placement phase after Enter or a Height-field click, or `None` when the phase
+/// should not move (already [`ShapePhase::Done`], or still waiting for the anchor).
+pub fn shape_phase_after_advance(
+    kind: crate::model::PrimitiveKind,
+    phase: ShapePhase,
+) -> Option<ShapePhase> {
+    use crate::model::PrimitiveKind as K;
+    match (phase, kind) {
+        (ShapePhase::Base, K::Sphere) => Some(ShapePhase::Done),
+        (ShapePhase::Base, _) => Some(ShapePhase::Height),
+        (ShapePhase::Height, _) => Some(ShapePhase::Done),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -3704,6 +3734,10 @@ pub enum Action {
         index: crate::model::PrimitiveKey,
         shape: crate::model::Primitive,
     },
+    /// Reopen a committed shape in the Shape tool so its ValueInputs can be edited (#1901).
+    BeginEditShape {
+        index: crate::model::PrimitiveKey,
+    },
     /// Finalize the in-progress sweep (reads `creating_sweep`).
     CommitSweep,
     /// Scripted/replayed sweep creation with an explicit payload. `bodies` is the
@@ -4145,6 +4179,7 @@ impl Action {
                 Action::UndoLast
                     | Action::RedoLast
                     | Action::SetTool(_)
+                    | Action::BeginEditShape { .. }
                     | Action::ClickSceneElement { .. }
                     | Action::ClearSceneSelection
                     | Action::CopySelection
@@ -7324,6 +7359,51 @@ impl AppState {
             crate::names::primitive_kind_label(self.doc.primitives[index].kind).to_lowercase()
         );
         ActionResult::Ok
+    }
+
+    /// Load a committed shape into the Shape tool for editing (#909/#1901).
+    fn begin_edit_shape(&mut self, index: crate::model::PrimitiveKey) -> ActionResult {
+        let Some(existing) = self.doc.primitives.get(index).cloned() else {
+            let e = format!("No shape {index:?}");
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        };
+        self.shape_kind = existing.kind;
+        let _ = self.apply(Action::SetTool(Tool::Shape));
+        self.creating_shape = Some(CreatingShape::from_committed(existing, index));
+        self.status = format!(
+            "Edit {}",
+            crate::names::primitive_kind_label(self.doc.primitives[index].kind).to_lowercase()
+        );
+        ActionResult::Ok
+    }
+
+    /// Advance the in-progress shape to the next placement phase (Base → Height → commit).
+    /// Already-[`ShapePhase::Done`] drafts (a reopened shape) stay put (#1901).
+    pub fn advance_shape_phase(&mut self) {
+        let (kind, phase) = match self.creating_shape.as_ref() {
+            Some(c) => (c.shape.kind, c.phase),
+            None => return,
+        };
+        let Some(next) = shape_phase_after_advance(kind, phase) else {
+            return;
+        };
+        let commit = {
+            let creating = self.creating_shape.as_mut().expect("checked above");
+            creating.phase = next;
+            if next == ShapePhase::Height {
+                creating.phase_screen = None;
+                creating.pending_focus = true;
+            }
+            creating.phase == ShapePhase::Done && creating.can_commit(&self.doc)
+        };
+        if next == ShapePhase::Height {
+            self.status =
+                "Drag off the plane in either direction to set the height, or type it".to_string();
+        }
+        if commit {
+            let _ = self.apply(Action::CommitShape);
+        }
     }
 
     /// Shared revolve commit: validates the solid builds, stores the [`Revolution`], and
@@ -17967,6 +18047,7 @@ op,
             }
             Action::CreateShape { shape } => self.create_shape(shape),
             Action::EditShape { index, shape } => self.edit_shape(index, shape),
+            Action::BeginEditShape { index } => self.begin_edit_shape(index),
             Action::CreateRevolution {
                 sketch,
                 faces,
@@ -27175,6 +27256,92 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(shape_enter_finishes_placement(K::Cuboid, Some(ShapeDimension::Height)));
         assert!(shape_enter_finishes_placement(K::Sphere, Some(ShapeDimension::Radius)));
         assert!(!shape_enter_finishes_placement(K::Sphere, Some(ShapeDimension::Height)));
+    }
+
+    fn cuboid_shape(width: &str, depth: &str, height: &str) -> crate::model::Primitive {
+        crate::model::Primitive {
+            kind: crate::model::PrimitiveKind::Cuboid,
+            origin: [0.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            u_axis: [1.0, 0.0, 0.0],
+            width: width.into(),
+            depth: depth.into(),
+            height: height.into(),
+            radius: String::new(),
+            name: None,
+        }
+    }
+
+    /// #1901: reopening a cuboid loads its dimensions; advancing (as a Height-field click
+    /// used to) must not commit and blank the ValueInputs.
+    #[test]
+    fn reopening_a_cuboid_does_not_commit_on_advance() {
+        let mut state = AppState::default();
+        assert!(matches!(
+            state.apply(Action::CreateShape {
+                shape: cuboid_shape("40", "20", "10"),
+            }),
+            ActionResult::Ok
+        ));
+        let key = state.doc.primitives.keys().next().expect("the cuboid");
+        assert!(matches!(
+            state.apply(Action::BeginEditShape { index: key }),
+            ActionResult::Ok
+        ));
+        let creating = state.creating_shape.as_ref().expect("the edit draft");
+        assert_eq!(creating.editing, Some(key));
+        assert_eq!(creating.phase, ShapePhase::Done);
+        assert_eq!(creating.shape.width, "40");
+        assert_eq!(creating.shape.depth, "20");
+        assert_eq!(creating.shape.height, "10");
+        assert!(!shape_field_click_advances_height(
+            crate::model::PrimitiveKind::Cuboid,
+            creating.phase,
+            ShapeDimension::Height,
+        ));
+        assert_eq!(
+            shape_phase_after_advance(creating.shape.kind, creating.phase),
+            None
+        );
+
+        state.advance_shape_phase();
+        let creating = state.creating_shape.as_ref().expect("still editing");
+        assert_eq!(creating.editing, Some(key), "advance must not commit");
+        assert_eq!(creating.phase, ShapePhase::Done);
+        assert_eq!(creating.shape.height, "10");
+        assert_eq!(state.doc.primitives[key].height, "10");
+    }
+
+    /// #1901: after reopening, typing a new height and committing updates the cuboid.
+    #[test]
+    fn reopening_a_cuboid_lets_you_change_its_height() {
+        let mut state = AppState::default();
+        assert!(matches!(
+            state.apply(Action::CreateShape {
+                shape: cuboid_shape("40", "20", "10"),
+            }),
+            ActionResult::Ok
+        ));
+        let key = state.doc.primitives.keys().next().expect("the cuboid");
+        assert!(matches!(
+            state.apply(Action::BeginEditShape { index: key }),
+            ActionResult::Ok
+        ));
+        assert!(matches!(
+            state.apply(Action::SetShapeDimension {
+                field: ShapeDimension::Height,
+                text: "25".into(),
+            }),
+            ActionResult::Ok
+        ));
+        assert_eq!(
+            state.creating_shape.as_ref().unwrap().shape.height,
+            "25"
+        );
+        assert!(matches!(state.apply(Action::CommitShape), ActionResult::Ok));
+        assert_eq!(state.doc.primitives[key].height, "25");
+        assert_eq!(state.doc.primitives[key].width, "40");
+        assert_eq!(state.doc.primitives.len(), 1, "edit keeps the one shape");
     }
 
     /// #909/#911: the Shape tool arms a shape of the last-used kind, its shortcut cycles
