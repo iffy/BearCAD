@@ -43,6 +43,9 @@ to select one (without it, `sketch_text` selects the whole text):
 
 ```lua
 bearcad.select{ kind = "sketch_text", index = 0, anchor = "center" }  -- or "top_left", …
+bearcad.constrain("coincident",
+  { kind = "sketch_text", index = 0, anchor = "center" },
+  { kind = "line", index = 0, endpoint = "start" })
 ```
 
 Constraining an anchor translates the whole text to satisfy it; rotation and size never
@@ -59,6 +62,9 @@ that sketch geometry constrains onto:
 bearcad.select{ kind = "image", index = 0, anchor = "center" }   -- or "bottom_left", …
 bearcad.select{ kind = "image", index = 0, edge = "left" }       -- or "right"/"top"/"bottom"
 bearcad.select{ kind = "image", index = 0, point = 0 }           -- calibration 0 or 1
+bearcad.constrain("coincident",
+  { kind = "image", index = 0, anchor = "center" },
+  { kind = "origin" })
 ```
 
 ## Selecting a face's own vertex or edge

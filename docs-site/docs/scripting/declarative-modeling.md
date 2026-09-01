@@ -85,7 +85,7 @@ bearcad.rect{ width = 80, height = 50, x = 0, y = 0, name = "Box" }
 bearcad.line{ length = 80, angle = 45, name = "Diagonal" }
 bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 } -- explicit endpoints
 bearcad.circle{ x = 10, y = 5, r = 12, name = "Hole" } -- `radius` and `diameter` also accepted
-bearcad.text{ text = "Hello", x = 10, y = 10, size = 12 } -- see the Text tool page
+bearcad.text{ text = "Hello", x = 10, y = 10, size = 12, rotation = 30, flip = true, wrap = 40 }
 ```
 
 A scripted line lands **unconstrained**. To lock its length, pass `dimension`:
@@ -202,10 +202,14 @@ bearcad.extrude{ profiles = faces[1], distance = 6 }
 bearcad.extrude{ profiles = faces, distance = 4, body = "join" }
 ```
 
-`profiles` takes one circle handle, one line list (a `rect` return), a spec
-(`{circle=i}`, `{polygon={…}}`, `{text=i}`, `{text_glyph={text, glyph}}`,
+`profiles` takes one circle handle, one line list (a `rect` return), a text handle,
+a spec (`{circle=i}`, `{polygon={…}}`, `{text=i}`, `{text_glyph={text, glyph}}`,
 `{region={sketch, u, v}}`, `{boolean={…}}`), or a list of those. `body` is still the
 add/cut/join mode; `bodies` is still the target list.
+
+```lua
+bearcad.extrude{ profiles = { text = 0 }, distance = 1, body = "cut" }  -- engrave the whole word
+```
 
 ## Push or pull a body face
 
@@ -474,6 +478,7 @@ bearcad.select{ kind = "unit_instance", index = 1 }          -- or by instance n
 -- construction plane (default: ground), centered, seeded at 1 px = 1 mm.
 bearcad.import_image{ path = "drawing.png" }
 bearcad.import_image{ path = "drawing.png", plane = 1 }
+bearcad.begin_sketch{ kind = "image", index = 0 }
 
 -- Scale calibration: a selected image already has a top-middle → bottom-middle
 -- line. Drag its endpoints, or set them here, then assign a real length

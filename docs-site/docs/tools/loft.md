@@ -43,17 +43,4 @@ horns, hulls, funnels, transitions between shapes.
 
 ![The Loft tool's Context pane, each field explained](/img/screenshots/pane-loft.png)
 
-## Scripting
-
-```lua
-bearcad.circle{ r = 5 }
-bearcad.plane{ offset = 10 }
--- Plane 3: the new one, after the document's three starting planes.
-bearcad.begin_sketch{ kind = "plane", index = 3 }
-bearcad.circle{ r = 2 }
-bearcad.exit_sketch()
-bearcad.loft{ profiles = {0, 1}, name = "Horn" }
-```
-
-`profiles` is a list of sections (circle handles or line loops); each face's sketch is
-inferred, like `bearcad.extrude`. `bearcad.edit_loft{ index, … }` re-points one.
+See [Scripting](/docs/scripting).

@@ -44,16 +44,4 @@ to re-open it with its faces, path, and body mode loaded.
 
 ![The Sweep tool's Context pane, each field explained](/img/screenshots/pane-sweep.png)
 
-## Scripting
-
-```lua
-bearcad.sweep{
-  profiles = 0,             -- circle handle, line loop, or a list of those
-  path = { 4, 5 },          -- line indices, chained tip-to-tail
-  body = "cut",             -- "add" | "cut"; omit for a new body
-  bodies = { 0 },           -- the Add/Cut body list
-  name = "Handle",
-}
-```
-
-`bearcad.edit_sweep{ index, … }` re-points one. Interactive sweeps replay to the command log as the same call.
+See [Scripting](/docs/scripting).

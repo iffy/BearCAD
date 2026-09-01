@@ -69,26 +69,4 @@ stay holes.
 
 ![The Text tool's Context pane, each field explained](/img/screenshots/pane-text.png)
 
-## Scripting
-
-```lua
-bearcad.text{ text = "Hello", x = 10, y = 10, size = 12 }
-bearcad.text{ text = "Label", size = "w / 2", font = "Helvetica",
-              bold = true, rotation = 30, flip = true, name = "Lid label" }
-bearcad.select{ kind = "sketch_text", index = 0 }
-bearcad.ui.set_gizmo{ name = "text_rotation", value = math.rad(45) }
-bearcad.get{ kind = "sketch_text", index = 0 }  -- text, x, y, rotation, flip, …
-bearcad.count("sketch_text")
-
--- Engrave a text: extrude/cut the whole word (all its glyphs) in one call.
-bearcad.extrude{ text = 0, distance = 1, body = "cut" }
-
--- Constrain a text's anchor coincident to a sketch point so it follows it.
-bearcad.constrain("coincident",
-  { kind = "sketch_text", index = 0, anchor = "center" },
-  { kind = "line", index = 2, endpoint = "start" })
-```
-
-Like `rect` and `circle`, `text` begins a ground sketch when none is open. `size` accepts
-an expression; `rotation` is degrees about `(x, y)`; `flip` mirrors the letters; optional
-`wrap` sets a wrap width in mm; `font` defaults to a standard system font.
+See [Scripting](/docs/scripting).

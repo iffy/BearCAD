@@ -121,6 +121,7 @@ top-level). Sketch-local `bearcad.drag_vertex` / `drag_line` are modeling, not u
 bearcad.ui.begin_move{ bodies = {0} }
 bearcad.ui.begin_combine{ op = "cut", a = {0}, b = {1} }
 bearcad.ui.begin_joint{ a = 0, b = 1, kind = "slider" }
+bearcad.ui.animate_joints(false)        -- joint preview sweep, every joint
 bearcad.ui.pickers()                    -- or picker("Targets")
 bearcad.ui.gizmos()                     -- or gizmo("move_rz")
 bearcad.ui.hovered()

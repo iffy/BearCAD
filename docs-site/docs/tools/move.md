@@ -132,70 +132,6 @@ it, with the angle reading out as you move.
 
 ![The Move tool's Context pane in Free mode, each field explained](/img/screenshots/pane-move-free.png)
 
-## Scripting
-
-```lua
--- Free: explicit components, and turns about the part's own centre.
-bearcad.move_bodies{ bodies = {0}, x = 40, z = "plate_thickness" }
-bearcad.move_bodies{ bodies = {0}, rotate = { z = 90 } }
-bearcad.move_bodies{ images = {0}, x = 25 }
-
--- Face Snap: put a face on a face. `flip` picks the side; `spin` turns it.
-bearcad.move_bodies{ bodies = {0},
-  from = { body = 0, on_face = {5, 5, 5}, normal = {0, 0, 1} },
-  to   = { body = 1, on_face = {40, 5, 2.5}, normal = {-1, 0, 0} },
-  spin = 45 }
-
--- The third pair as an angle: turn 90 degrees about the end A -> end B line.
-bearcad.move_bodies{ bodies = {0},
-  from = { { body = 0, vertex = {0, 0, 0} }, { body = 0, vertex = {10, 0, 0} } },
-  to   = { { body = 1, vertex = {40, 0, 0} }, { body = 1, vertex = {50, 0, 0} } },
-  roll = 90 }
-
--- Point Snap: land one point on another. `vertex` is a corner; `edge` takes a midpoint.
-bearcad.move_bodies{ bodies = {0},
-  from = { body = 0, vertex = {0, 0, 0} },
-  to   = { body = 1, vertex = {40, 0, 0} } }
-bearcad.move_bodies{ bodies = {0},
-  from = { body = 0, edge = { {0, 0, 0}, {10, 0, 0} } },
-  to   = { body = 1, edge = { {40, 0, 0}, {50, 0, 0} } } }
-
--- An end point can be the world origin.
-bearcad.move_bodies{ bodies = {0},
-  from = { body = 0, vertex = {40, 40, 0} },
-  to   = { origin = true } }
-
--- A second pair turns it too: start B swings onto end B about end A.
-bearcad.move_bodies{ bodies = {0},
-  from = { { body = 0, vertex = {0, 0, 0} }, { body = 0, vertex = {10, 0, 0} } },
-  to   = { { body = 0, vertex = {0, 0, 0} }, { body = 0, vertex = {0, 10, 0} } } }
-
--- A third pair spins it about end A → end B, so the placement is fully decided.
-bearcad.move_bodies{ bodies = {0},
-  from = {
-    { body = 0, vertex = {0, 0, 0} },
-    { body = 0, vertex = {10, 0, 0} },
-    { body = 0, vertex = {0, 0, 10} },
-  },
-  to = {
-    { body = 0, vertex = {0, 0, 0} },
-    { body = 0, vertex = {10, 0, 0} },
-    { body = 0, vertex = {0, 10, 0} },
-  } }
-
--- `begin_move` takes the same arguments but leaves the tool armed rather than committing,
--- so the preview is on screen: the ghost, the A connector, and the B and C paths.
-bearcad.ui.begin_move{ bodies = {0},
-  from = { body = 0, vertex = {0, 0, 0} },
-  to   = { body = 1, vertex = {40, 0, 0} } }
-```
-
-Points are millimetre coordinates on the body's mesh — they only need to land on the corner or
-edge you mean. `vertex` is a corner, `edge` takes an edge's midpoint, `on_edge` is a position
-along one, and `on_face = {x,y,z}, normal = {x,y,z}` is a point on a flat face — the middle of
-it unless you add `uv = {du, dv}`, which steps that far across the face in its own axes.
-`face_center =` is the same thing as `on_face =` with no `uv`.
-
 ## Moving geometry inside a sketch
 
 Inside a sketch, Move moves sketch geometry. Select lines, circles, or text, then switch
@@ -220,12 +156,4 @@ to zero returns it home.
 With a single [sketch text](/docs/tools/text) selected, drag the rotation ring to turn it
 about its start point.
 
-## Scripting
-
-```lua
-bearcad.move_bodies{ bodies = {0}, x = "25", name = "Shifted" }
-bearcad.move_bodies{ bodies = {0, 1}, x = "gap * 2", z = "10mm" }
-bearcad.move_bodies{ images = {0}, x = 25, rotate = { z = 90 } }   -- in-plane slide + turn
-bearcad.edit_move{ index = 0, bodies = {0}, x = "30" }
-local corners = bearcad.image_corners(0)              -- world quad, live preview included
-```
+See [Scripting](/docs/scripting).

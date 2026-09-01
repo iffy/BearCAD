@@ -41,11 +41,4 @@ a guide line a fixed clearance from a wall. The preview goes dashed to match.
 
 ![The Offset tool's Context pane, each field explained](/img/screenshots/pane-offset.png)
 
-## Scripting
-
-```lua
-bearcad.offset_sketch{ sketch = 0, lines = {0, 1, 2, 3}, distance = 4 }
-bearcad.offset_sketch{ sketch = 0, circles = {0}, distance = -2, construction = true }
-bearcad.offset_sketch{ sketch = 0, lines = {0}, distance = "gap" }
-bearcad.edit_sketch_offset{ index = 0, lines = {0, 1}, distance = 6, construction = false }
-```
+See [Scripting](/docs/scripting).

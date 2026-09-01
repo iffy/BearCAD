@@ -55,20 +55,4 @@ Edit or delete it later just like the 3D version.
 
 ![The in-sketch Mirror pane, each field explained](/img/screenshots/pane-mirror-sketch.png)
 
-## Scripting
-
-```lua
--- 3D: reflect bodies across a plane (`plane = 0` is construction-plane ordinal 0)
-bearcad.mirror_bodies{ plane = 0, bodies = { 0, 1 } }
-bearcad.edit_mirror{ index = 0, plane = { kind = "plane", index = 0 }, bodies = { 0 } }
-
--- output = "new" (the default), "add", or "cut"
-bearcad.mirror_bodies{ plane = { kind = "plane", index = 0 },
-                       bodies = { 0 }, output = "add" }
-
--- In a sketch: reflect lines/circles across a straight line, or `"x"`/`"y"` for
--- the sketch origin axes (`"gx"`/`"gy"`/`"gz"` for an in-plane world axis)
-bearcad.mirror_sketch{ sketch = 0, line = 0, lines = { 1, 2 }, circles = { 0 } }
-bearcad.mirror_sketch{ sketch = 0, line = "x", lines = { 1 } }
-bearcad.edit_sketch_mirror{ index = 0, sketch = 0, line = 0, lines = { 1 } }
-```
+See [Scripting](/docs/scripting).

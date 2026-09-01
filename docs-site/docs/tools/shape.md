@@ -61,16 +61,4 @@ snaps in a sketch.
 A shape is its own row in the Elements pane, named by kind. Double-click it to reopen the
 tool with its dimensions loaded; **Apply changes** re-points it, keeping its body.
 
-## Scripting
-
-```lua
-bearcad.cuboid{ width = 40, depth = 20, height = 10, name = "Block" }
-bearcad.cylinder{ at = {100, 0, 0}, radius = 5, height = 20 }
-bearcad.sphere{ at = {200, 0, 0}, radius = 8 }
-
--- On another plane: `normal` is the direction it grows, `u_axis` the width direction.
-bearcad.cuboid{ at = {0, 0, 10}, normal = {0, 0, 1}, width = "side", depth = "side", height = 4 }
-
--- Re-point one; unmentioned fields keep their value.
-bearcad.edit_shape{ index = 0, height = "side * 3" }
-```
+See [Scripting](/docs/scripting).
