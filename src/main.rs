@@ -29212,7 +29212,7 @@ impl App {
                                 painter.line_segment([sp(p), sp(q)], egui::Stroke::new(crate::drawing::DIM_STROKE, INK));
                             }
                             painter.line_segment([sp(g.line.0), sp(g.line.1)], egui::Stroke::new(crate::drawing::DIM_STROKE, INK));
-                            for tri in g.arrows {
+                            for tri in g.arrow_tris() {
                                 painter.add(egui::Shape::convex_polygon(
                                     tri.iter().map(|p| sp(*p)).collect(),
                                     INK,
@@ -29509,7 +29509,7 @@ impl App {
                             [sp(g.line.0), sp(g.line.1)],
                             egui::Stroke::new(crate::drawing::DIM_STROKE, INK),
                         );
-                        for tri in g.arrows {
+                        for tri in g.arrow_tris() {
                             painter.add(egui::Shape::convex_polygon(
                                 tri.iter().map(|p| sp(*p)).collect(),
                                 INK,
@@ -29703,7 +29703,7 @@ impl App {
                     }
                     painter.line_segment([sp(pa), sp(pb)], stroke);
                     let g = crate::drawing::dimension_line_geometry(pa, pb, out, 0.0, arrow);
-                    for tri in g.arrows {
+                    for tri in g.arrow_tris() {
                         painter.add(egui::Shape::convex_polygon(
                             tri.iter().map(|p| sp(*p)).collect(),
                             stroke.color,

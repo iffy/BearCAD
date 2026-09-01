@@ -1984,6 +1984,18 @@ pub struct DimLineGeometry {
     pub line: (glam::Vec2, glam::Vec2),
     /// Two arrowhead triangles (three points each) at the dimension line's ends.
     pub arrows: [[glam::Vec2; 3]; 2],
+    /// Little reverse heads behind outside-in arrows (`None` when the arrows sit inside).
+    pub reverse_arrows: [Option<[glam::Vec2; 3]>; 2],
+}
+
+impl DimLineGeometry {
+    /// Main heads, then any reverse tails — editor and exports stroke these the same way.
+    pub fn arrow_tris(&self) -> impl Iterator<Item = [glam::Vec2; 3]> + '_ {
+        self.arrows
+            .iter()
+            .copied()
+            .chain(self.reverse_arrows.iter().copied().flatten())
+    }
 }
 
 /// Build [`DimLineGeometry`] for an edge from `a` to `b`, offset `outward * offset` from it.
@@ -2001,18 +2013,24 @@ pub fn dimension_line_geometry(
     let along = (db - da).normalize_or_zero();
     let span = (db - da).length();
     // Inside: arrows sit between the ticks, pointing at them. Too short for both
-    // heads (#1917): they sit outside the ticks, pointing in, and the dimension
-    // line continues through those outside arrows.
+    // heads (#1917): they sit outside the ticks, pointing in, with a little reverse
+    // tail out the back (#1925), and the dimension line continues through both.
     let (dir_a, dir_b) = crate::dimensions::dimension_arrow_dirs(along, span, arrow);
-    let line = if crate::dimensions::dimension_arrows_outside(span, arrow) {
-        (da - along * arrow, db + along * arrow)
-    } else {
-        (da, db)
-    };
-    let head = |tip: glam::Vec2, dir: glam::Vec2| {
-        let base = tip - dir * arrow;
-        let side = glam::Vec2::new(-dir.y, dir.x) * (arrow * 0.4);
+    let overshoot = crate::dimensions::dimension_outside_overshoot(span, arrow);
+    let line = (da - along * overshoot, db + along * overshoot);
+    let head = |tip: glam::Vec2, dir: glam::Vec2, len: f32| {
+        let base = tip - dir * len;
+        let side = glam::Vec2::new(-dir.y, dir.x) * (len * 0.4);
         [tip, base + side, base - side]
+    };
+    let reverse_arrows = if crate::dimensions::dimension_arrows_outside(span, arrow) {
+        let rev = crate::dimensions::dimension_reverse_arrow_len(arrow);
+        [
+            Some(head(da - dir_a * (arrow + rev), -dir_a, rev)),
+            Some(head(db - dir_b * (arrow + rev), -dir_b, rev)),
+        ]
+    } else {
+        [None, None]
     };
     DimLineGeometry {
         // Extension lines start a hair off the edge and overshoot the dimension line a touch.
@@ -2021,7 +2039,8 @@ pub fn dimension_line_geometry(
             (b + outward * (arrow * 0.4), db + outward * (arrow * 0.7)),
         ],
         line,
-        arrows: [head(da, dir_a), head(db, dir_b)],
+        arrows: [head(da, dir_a, arrow), head(db, dir_b, arrow)],
+        reverse_arrows,
     }
 }
 
@@ -2075,7 +2094,7 @@ pub fn loupe_dimension_geometry(
             line: full.line,
             solid: Some(full.line),
             dashes: Vec::new(),
-            arrows: full.arrows.to_vec(),
+            arrows: full.arrow_tris().collect(),
         };
     }
     let (da, db) = full.line;
@@ -2096,6 +2115,9 @@ pub fn loupe_dimension_geometry(
     if closed[0] {
         extensions.push(full.extensions[0]);
         arrows.push(full.arrows[0]);
+        if let Some(r) = full.reverse_arrows[0] {
+            arrows.push(r);
+        }
     } else if dash_span > 1e-4 {
         dashes.push((da, da + along * dash_span));
         solid_a = da + along * dash_span;
@@ -2103,6 +2125,9 @@ pub fn loupe_dimension_geometry(
     if closed[1] {
         extensions.push(full.extensions[1]);
         arrows.push(full.arrows[1]);
+        if let Some(r) = full.reverse_arrows[1] {
+            arrows.push(r);
+        }
     } else if dash_span > 1e-4 {
         dashes.push((db - along * dash_span, db));
         solid_b = db - along * dash_span;
@@ -3861,7 +3886,7 @@ fn render_view_geometry<C: Canvas>(
                     sl(canvas, p, q);
                 }
                 sl(canvas, geom.line.0, geom.line.1);
-                for tri in geom.arrows {
+                for tri in geom.arrow_tris() {
                     let pts: Vec<(f32, f32)> =
                         tri.iter().map(|p| { let s = to_screen(*p); (s.x, s.y) }).collect();
                     canvas.poly(&pts, BLACK);
@@ -3916,7 +3941,7 @@ fn render_view_geometry<C: Canvas>(
             stroke_line(canvas, p, q);
         }
         stroke_line(canvas, geom.line.0, geom.line.1);
-        for tri in geom.arrows {
+        for tri in geom.arrow_tris() {
             let pts: Vec<(f32, f32)> = tri
                 .iter()
                 .map(|p| {
@@ -3991,7 +4016,7 @@ fn render_view_geometry<C: Canvas>(
         }
         stroke_line(canvas, pa, pb);
         let geom = dimension_line_geometry(pa, pb, out, 0.0, arrow);
-        for tri in geom.arrows {
+        for tri in geom.arrow_tris() {
             let pts: Vec<(f32, f32)> =
                 tri.iter().map(|p| { let s = to_screen(*p); (s.x, s.y) }).collect();
             canvas.poly(&pts, BLACK);
@@ -4634,6 +4659,24 @@ mod loupe_tests {
         assert!(g.extensions.is_empty(), "no witness lines at the crop");
         assert_eq!(g.dashes.len(), 2, "both ends finish in dashes");
         assert!(g.solid.is_some(), "a solid middle remains for the label");
+    }
+
+    /// #1925: a short edge wholly in the loupe still gets reverse tails on its
+    /// outside-in arrows.
+    #[test]
+    fn loupe_short_dimension_includes_reverse_arrows() {
+        let a = glam::Vec2::new(0.0, 0.0);
+        let b = glam::Vec2::new(3.0, 0.0);
+        let c = glam::Vec2::new(1.5, 0.0);
+        let closed = loupe_dim_closed_ends(a, b, c, 10.0);
+        assert_eq!(closed, [true, true]);
+        let g = loupe_dimension_geometry(a, b, glam::Vec2::new(0.0, 1.0), 2.0, 2.0, closed);
+        assert_eq!(
+            g.arrows.len(),
+            4,
+            "two main heads plus two reverse tails, got {}",
+            g.arrows.len()
+        );
     }
 }
 
@@ -5512,6 +5555,51 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         );
     }
 
+    /// #1925: outside-in arrows carry a smaller reverse head behind them, pointing out.
+    #[test]
+    fn short_dimension_has_reverse_arrows_out_the_back() {
+        let a = glam::Vec2::new(0.0, 0.0);
+        let b = glam::Vec2::new(5.0, 0.0);
+        let outward = glam::Vec2::new(0.0, 1.0);
+        let arrow = 4.0;
+        let g = dimension_line_geometry(a, b, outward, 10.0, arrow);
+        let ra = g.reverse_arrows[0].expect("left reverse tail");
+        let rb = g.reverse_arrows[1].expect("right reverse tail");
+        let tip_a = ra[0];
+        let tip_b = rb[0];
+        let base_a = (ra[1] + ra[2]) * 0.5;
+        let base_b = (rb[1] + rb[2]) * 0.5;
+        let main_base_a = (g.arrows[0][1] + g.arrows[0][2]) * 0.5;
+        let main_base_b = (g.arrows[1][1] + g.arrows[1][2]) * 0.5;
+        assert!(
+            tip_a.x < base_a.x - 0.5,
+            "left reverse should point out, away from the tick; tip={tip_a:?} base={base_a:?}"
+        );
+        assert!(
+            tip_b.x > base_b.x + 0.5,
+            "right reverse should point out, away from the tick; tip={tip_b:?} base={base_b:?}"
+        );
+        assert!(
+            (base_a - main_base_a).length() < 1e-3,
+            "left reverse should sit on the back of the main head; reverse_base={base_a:?} main_base={main_base_a:?}"
+        );
+        assert!(
+            (base_b - main_base_b).length() < 1e-3,
+            "right reverse should sit on the back of the main head; reverse_base={base_b:?} main_base={main_base_b:?}"
+        );
+        let rev = crate::dimensions::dimension_reverse_arrow_len(arrow);
+        assert!(
+            (tip_a.x - (0.0 - arrow - rev)).abs() < 1e-3,
+            "left reverse tip should sit a reverse-length past the main head, got {}",
+            tip_a.x
+        );
+        assert!(
+            g.line.0.x <= tip_a.x + 1e-3 && g.line.1.x >= tip_b.x - 1e-3,
+            "dimension line should run through the reverse tails, got {:?}",
+            g.line
+        );
+    }
+
     /// #1917: a long span keeps arrowheads between the ticks, pointing at them.
     #[test]
     fn long_dimension_keeps_arrows_inside_pointing_at_ticks() {
@@ -5534,6 +5622,10 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         );
         assert!((g.line.0 - tip_a).length() < 1e-3);
         assert!((g.line.1 - tip_b).length() < 1e-3);
+        assert!(
+            g.reverse_arrows[0].is_none() && g.reverse_arrows[1].is_none(),
+            "inside arrows have no reverse tails"
+        );
     }
 
     /// #1916: a dragged dimension line snaps to the measured edge's 2D perpendicular

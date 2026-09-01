@@ -20,6 +20,24 @@ pub fn dimension_arrows_outside(span: f32, arrow: f32) -> bool {
     span < 2.0 * arrow
 }
 
+/// Reverse tail behind an outside-in arrow, as a fraction of the main head (#1925).
+pub const OUTSIDE_REVERSE_ARROW: f32 = 0.6;
+
+/// Length of the little reverse head behind an outside-in arrow.
+pub fn dimension_reverse_arrow_len(arrow: f32) -> f32 {
+    arrow * OUTSIDE_REVERSE_ARROW
+}
+
+/// How far the dimension line extends past each tick when arrows sit outside
+/// (main head plus reverse tail). Zero when the arrows fit inside.
+pub fn dimension_outside_overshoot(span: f32, arrow: f32) -> f32 {
+    if dimension_arrows_outside(span, arrow) {
+        arrow + dimension_reverse_arrow_len(arrow)
+    } else {
+        0.0
+    }
+}
+
 /// Direction each arrowhead points, `along` running from tick A toward tick B.
 /// Inside: arrows sit between the ticks, pointing at them. Outside: past the ticks, pointing in.
 pub fn dimension_arrow_dirs<V>(along: V, span: f32, arrow: f32) -> (V, V)
@@ -40,14 +58,8 @@ pub fn linear_dimension_arrow_dirs(along: Vec2, span: f32) -> (Vec2, Vec2) {
 
 /// Dimension-line endpoints, extended past the ticks when the arrows sit outside.
 pub fn linear_dimension_line_ends(dim_a: Pos2, dim_b: Pos2, along: Vec2) -> (Pos2, Pos2) {
-    if dimension_arrows_outside((dim_b - dim_a).length(), ARROW_LENGTH) {
-        (
-            dim_a - along * ARROW_LENGTH,
-            dim_b + along * ARROW_LENGTH,
-        )
-    } else {
-        (dim_a, dim_b)
-    }
+    let extra = dimension_outside_overshoot((dim_b - dim_a).length(), ARROW_LENGTH);
+    (dim_a - along * extra, dim_b + along * extra)
 }
 
 /// Camera and sketch-plane context for orienting labels on the visible face.
@@ -419,15 +431,26 @@ pub fn linear_dimension_label_rect(center: Pos2, galley_size: Vec2, angle: f32) 
 }
 
 fn draw_arrowhead(painter: &Painter, tip: Pos2, dir: Vec2, color: Color32) {
-    if dir.length_sq() < 1e-4 {
+    draw_arrowhead_sized(painter, tip, dir, ARROW_LENGTH, ARROW_WING, color);
+}
+
+fn draw_arrowhead_sized(
+    painter: &Painter,
+    tip: Pos2,
+    dir: Vec2,
+    length: f32,
+    wing: f32,
+    color: Color32,
+) {
+    if dir.length_sq() < 1e-4 || length < 1e-4 {
         return;
     }
     let d = dir.normalized();
     let side = Vec2::new(-d.y, d.x);
-    let base = tip - d * ARROW_LENGTH;
+    let base = tip - d * length;
     let stroke = Stroke::new(LINE_WIDTH, color);
-    painter.line_segment([tip, base + side * ARROW_WING], stroke);
-    painter.line_segment([tip, base - side * ARROW_WING], stroke);
+    painter.line_segment([tip, base + side * wing], stroke);
+    painter.line_segment([tip, base - side * wing], stroke);
 }
 
 fn projected_axis_dir<Project>(
@@ -1069,6 +1092,26 @@ where
     let (dir_a, dir_b) = linear_dimension_arrow_dirs(geom.along, span);
     draw_arrowhead(painter, geom.dim_a, dir_a, color);
     draw_arrowhead(painter, geom.dim_b, dir_b, color);
+    if dimension_arrows_outside(span, ARROW_LENGTH) {
+        let rev = dimension_reverse_arrow_len(ARROW_LENGTH);
+        let wing = ARROW_WING * OUTSIDE_REVERSE_ARROW;
+        draw_arrowhead_sized(
+            painter,
+            geom.dim_a - dir_a * (ARROW_LENGTH + rev),
+            -dir_a,
+            rev,
+            wing,
+            color,
+        );
+        draw_arrowhead_sized(
+            painter,
+            geom.dim_b - dir_b * (ARROW_LENGTH + rev),
+            -dir_b,
+            rev,
+            wing,
+            color,
+        );
+    }
 
     if let Some((world_geom, view, project)) = planar {
         return draw_planar_dimension_label(painter, world_geom, view, label, color, project);
@@ -1168,6 +1211,27 @@ mod tests {
             linear_dimension_line_ends(Pos2::new(0.0, 0.0), Pos2::new(5.0, 0.0), along);
         assert!(line_a.x < -1.0, "line extends past tick A, got {line_a:?}");
         assert!(line_b.x > 6.0, "line extends past tick B, got {line_b:?}");
+    }
+
+    /// #1925: the dimension line continues through the reverse tails behind outside-in heads.
+    #[test]
+    fn short_span_extends_line_through_reverse_arrows() {
+        let along = Vec2::new(1.0, 0.0);
+        let extra = dimension_outside_overshoot(5.0, ARROW_LENGTH);
+        assert!(
+            extra > ARROW_LENGTH + 1.0,
+            "overshoot should include the reverse tail, got {extra}"
+        );
+        let (line_a, line_b) =
+            linear_dimension_line_ends(Pos2::new(0.0, 0.0), Pos2::new(5.0, 0.0), along);
+        assert!(
+            (line_a.x + extra).abs() < 1e-3,
+            "line should reach the reverse tip at A, got {line_a:?} extra={extra}"
+        );
+        assert!(
+            (line_b.x - (5.0 + extra)).abs() < 1e-3,
+            "line should reach the reverse tip at B, got {line_b:?} extra={extra}"
+        );
     }
 
     #[test]
