@@ -172,6 +172,8 @@ bearcad.paste{ linked = true, z = 40 }  -- linked
 
 - **[Declarative modeling](/docs/scripting/declarative-modeling)** — worked examples:
   sketch, draw, extrude, export.
+- **[Drawings](/docs/scripting/drawings)** — technical-drawing sheets, views, dimensions,
+  loupes, export.
 - **[Solids and operations](/docs/scripting/solids)** — shapes, combine, sweep, loft,
   shell, slice, mirror, repeat, move, joints.
 - **[The `bearcad.ui.*` namespace](/docs/scripting/ui-namespace)** — camera, panes, the
