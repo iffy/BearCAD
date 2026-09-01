@@ -49,6 +49,8 @@ bearcad.ui.move({ x = c1.x + c1.w / 2, y = c1.y + c1.h / 2 + 30 })
 bearcad.ui.key("escape")
 assert(#bearcad.drawing_views(d) == 1,
   "Escape should cancel it, got " .. #bearcad.drawing_views(d) .. " views")
+assert(bearcad.ui.tool() == "drawing_add",
+  "first Esc takes the view back, the tool stays, got " .. tostring(bearcad.ui.tool()))
 
 print("ok: a new projection follows the cursor until it is placed")
 bearcad.quit()
