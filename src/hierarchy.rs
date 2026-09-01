@@ -50,6 +50,17 @@ pub fn elements_graph_row_rects(ctx: &egui::Context) -> Vec<(HierarchyNode, egui
         .unwrap_or_default()
 }
 
+fn elements_graph_eye_rects_id() -> egui::Id {
+    egui::Id::new("elements_graph_eye_rects")
+}
+
+/// Where the Graph view drew each row's visibility eyeball this frame (#1907).
+/// Empty for display-only rows and whenever the pane is not showing the Graph.
+pub fn elements_graph_eye_rects(ctx: &egui::Context) -> Vec<(HierarchyNode, egui::Rect)> {
+    ctx.data(|d| d.get_temp::<Vec<(HierarchyNode, egui::Rect)>>(elements_graph_eye_rects_id()))
+        .unwrap_or_default()
+}
+
 fn elements_list_row_rects_id() -> egui::Id {
     egui::Id::new("elements_list_row_rects")
 }
@@ -133,6 +144,10 @@ fn set_elements_list_row_rects(ctx: &egui::Context, rows: Vec<(String, egui::Rec
 
 fn set_elements_graph_row_rects(ctx: &egui::Context, rects: Vec<(HierarchyNode, egui::Rect)>) {
     ctx.data_mut(|d| d.insert_temp(elements_graph_row_rects_id(), rects));
+}
+
+fn set_elements_graph_eye_rects(ctx: &egui::Context, rects: Vec<(HierarchyNode, egui::Rect)>) {
+    ctx.data_mut(|d| d.insert_temp(elements_graph_eye_rects_id(), rects));
 }
 
 use crate::actions::SketchSession;
@@ -4845,6 +4860,7 @@ pub fn show_pane(
         HierarchyViewMode::List | HierarchyViewMode::Tree => {
             // Row rects belong to the Graph view alone; don't leave last frame's behind (#1670).
             set_elements_graph_row_rects(ui.ctx(), Vec::new());
+            set_elements_graph_eye_rects(ui.ctx(), Vec::new());
             let mut list_rows: Vec<(String, egui::Rect)> = Vec::new();
             let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
             let mut tree = if filter.shadow_bodies {
@@ -5019,10 +5035,12 @@ pub fn show_pane(
                 ui,
                 doc,
                 &tree,
+                visibility,
                 selection,
                 health,
                 &context,
                 &related_constraints,
+                on_toggle_visibility,
                 on_click_element,
                 on_hover_element,
                 on_delete_element,
@@ -5161,9 +5179,13 @@ const GRAPH_ROW_H: f32 = 24.0;
 const GRAPH_LANE_W: f32 = 13.0;
 const GRAPH_LEFT_PAD: f32 = 10.0;
 const GRAPH_ICON_SIZE: f32 = 13.0;
+/// Leftmost column for per-row visibility eyeballs (#1907). Lanes and labels start
+/// to its right, so the graph never draws under the toggles.
+const GRAPH_EYE_COL_W: f32 = ICON_DISPLAY_SIZE + 4.0;
 
 /// Render the graph-node view (#1670): one node per line, top to bottom, with the
 /// relationships drawn as mostly-vertical lanes beside them — the way `gitk` draws commits.
+/// A left-most column of visibility eyeballs sits to the left of those lanes (#1907).
 /// Rows come from [`graph_lane_layout`]: a node sits below everything that feeds it, a
 /// parent's children string down one shared lane with short legs into each row, and a lane is
 /// reused the moment its last consumer passes — packing left into a free column when the
@@ -5174,10 +5196,12 @@ fn show_graph_view(
     ui: &mut egui::Ui,
     doc: &Document,
     tree: &[HierarchyEntry],
+    visibility: &mut ElementVisibility,
     selection: &SceneSelection,
     health: &DocumentHealth,
     context: &HashSet<SceneElement>,
     related_constraints: &HashSet<crate::model::ConstraintKey>,
+    on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
@@ -5245,12 +5269,14 @@ fn show_graph_view(
         .id_salt("elements_graph")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let width = ui.available_width().max(GRAPH_LEFT_PAD * 2.0);
+            let width = ui.available_width().max(GRAPH_EYE_COL_W + GRAPH_LEFT_PAD * 2.0);
             let (rect, _response) = ui
                 .allocate_exact_size(egui::vec2(width, content_height), egui::Sense::hover());
             let painter = ui.painter_at(rect);
-            let lane_x =
-                |lane: usize| rect.left() + GRAPH_LEFT_PAD + lane as f32 * GRAPH_LANE_W;
+            // Lanes sit to the right of the eyeball column so the toggles stay leftmost (#1907).
+            let lane_x = |lane: usize| {
+                rect.left() + GRAPH_EYE_COL_W + GRAPH_LEFT_PAD + lane as f32 * GRAPH_LANE_W
+            };
             let row_y = |row: usize| rect.top() + (row as f32 + 0.5) * GRAPH_ROW_H;
             let dot_of = |node: &HierarchyNode| -> Option<egui::Pos2> {
                 Some(egui::pos2(
@@ -5263,6 +5289,27 @@ fn show_graph_view(
                     egui::pos2(rect.left(), row_y(row) - GRAPH_ROW_H * 0.5),
                     egui::pos2(rect.right(), row_y(row) + GRAPH_ROW_H * 0.5),
                 )
+            };
+            let eye_cell = |row: usize| {
+                let full = row_rect(row);
+                egui::Rect::from_min_max(
+                    full.min,
+                    egui::pos2(full.min.x + GRAPH_EYE_COL_W, full.max.y),
+                )
+            };
+            // Hideable rows keep the eyeball's own hit target; the rest of the row still
+            // selects. Display-only rows have no eye, so the empty left column stays part
+            // of the row click.
+            let graph_hit = |row: usize, has_eye: bool| {
+                let full = row_rect(row);
+                if has_eye {
+                    egui::Rect::from_min_max(
+                        egui::pos2(full.min.x + GRAPH_EYE_COL_W, full.min.y),
+                        full.max,
+                    )
+                } else {
+                    full
+                }
             };
 
             let row_extents = layout.row_line_extents();
@@ -5279,15 +5326,48 @@ fn show_graph_view(
                     .filter(|(_, rr)| clip.intersects(*rr))
                     .collect(),
             );
+            set_elements_graph_eye_rects(
+                ui.ctx(),
+                layout
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| scene_element_for_node(r.node).is_some())
+                    .map(|(row, r)| (r.node, eye_cell(row)))
+                    .filter(|(_, rr)| clip.intersects(*rr))
+                    .collect(),
+            );
 
             // Interact first, so the row backgrounds paint underneath the lanes and labels.
+            let eye_responses: Vec<Option<egui::Response>> = layout
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(row, r)| {
+                    let element = scene_element_for_node(r.node)?;
+                    let visible = visibility.effective_visible(doc, element.clone());
+                    let id = ui.id().with(("hierarchy_graph_eye", r.node));
+                    let response = ui
+                        .interact(eye_cell(row), id, egui::Sense::click())
+                        .on_hover_text(if visible { "Hide" } else { "Show" });
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if response.clicked() {
+                        let next = visibility.toggle(element.clone());
+                        on_toggle_visibility(element, next);
+                    }
+                    Some(response)
+                })
+                .collect();
             let responses: Vec<egui::Response> = layout
                 .rows
                 .iter()
                 .enumerate()
                 .map(|(row, r)| {
                     let id = ui.id().with(("hierarchy_graph_node", r.node));
-                    ui.interact(row_rect(row), id, egui::Sense::click())
+                    let has_eye = scene_element_for_node(r.node).is_some();
+                    ui.interact(graph_hit(row, has_eye), id, egui::Sense::click())
                 })
                 .collect();
             let row_fills: Vec<Option<Color32>> = layout
@@ -5355,6 +5435,23 @@ fn show_graph_view(
                 let node = r.node;
                 let center = egui::pos2(lane_x(r.lane), row_y(row));
                 let element = scene_element_for_node(node);
+                // Eyeball in the left-most column, independent of the node's lane (#1907).
+                if eye_responses[row].is_some() {
+                    if let Some(element) = element.clone() {
+                        let visible = visibility.effective_visible(doc, element);
+                        let icon_rect = egui::Rect::from_center_size(
+                            eye_cell(row).center(),
+                            egui::Vec2::splat(ICON_DISPLAY_SIZE),
+                        );
+                        crate::icons::paint_icon(
+                            &painter,
+                            ui.ctx(),
+                            icon_for_visibility(visible),
+                            icon_rect,
+                            Color32::WHITE,
+                        );
+                    }
+                }
                 let style = element.clone().map(|el| {
                     row_style(
                         el.clone(),

@@ -4606,7 +4606,11 @@ retina machine renders the same composition at 2x, just sharper.
   with a soft dashed **related** leg. Each node draws as its
   element's icon — the same icon its List row uses, tinted by selection/health state
   (#152) at its lane, with the label following its own dot so a row's indent shows its place in
-  the graph; only the synthetic Document root keeps a plain dot. Clicking a row in Graph view selects it like any
+  the graph; only the synthetic Document root keeps a plain dot.
+  **A visibility eyeball sits in a left-most column on every hideable row (#1907)** — the same
+  Show/Hide toggle the List view has, always to the left of the lanes rather than following a
+  node's indent. Clicking it hides or shows that element and does not select the row.
+  Clicking a row in Graph view selects it like any
   other row; selecting a node highlights its ancestor and descendant nodes/edges with a distinct
   accent color/stroke. **Right-clicking a node opens the same context menu its List/Tree row
   shows (#623)** — the shared `element_context_menu` (edit entries, Create drawing / Add to

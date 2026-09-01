@@ -7617,14 +7617,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // #1670: read the Graph view's one-node-per-line layout — `{ lanes = n, rows = { { name,
-    // kind, lane, x, y, w, h }, ... }, edges = { { from, to, lane, kind = "parent" | "dependency"
-    // | "related" },
+    // kind, lane, x, y, w, h, eye? = { x, y, w, h } }, ... }, edges = { { from, to, lane,
+    // kind = "parent" | "dependency" | "related" },
     // ... } }`, with `from`/`to` as 1-based row numbers and an edge kind of "parent",
     // "dependency", or "related". Rows come out in the order the pane
     // draws them, with the pane's default element filter; pass `{ shadow_bodies = true }` to
     // include shadow bodies the way the filter toggle does. `x/y/w/h` are where the row was
     // drawn last frame, in window pixels like `elements_row_rect` — pass the row to `click`
-    // (#1880). Absent unless the Graph view painted that row.
+    // (#1880). `eye` is the leftmost visibility toggle (#1907); pass it to `click` to hide
+    // or show that element. Absent unless the Graph view painted that row / eyeball.
     api.set(
         "elements_graph",
         lua.create_function(|lua, opts: Option<mlua::Table>| {
@@ -7650,6 +7651,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             // Last-frame screen position of each row, for scripts that click the pane; absent
             // for a row that was scrolled out or while another view is showing.
             let painted = crate::hierarchy::elements_graph_row_rects(unsafe { tick.egui_ctx() });
+            let eyes = crate::hierarchy::elements_graph_eye_rects(unsafe { tick.egui_ctx() });
             let out = lua.create_table()?;
             out.set("lanes", layout.lane_count)?;
             let rows = lua.create_table()?;
@@ -7665,6 +7667,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("y", rect.min.y)?;
                     t.set("w", rect.width())?;
                     t.set("h", rect.height())?;
+                }
+                if let Some((_, rect)) = eyes.iter().find(|(node, _)| *node == entry.node) {
+                    let eye = lua.create_table()?;
+                    eye.set("x", rect.min.x)?;
+                    eye.set("y", rect.min.y)?;
+                    eye.set("w", rect.width())?;
+                    eye.set("h", rect.height())?;
+                    t.set("eye", eye)?;
                 }
                 rows.set(row + 1, t)?;
             }
