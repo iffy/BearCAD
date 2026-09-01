@@ -148,7 +148,8 @@ Anywhere a size is accepted, an expression string is too.
 
 ```
 bearcad.count(kind)                -- canonical: line, circle, sketch, constraint,
-bearcad.get{ kind, index }         --   plane, extrusion, revolution, sweep,
+bearcad.get(handle|{ kind, index }|kind, index)
+                                   --   plane, extrusion, revolution, sweep,
                                    --   loft, combine, move, mirror, repeat, slice, shell,
                                    --   edge_treatment, sketch_offset, sketch_mirror,
                                    --   sketch_repeat, sketch_slice, sketch_chamfer, shape,
@@ -158,9 +159,9 @@ bearcad.get{ kind, index }         --   plane, extrusion, revolution, sweep,
                                    --   tracing_image, sketch_fillet, unit, offset.
                                    --   not chamfer/fillet (use edge_treatment or sketch_chamfer).
                                    --   `count` and `get` take the same set.
-bearcad.find("name")
+bearcad.find("name")               -- sugar for element-by-name; nil if missing
 bearcad.set_name(el, "name")
-bearcad.element("line", i)         -- or bearcad.element(id) / bearcad.element(name)
+bearcad.element("line", i)         -- the lookup; also element(id) / element(name)
 bearcad.id(el)                     -- el:id(): a stable id, unique and never reused
 bearcad.line_endpoints(i)          -- x0, y0, x1, y1
 bearcad.image_corners(i)           -- tracing image quad in world mm, live Move included

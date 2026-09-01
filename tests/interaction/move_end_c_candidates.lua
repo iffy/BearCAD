@@ -15,11 +15,15 @@ bearcad.ui.ground("off")
 -- Move the first block onto the second, aimed along +X, with the C pair pending.
 bearcad.ui.begin_move{
   bodies = {0},
-  from   = { body = 0, vertex = {0, 0, 0} },
-  to     = { body = 1, vertex = {60, 0, 0} },
-  from_b = { body = 0, vertex = {20, 0, 0} },
-  to_b   = { body = 1, vertex = {80, 0, 0} },
-  from_c = { body = 0, vertex = {0, 20, 0} },
+  from = {
+    { body = 0, vertex = {0, 0, 0} },
+    { body = 0, vertex = {20, 0, 0} },
+    { body = 0, vertex = {0, 20, 0} },
+  },
+  to = {
+    { body = 1, vertex = {60, 0, 0} },
+    { body = 1, vertex = {80, 0, 0} },
+  },
 }
 bearcad.ui.view("top")
 bearcad.ui.wait(5)

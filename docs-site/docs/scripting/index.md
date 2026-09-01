@@ -24,6 +24,21 @@ document/import/export/screenshot operations the API exposes.
 Prefer the declarative API; reach for `bearcad.ui.*` only when the UI interaction itself
 is the point.
 
+## Calling convention
+
+Tables for options. A single value (handle, index, or name) when that's the whole argument.
+
+```lua
+bearcad.get(box)                    -- properties of a handle
+bearcad.get{ kind = "shape", index = 0 }
+bearcad.get("shape", 0)             -- the one positional form
+bearcad.element("shape", 0)         -- the lookup; also element(id) / element(name)
+bearcad.find("Block")               -- sugar for element-by-name; nil if missing
+bearcad.export_step("out.step", box)
+bearcad.ui.palette("view top")      -- run a command
+bearcad.ui.palette{ open = true }   -- the palette window
+```
+
 ```lua
 -- Declarative (preferred): describe the geometry directly.
 bearcad.new()

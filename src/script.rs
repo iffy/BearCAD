@@ -2826,14 +2826,11 @@ impl Instruction {
                     format!("bearcad.delete({{ {list} }})")
                 }
             }
-            Instruction::SetCommandPalette { open } => {
-                let verb = match open {
-                    Some(true) => "show",
-                    Some(false) => "hide",
-                    None => "toggle",
-                };
-                format!("bearcad.ui.palette({verb:?})")
-            }
+            Instruction::SetCommandPalette { open } => match open {
+                Some(true) => "bearcad.ui.palette{ open = true }".to_string(),
+                Some(false) => "bearcad.ui.palette{ open = false }".to_string(),
+                None => "bearcad.ui.palette()".to_string(),
+            },
             Instruction::SetSettingsWindow { open } => {
                 let verb = match open {
                     Some(true) => "show",
@@ -2894,10 +2891,8 @@ impl Instruction {
             Instruction::DetachTab { index: None } => "bearcad.ui.detach_tab()".to_string(),
             Instruction::DetachTab { index: Some(i) } => format!("bearcad.ui.detach_tab({i})"),
             Instruction::RunPaletteCommand { query, argument } => match argument {
-                Some(argument) => {
-                    format!("bearcad.ui.palette(\"run\", {query:?}, {argument:?})")
-                }
-                None => format!("bearcad.ui.palette(\"run\", {query:?})"),
+                Some(argument) => format!("bearcad.ui.palette({query:?}, {argument:?})"),
+                None => format!("bearcad.ui.palette({query:?})"),
             },
             Instruction::Move { x, y } => format!("bearcad.ui.move({x}, {y})"),
             Instruction::Click { x, y, mods } => {
@@ -4736,33 +4731,63 @@ fn move_op_lua(
             images.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
         ));
     }
-    // Naming both points makes it a snap translation (#648); the x/y/z components below are
-    // then ignored, so they're left out.
-    if let (Some(start), Some(end)) = (start_point_a, end_point_a) {
-        parts.push(format!("from = {}", move_point_lua(start)));
-        parts.push(format!("to = {}", move_point_lua(end)));
+    // `from`/`to` are mate-point lists (#1889). One pair stays a single point table.
+    let from = [
+        start_point_a.clone(),
+        start_point_b.clone(),
+        start_point_c.clone(),
+    ];
+    let to = [end_point_a.clone(), end_point_b.clone(), end_point_c.clone()];
+    let n = from
+        .iter()
+        .rposition(|p| p.is_some())
+        .map(|i| i + 1)
+        .unwrap_or(0)
+        .max(
+            to.iter()
+                .rposition(|p| p.is_some())
+                .map(|i| i + 1)
+                .unwrap_or(0),
+        );
+    let list = |points: &[Option<crate::model::MovePointRef>; 3], n: usize| {
+        (0..n)
+            .map(|i| match &points[i] {
+                Some(p) => move_point_lua(p),
+                None => "nil".to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if n <= 1 {
+        if let Some(start) = start_point_a {
+            parts.push(format!("from = {}", move_point_lua(start)));
+        }
+        if let Some(end) = end_point_a {
+            parts.push(format!("to = {}", move_point_lua(end)));
+        }
+    } else {
+        if from.iter().any(|p| p.is_some()) {
+            parts.push(format!("from = {{ {} }}", list(&from, n)));
+        }
+        if to.iter().any(|p| p.is_some()) {
+            parts.push(format!("to = {{ {} }}", list(&to, n)));
+        }
     }
-    // The optional B pair (#669) adds the rotation.
-    if let (Some(start), Some(end)) = (start_point_b, end_point_b) {
-        parts.push(format!("from_b = {}", move_point_lua(start)));
-        parts.push(format!("to_b = {}", move_point_lua(end)));
+    for (name, value) in [("x", tx), ("y", ty), ("z", tz)] {
+        if !value.trim().is_empty() {
+            parts.push(format!("{name} = \"{value}\""));
+        }
     }
-    // The optional C pair pins the spin B leaves free.
-    if let (Some(start), Some(end)) = (start_point_c, end_point_c) {
-        parts.push(format!("from_c = {}", move_point_lua(start)));
-        parts.push(format!("to_c = {}", move_point_lua(end)));
+    let mut rotate = Vec::new();
+    for (name, value) in [("x", rx), ("y", ry), ("z", rz)] {
+        if !value.trim().is_empty() {
+            rotate.push(format!("{name} = \"{value}\""));
+        }
     }
-    for (name, value) in [
-        ("x", tx),
-        ("y", ty),
-        ("z", tz),
-        ("rx", rx),
-        ("ry", ry),
-        ("rz", rz),
-        ("roll", roll_angle),
-        ("spin", face_spin),
-        ("gap", face_offset),
-    ] {
+    if !rotate.is_empty() {
+        parts.push(format!("rotate = {{ {} }}", rotate.join(", ")));
+    }
+    for (name, value) in [("roll", roll_angle), ("spin", face_spin), ("gap", face_offset)] {
         if !value.trim().is_empty() {
             parts.push(format!("{name} = \"{value}\""));
         }

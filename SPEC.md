@@ -1229,11 +1229,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `move_x`/`move_y`/`move_z` values (so scriptable/testable via the gizmo API, §8).
   Each free-translate arrow also carries a **value input floating beside its handle** (#648),
   so a component can be typed where it's being dragged. Scripting:
-  `bearcad.move_bodies{ bodies = {…}, images = {…}, x?, y?, z?, from?, to?, name? }` and
+  `bearcad.move_bodies{ bodies = {…}, images = {…}, x?, y?, z?, rotate?, from?, to?, name? }` and
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
-  on the body's mesh); `from_b`/`to_b` add the optional B pair, and so the rotation, and
-  `from_c`/`to_c` the optional C pair, and so the spin. `bearcad.ui.begin_move{ … }` takes the
+  on the body's mesh). `from`/`to` are lists of mate points: a second pair adds the rotation,
+  a third the spin. `rotate = { x, y, z }` is the free-mode turn. `bearcad.ui.begin_move{ … }` takes the
   same arguments but **arms the tool instead of committing** — the picks land in
   `creating_move` with the Move tool up, so a script can drive the live preview (the ghost,
   the A connector, the B and C paths) rather than only the finished operation. A point table takes
@@ -1956,7 +1956,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   or the same command in the command palette when a construction plane is selected (#1564)
   (or `bearcad.import_image("p.png")` /
   `bearcad.import_image{ path =, plane = }` /
-  `bearcad.ui.palette("run", "import image on this plane", "p.png")` with that plane selected)
+  `bearcad.ui.palette("import image on this plane", "p.png")` with that plane selected)
   embeds a PNG/JPEG in the document (base64 in
   the saved JSON, so files stay self-contained like imported meshes) and places it on a
   construction plane (default: plane 0), centered on the plane origin at an initial scale
@@ -4656,7 +4656,7 @@ retina machine renders the same composition at 2x, just sharper.
   shared action layer (§8) so palette, shortcuts, GUI buttons, and scripting stay in sync.
   A selected construction plane offers **Import image on this plane…** (#1564), the same
   action as the Elements-pane context menu: the GUI picks a file; a script passes the path
-  as the third value (`bearcad.ui.palette("run", "import image on this plane", "p.png")`).
+  as the second value (`bearcad.ui.palette("import image on this plane", "p.png")`).
 - Coverage includes **every modeling tool** — the sketch tools plus Extrude, Chamfer, Fillet,
   Offset, Projection, Loft, Revolve, Sweep, Combine, Move, Mirror, Repeat, Slice, and Text (each
   `SetTool`) — and the **Selection Exploder** ("Explode Selection Under Cursor", #576), which the
@@ -4671,7 +4671,7 @@ retina machine renders the same composition at 2x, just sharper.
   because the palette is already the place you are typing. State lives on
   `CommandPaletteState::pending`/`argument`, cleared on open and close so a stale prompt can
   never be resumed. Scripted as a third value:
-  `bearcad.ui.palette("run", "mcmaster", "socket head screw")`.
+  `bearcad.ui.palette("mcmaster", "socket head screw")`.
   First used by **Search McMaster-Carr**, which opens the catalog window (#1022) with the
   search already run for whatever was typed.
 

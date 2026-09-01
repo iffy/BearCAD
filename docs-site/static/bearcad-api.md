@@ -122,7 +122,8 @@ Anywhere a size is accepted, an expression string is too.
 
 ```
 bearcad.count(kind)                -- canonical: line, circle, sketch, constraint,
-bearcad.get{ kind, index }         --   plane, extrusion, revolution, sweep,
+bearcad.get(handle|{ kind, index }|kind, index)
+                                   --   plane, extrusion, revolution, sweep,
                                    --   loft, combine, move, mirror, repeat, slice, shell,
                                    --   edge_treatment, sketch_offset, sketch_mirror,
                                    --   sketch_repeat, sketch_slice, sketch_chamfer, shape,
@@ -132,9 +133,9 @@ bearcad.get{ kind, index }         --   plane, extrusion, revolution, sweep,
                                    --   tracing_image, sketch_fillet, unit, offset.
                                    --   not chamfer/fillet (use edge_treatment or sketch_chamfer).
                                    --   `count` and `get` take the same set.
-bearcad.find("name")
+bearcad.find("name")               -- sugar for element-by-name; nil if missing
 bearcad.set_name(el, "name")
-bearcad.element("line", i)         -- or bearcad.element(id) / bearcad.element(name)
+bearcad.element("line", i)         -- the lookup; also element(id) / element(name)
 bearcad.id(el)                     -- el:id(): a stable id, unique and never reused
 bearcad.line_endpoints(i)          -- x0, y0, x1, y1
 bearcad.image_corners(i)           -- tracing image quad in world mm, live Move included
@@ -305,7 +306,7 @@ bearcad.edit_fillet{ index, edge, edges, body, extrusion, primitive, radius }
 bearcad.edit_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
 bearcad.edit_loft{ index, circle, circles, polygon, polygons, bodies, body, name }
 bearcad.edit_mirror{ index, plane, bodies, output }
-bearcad.edit_move{ index, bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
+bearcad.edit_move{ index, bodies, images, x, y, z, rotate, rx, ry, rz, roll, flip, spin, gap, from, to }   -- from/to are mate-point lists; rotate = { x, y, z }
 bearcad.edit_parameter{ name, private, min, max, step, rename }
 bearcad.edit_repeat{ index, bodies, axis, around, flip, mode, count, spacing, length, to }
 bearcad.edit_revolve{ index, circle, circles, polygon, axis, angle, revolutions, pitch, offset, gap, symmetric, bodies, body, name }
@@ -318,7 +319,7 @@ bearcad.edit_sketch_repeat{ index, sketch, lines, circles, angle, dir, mode, cou
 bearcad.edit_sketch_slice{ index, lines, circles, faces, cutters }
 bearcad.edit_slice{ index, bodies, cutters, extend }
 bearcad.edit_sweep{ index, circle, circles, polygon, path, bodies, body, name }
-bearcad.element(kind, index)   -- or bearcad.element(id_or_name)
+bearcad.element(kind, index)   -- or bearcad.element(id_or_name); the lookup
 bearcad.exit_sketch()
 bearcad.export_3mf(path, body?)
 bearcad.export_drawing_pdf{ drawing, path }
@@ -332,8 +333,8 @@ bearcad.extrude_face{ to, distance, body, name }
 bearcad.fillet{ body, edges, edge, extrusion, shape, primitive, r, radius, diameter }
 bearcad.fillet_edge{ body, edges, edge, extrusion, shape, primitive, r, radius, diameter }
 bearcad.fillet_vertex{ points, point, radius }
-bearcad.find(name)
-bearcad.get{ kind, index }
+bearcad.find(name)   -- sugar for bearcad.element(name); nil if missing
+bearcad.get(handle|{ kind, index }|kind, index)
 bearcad.globals()
 bearcad.id(element)   -- the element's stable, never-reused id
 bearcad.image_corners(index)
@@ -350,7 +351,7 @@ bearcad.loft{ profiles, circle, circles, polygon, polygons, bodies, body, name }
 bearcad.material{ name, color, bodies }   -- no color + an existing name applies that material
 bearcad.mirror_bodies{ plane, bodies, output, name }
 bearcad.mirror_sketch{ sketch, line, lines, circles }
-bearcad.move_bodies{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c, name }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
+bearcad.move_bodies{ bodies, images, x, y, z, rotate, rx, ry, rz, roll, flip, spin, gap, from, to, name }   -- from/to are mate-point lists; rotate = { x, y, z }
 bearcad.move_to_component{ kind, index, component }
 bearcad.new()
 bearcad.offset_sketch{ sketch, lines, circles, distance, construction }
@@ -417,7 +418,7 @@ bearcad.ui.auto_zoom(on?)
 bearcad.ui.begin_combine{ op, a, b, keep_b }
 bearcad.ui.begin_edit_section_plane{ view, cut }
 bearcad.ui.begin_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }   -- face = { moving, fixed, flip?, offset?, spin? }
-bearcad.ui.begin_move{ bodies, images, x, y, z, rx, ry, rz, roll, flip, spin, gap, from, to, from_b, to_b, from_c, to_c }   -- from/to are { body = i, vertex = {x,y,z} } | { body = i, edge = {{x,y,z},{x,y,z}} } | { origin = true }
+bearcad.ui.begin_move{ bodies, images, x, y, z, rotate, rx, ry, rz, roll, flip, spin, gap, from, to }   -- from/to are mate-point lists; rotate = { x, y, z }
 bearcad.ui.camera{ yaw, pitch, distance, target, projection, shading, ground }?   -- no fields = read
 bearcad.ui.changelog(verb?)
 bearcad.ui.click(x, y, { shift?, ctrl?, cmd? }?)   -- or click(rect_or_orb [, mods]); rects/orbs are window px
@@ -477,7 +478,7 @@ bearcad.ui.move_world(x, y, z)
 bearcad.ui.new_tab{ same }?
 bearcad.ui.orbit(dx, dy)
 bearcad.ui.os_open(path)
-bearcad.ui.palette(…)
+bearcad.ui.palette(query, argument?)   -- or palette{ open = true|false }
 bearcad.ui.pan(dx, dy)
 bearcad.ui.pane(pane, visible)
 bearcad.ui.pane_rect(pane)

@@ -10,7 +10,7 @@ bearcad.ui.pane("parameters", "hide")
 bearcad.ui.wait(5)
 
 -- Open the palette and pick the command by typing enough of it to be the top match.
-bearcad.ui.palette("show")
+bearcad.ui.palette{ open = true }
 bearcad.ui.wait(5)
 bearcad.ui.type("mcmaster")
 bearcad.ui.wait(5)
