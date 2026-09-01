@@ -54,6 +54,14 @@ fn elements_list_row_rects_id() -> egui::Id {
     egui::Id::new("elements_list_row_rects")
 }
 
+/// The id of one Elements-list row (#1911). Explicit, and keyed only to the node, so a
+/// neighbour that mounts in one of egui's passes and not the other cannot renumber it —
+/// `ui.horizontal` / `id_salt` mix in the parent's running counter, which is what made the
+/// same row rect report two ids and log a multipass clash.
+fn elements_row_id(node: HierarchyNode) -> egui::Id {
+    egui::Id::new(("elements_row", node))
+}
+
 /// Where the List view drew each of its rows this frame (#1712), by label, in screen points.
 /// Scripts read these through `bearcad.ui.elements_row_rect(label)` so a test can click a row
 /// where it really is. Empty whenever the pane is showing the Graph.
@@ -4868,6 +4876,12 @@ pub fn show_pane(
                 .id_salt("elements_list")
                 .show(ui, |ui| {
                 for (node, base_depth) in rows {
+                    // Explicit id, not `ui.horizontal`'s auto salt: a row that appears or
+                    // vanishes between egui's two passes must not renumber the ones below it
+                    // (#1911). Graph rows already name themselves this way.
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(elements_row_id(node)),
+                        |ui| {
                     // Component rows render inline (#423): triangle, eye, icon, name; they
                     // collapse their contents and accept row drops.
                     if let HierarchyNode::Component(ci) = node {
@@ -4901,12 +4915,12 @@ pub fn show_pane(
                             on_export_component_3mf,
                             on_add_to_drawing,
                         );
-                        continue;
+                        return;
                     }
                     // Section headers (#1205/#1671): collapse triangle + label, no eye.
                     if is_section_node(node) {
                         show_section_row(ui, doc, node, base_depth, section_collapsed);
-                        continue;
+                        return;
                     }
                     // When editing a sketch, indent that sketch's own components one level so they
                     // read as belonging to it (#244).
@@ -4990,6 +5004,8 @@ pub fn show_pane(
                         row_top..=ui.cursor().top(),
                     );
                     list_rows.push((node_label(doc, node), row_rect));
+                        },
+                    );
                 }
                 set_elements_list_row_rects(ui.ctx(), list_rows);
             });
@@ -8042,6 +8058,62 @@ label_hidden: false,
         assert!(
             ids[1..].windows(2).all(|w| w[0] == w[1]),
             "list-row widget id must not renumber after settle: {ids:?}"
+        );
+    }
+
+    /// #1911: an Elements-list row is mounted on an **explicit** id keyed to its node, not
+    /// `ui.horizontal`'s auto salt. A neighbour that only sometimes mounts (hover chrome,
+    /// a filter row, egui's second pass) used to shift every later row onto a rect the row
+    /// above occupied the pass before.
+    #[test]
+    fn elements_list_row_id_does_not_depend_on_its_neighbours() {
+        use crate::model::body_key_for_slot as bkey;
+        assert_eq!(
+            super::elements_row_id(HierarchyNode::Body(bkey(0))),
+            super::elements_row_id(HierarchyNode::Body(bkey(0)))
+        );
+        assert_ne!(
+            super::elements_row_id(HierarchyNode::Body(bkey(0))),
+            super::elements_row_id(HierarchyNode::Body(bkey(1)))
+        );
+
+        let ctx = egui::Context::default();
+        let ids = |with_sibling: bool| {
+            let mut explicit = None;
+            let mut salted = None;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                if with_sibling {
+                    let _ = ui.button("a row that only sometimes mounts");
+                }
+                explicit = Some(
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .id(super::elements_row_id(HierarchyNode::Body(bkey(0)))),
+                        |ui| ui.button("Cuboid 0").id,
+                    )
+                    .inner,
+                );
+                salted = Some(
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .id_salt(("elements_row", HierarchyNode::Body(bkey(0)))),
+                        |ui| ui.button("Cuboid 0").id,
+                    )
+                    .inner,
+                );
+            });
+            (explicit.expect("explicit"), salted.expect("salted"))
+        };
+        let (explicit_a, salted_a) = ids(false);
+        let (explicit_b, salted_b) = ids(true);
+        assert_eq!(
+            explicit_a, explicit_b,
+            "an explicit row id is the same either way"
+        );
+        assert_ne!(
+            salted_a, salted_b,
+            "which a salted child ui is not — egui mixes in the sibling counter, so the salt \
+             alone would have left the clash in place"
         );
     }
 
