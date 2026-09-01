@@ -10,6 +10,17 @@ bearcad.ui.wait(6)
 assert(bearcad.ui.context_row_rect("drawing_default_style"),
   "with nothing selected the pane offers the page's default style")
 
+-- #1914: Dimension is for measuring, not for choosing the style of views that haven't
+-- been placed yet — hide the row while that tool is active.
+bearcad.ui.tool("dimension")
+bearcad.ui.wait(6)
+assert(not bearcad.ui.context_row_rect("drawing_default_style"),
+  "the Dimension tool hides Drawing New views")
+bearcad.ui.tool("select")
+bearcad.ui.wait(6)
+assert(bearcad.ui.context_row_rect("drawing_default_style"),
+  "Select puts the page's default style back")
+
 bearcad.drawing_style{ drawing = d, style = "colorful" }
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
 bearcad.ui.wait(6)
