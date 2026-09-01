@@ -1076,6 +1076,39 @@ fn resolve_element(lua: &Lua, value: Value) -> mlua::Result<SceneElement> {
     }
 }
 
+/// `get(handle)`, `get{ kind, index }`, or `get(kind, index)` (#1893).
+/// The table is kept so kinds that take extra keys (`drawing`, `view`) can read them.
+fn parse_get_target(lua: &Lua, args: MultiValue) -> mlua::Result<(String, usize, Option<Table>)> {
+    let args = args.into_vec();
+    let lua_index = |v: &Value| -> mlua::Result<usize> {
+        match v {
+            Value::Integer(i) if *i >= 0 => Ok(*i as usize),
+            Value::Number(n) if *n >= 0.0 && n.is_finite() => Ok(n.round() as usize),
+            other => Err(mlua::Error::external(format!(
+                "get index must be a non-negative integer, got {other:?}"
+            ))),
+        }
+    };
+    match args.as_slice() {
+        [Value::Table(t)] if t.contains_key("kind")? => {
+            let kind: String = t.get("kind")?;
+            Ok((kind, t.ordinal_req("index")?, Some(t.clone())))
+        }
+        [Value::String(kind), index] => {
+            Ok((kind.to_str()?.to_string(), lua_index(index)?, None))
+        }
+        [single] => {
+            let element = resolve_element(lua, single.clone())?;
+            let kind = element_kind_name(element.clone()).to_string();
+            let index = ordinal_of_element(lua, &element)?.0;
+            Ok((kind, index, None))
+        }
+        _ => Err(mlua::Error::external(
+            "get takes a handle, { kind, index }, or (kind, index)",
+        )),
+    }
+}
+
 fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
     if let Ok(name) = table.get::<String>("name") {
         let tick = lua
@@ -2849,10 +2882,11 @@ fn parse_revolve_axis(
 /// for the expression fields and stringified. Unknown keys are rejected (#1798) so a
 /// typo like `dy` can't silently move nothing.
 /// Options every move-op call shares. `name` only on the committed `move_bodies`;
-/// `index` only on `edit_move`.
+/// `index` only on `edit_move`. `from`/`to` are mate-point lists (#1889); `rx`/`ry`/`rz`
+/// remain aliases for `rotate = { x, y, z }`.
 const MOVE_OP_KEYS: &[&str] = &[
-    "bodies", "images", "x", "y", "z", "rx", "ry", "rz", "roll", "flip", "spin", "gap", "from",
-    "to", "from_b", "to_b", "from_c", "to_c",
+    "bodies", "images", "x", "y", "z", "rotate", "rx", "ry", "rz", "roll", "flip", "spin", "gap",
+    "from", "to",
 ];
 
 #[allow(clippy::type_complexity)]
@@ -2895,24 +2929,61 @@ fn parse_move_op_args(
         })
     };
     let (tx, ty, tz) = (expr("x")?, expr("y")?, expr("z")?);
-    // Free-mode turns about the world axes (#1076), in degrees.
-    let (rx, ry, rz) = (expr("rx")?, expr("ry")?, expr("rz")?);
+    // Free-mode turns about the world axes (#1076), in degrees. `rotate = { x, y, z }`
+    // is the readable form (#1889); `rx`/`ry`/`rz` stay as aliases.
+    let (mut rx, mut ry, mut rz) = (expr("rx")?, expr("ry")?, expr("rz")?);
+    if let Some(rotate) = opts.get::<Option<Table>>("rotate")? {
+        let axis = |name: &str, idx: i32| -> mlua::Result<Option<String>> {
+            let named = match rotate.get::<Value>(name)? {
+                Value::Nil => None,
+                Value::String(s) => Some(s.to_str()?.to_string()),
+                Value::Integer(i) => Some(i.to_string()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => {
+                    return Err(mlua::Error::external(format!(
+                        "move `rotate.{name}` must be an expression string or a number"
+                    )))
+                }
+            };
+            if named.is_some() {
+                return Ok(named);
+            }
+            match rotate.get::<Value>(idx)? {
+                Value::Nil => Ok(None),
+                Value::String(s) => Ok(Some(s.to_str()?.to_string())),
+                Value::Integer(i) => Ok(Some(i.to_string())),
+                Value::Number(n) => Ok(Some(n.to_string())),
+                _ => Err(mlua::Error::external(format!(
+                    "move `rotate[{idx}]` must be an expression string or a number"
+                ))),
+            }
+        };
+        if let Some(v) = axis("x", 1)? {
+            rx = v;
+        }
+        if let Some(v) = axis("y", 2)? {
+            ry = v;
+        }
+        if let Some(v) = axis("z", 3)? {
+            rz = v;
+        }
+    }
     // The third pair as an angle (#1078).
     let roll_angle = expr("roll")?;
     // Face Snap's side flip and its turn about the target normal (#1077).
     let face_flip = opts.get::<Option<bool>>("flip")?.unwrap_or(false);
     let face_spin = expr("spin")?;
     let face_offset = expr("gap")?;
-    // Naming both points makes the translation a **snap** (#648/#649/#650): the move lands
-    // `from` exactly on `to`, and x/y/z are ignored.
-    let start_point_a = parse_move_point(lua, opts.get::<Value>("from")?, "from")?;
-    let end_point_a = parse_move_point(lua, opts.get::<Value>("to")?, "to")?;
-    // The optional B pair (#669) adds the rotation about end point A.
-    let start_point_b = parse_move_point(lua, opts.get::<Value>("from_b")?, "from_b")?;
-    let end_point_b = parse_move_point(lua, opts.get::<Value>("to_b")?, "to_b")?;
-    // The optional C pair pins the spin about `end A → end B` that B leaves free.
-    let start_point_c = parse_move_point(lua, opts.get::<Value>("from_c")?, "from_c")?;
-    let end_point_c = parse_move_point(lua, opts.get::<Value>("to_c")?, "to_c")?;
+    // `from`/`to` are lists of mate points (#1889): [A] translation, [A,B] rotation,
+    // [A,B,C] spin. A single point table is still the one-point snap.
+    let from = parse_move_points(lua, opts.get::<Value>("from")?, "from")?;
+    let to = parse_move_points(lua, opts.get::<Value>("to")?, "to")?;
+    let start_point_a = from[0].clone();
+    let end_point_a = to[0].clone();
+    let start_point_b = from[1].clone();
+    let end_point_b = to[1].clone();
+    let start_point_c = from[2].clone();
+    let end_point_c = to[2].clone();
     Ok((
         targets,
         images,
@@ -2933,6 +3004,37 @@ fn parse_move_op_args(
         start_point_c,
         end_point_c,
     ))
+}
+
+/// `from`/`to` as a mate-point list, or one point (the A pair).
+fn parse_move_points(
+    lua: &Lua,
+    value: Value,
+    what: &str,
+) -> mlua::Result<[Option<crate::model::MovePointRef>; 3]> {
+    match value {
+        Value::Nil => Ok([None, None, None]),
+        Value::Table(t) => {
+            let n = t.raw_len();
+            if n == 0 {
+                return Ok([parse_move_point(lua, Value::Table(t), what)?, None, None]);
+            }
+            if n > 3 {
+                return Err(mlua::Error::external(format!(
+                    "move `{what}` takes at most three mate points"
+                )));
+            }
+            let mut out = [None, None, None];
+            for i in 1..=n {
+                out[(i as usize) - 1] =
+                    parse_move_point(lua, t.get(i)?, &format!("{what}[{i}]"))?;
+            }
+            Ok(out)
+        }
+        _ => Err(mlua::Error::external(format!(
+            "move `{what}` must be a mate point or a list of them"
+        ))),
+    }
 }
 
 /// A [`crate::model::MovePointRef`] from a `{ body = i, vertex = {x,y,z} }` or
@@ -5325,9 +5427,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "get",
-        lua.create_function(|lua, opts: Table| {
-            let kind: String = opts.get("kind")?;
-            let index: usize = opts.ordinal_req("index")?;
+        lua.create_function(|lua, args: MultiValue| {
+            let (kind, index, opts) = parse_get_target(lua, args)?;
             let tick = lua
                 .app_data_ref::<ScriptTickData>()
                 .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
@@ -5622,6 +5723,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     // A drawing view's circle Ø dimension (#1774): where its label was dragged
                     // to — `0.0` is the auto-placed default. `index` is the ordinal among the
                     // view's shown circle dimensions.
+                    let opts = opts.as_ref().ok_or_else(|| {
+                        mlua::Error::external(
+                            "get{ kind = \"circle_dimension\", index, drawing, view }",
+                        )
+                    })?;
                     let drawing: usize = opts.ordinal_req("drawing")?;
                     let view: usize = opts.ordinal_req("view")?;
                     let offset = doc
@@ -5642,6 +5748,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "point_dimension" => {
                     // A drawing view's free point-to-point dimension (#1774): what it measures
                     // and where its label was dragged to.
+                    let opts = opts.as_ref().ok_or_else(|| {
+                        mlua::Error::external(
+                            "get{ kind = \"point_dimension\", index, drawing, view }",
+                        )
+                    })?;
                     let drawing: usize = opts.ordinal_req("drawing")?;
                     let view: usize = opts.ordinal_req("view")?;
                     let Some(dim) = doc
@@ -8091,34 +8202,37 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 return unsafe { tick.exec(Instruction::SetCommandPalette { open: None }) };
             }
             match args.first() {
-                Some(Value::String(s)) if s.to_str()? == "run" => {
-                    let query = match args.get(1) {
-                        Some(Value::String(s)) => s.to_str()?.to_string(),
-                        _ => return Err(mlua::Error::external("palette run requires query")),
-                    };
-                    // A command that asks for an argument (#1022) takes it as the third
-                    // value: `bearcad.ui.palette("run", "mcmaster", "socket head screw")`.
-                    let argument = match args.get(2) {
-                        Some(Value::String(s)) => Some(s.to_str()?.to_string()),
-                        _ => None,
-                    };
-                    unsafe { tick.exec(Instruction::RunPaletteCommand { query, argument }) }
-                }
-                Some(Value::String(s)) => {
-                    let verb = s.to_str()?.to_ascii_lowercase();
-                    let open = match verb.as_str() {
-                        "show" | "open" => Some(true),
-                        "hide" | "close" => Some(false),
-                        "toggle" => None,
+                Some(Value::Table(t)) => {
+                    check_keys(t, "palette", &["open"])?;
+                    let open = match t.get::<Value>("open")? {
+                        Value::Nil => None,
+                        Value::Boolean(b) => Some(b),
                         other => {
                             return Err(mlua::Error::external(format!(
-                                "unknown palette action '{other}'"
+                                "palette `open` must be a boolean, got {other:?}"
                             )))
                         }
                     };
                     unsafe { tick.exec(Instruction::SetCommandPalette { open }) }
                 }
-                _ => Err(mlua::Error::external("palette expects a string action")),
+                Some(Value::String(s)) => {
+                    // `palette(query)` runs the best-matching command (#1893). A second
+                    // string is the argument commands like McMaster ask for.
+                    let query = s.to_str()?.to_string();
+                    let argument = match args.get(1) {
+                        Some(Value::String(s)) => Some(s.to_str()?.to_string()),
+                        Some(Value::Nil) | None => None,
+                        _ => {
+                            return Err(mlua::Error::external(
+                                "palette argument must be a string",
+                            ))
+                        }
+                    };
+                    unsafe { tick.exec(Instruction::RunPaletteCommand { query, argument }) }
+                }
+                _ => Err(mlua::Error::external(
+                    "palette takes a query string or { open = true|false }",
+                )),
             }
         })?,
     )?;
@@ -12240,6 +12354,29 @@ pub mod tests {
         );
     }
 
+    /// #1893: `get` reads properties; a handle or `(kind, index)` is enough — `{ kind, index }`
+    /// stays the options-table form. `element` is the lookup; `find(name)` is sugar for a name.
+    #[test]
+    fn lua_get_takes_a_handle_or_kind_and_index() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 8, height = 6, name = "Block" }
+            local shape = bearcad.element("shape", 0)
+            local by_table = bearcad.get{ kind = "shape", index = 0 }
+            local by_args = bearcad.get("shape", 0)
+            local by_handle = bearcad.get(shape)
+            assert(by_args.kind == "cuboid" and math.abs(by_args.width - 10) < 1e-3)
+            assert(by_handle.kind == by_table.kind and math.abs(by_handle.width - by_table.width) < 1e-3)
+            assert(by_args.name == "Block" and by_handle.name == "Block")
+
+            local found = bearcad.find("Block")
+            assert(found:id() == bearcad.element("Block"):id(), "find is element-by-name")
+            assert(bearcad.get(found).name == "Block")
+            "#,
+        );
+    }
+
     /// #1662: the two inspection calls take the same kind names — the lists used to be
     /// written out twice and had drifted apart (`drawing` and `joint` counted but did not
     /// read, and neither knew about primitive shapes).
@@ -13024,6 +13161,45 @@ pub mod tests {
         );
     }
 
+    /// #1893: `palette(query)` runs a command; `palette{ open = true }` is the window.
+    #[test]
+    fn lua_palette_query_runs_and_open_toggles_the_window() {
+        let state = run_lua(
+            r#"
+            bearcad.ui.palette{ open = true }
+            "#,
+        );
+        assert!(state.command_palette.open, "palette{{ open = true }} shows the window");
+
+        let closed = run_lua(
+            r#"
+            bearcad.ui.palette{ open = true }
+            bearcad.ui.palette{ open = false }
+            "#,
+        );
+        assert!(!closed.command_palette.open, "palette{{ open = false }} hides it");
+
+        let viewing = run_lua(
+            r#"
+            bearcad.ui.palette("view top")
+            "#,
+        );
+        assert!(
+            viewing.cam.is_transitioning(),
+            "palette(query) runs the matching command"
+        );
+
+        let leftover = run_lua(
+            r#"
+            pcall(bearcad.ui.palette, "run", "view top")
+            "#,
+        );
+        assert!(
+            !leftover.cam.is_transitioning(),
+            "palette(\"run\", query) is not the run verb"
+        );
+    }
+
     /// #1564: selecting a construction plane offers "Import image on this plane" in
     /// the command palette; running it with a path (the scripted form) places the
     /// image on that plane. Without a plane selected the command is not offered.
@@ -13034,13 +13210,13 @@ pub mod tests {
             r#"
             bearcad.new()
             bearcad.select{{ kind = "plane", index = 1 }}
-            bearcad.ui.palette("run", "import image on this plane", {path:?})
+            bearcad.ui.palette("import image on this plane", {path:?})
             assert(bearcad.count("image") == 1, "imported via palette")
             local img = bearcad.get{{ kind = "image", index = 0 }}
             assert(img.plane == 1, "should land on the selected XZ plane, got " .. tostring(img.plane))
 
             bearcad.clear_selection()
-            bearcad.ui.palette("run", "import image on this plane", {path:?})
+            bearcad.ui.palette("import image on this plane", {path:?})
             assert(bearcad.count("image") == 1, "no extra import without a selected plane")
             "#
         ));
@@ -13099,7 +13275,7 @@ pub mod tests {
               .. (#sel > 0 and (sel[1].kind .. " " .. tostring(sel[1].index)) or "nothing"))
 
             bearcad.select{{ kind = "plane", index = 2 }}
-            bearcad.ui.palette("run", "import image on this plane", {path:?})
+            bearcad.ui.palette("import image on this plane", {path:?})
             sel = bearcad.selection()
             assert(#sel == 1 and sel[1].kind == "image" and sel[1].index == 2,
               "palette import-on-this-plane should select only the new image, got "
@@ -19901,8 +20077,63 @@ pub mod tests {
         );
     }
 
-    /// #669: `from_b`/`to_b` add the rotation — the bodies turn about end point A so start
-    /// point B lands on end point B.
+    /// #1889: `from`/`to` are arrays of mate points; `rotate = { x, y, z }` is the free turn.
+    /// `from_b`/`to_b`/`from_c`/`to_c` are gone.
+    #[test]
+    fn lua_move_from_to_are_arrays_and_rotate_is_a_table() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.move_bodies{
+                bodies = {0},
+                from = {
+                    { body = 0, vertex = {0, 0, 0} },
+                    { body = 0, vertex = {10, 0, 0} },
+                },
+                to = {
+                    { body = 0, vertex = {0, 0, 0} },
+                    { body = 0, vertex = {0, 10, 0} },
+                },
+            }
+            "#,
+        );
+        let op = &state.doc.move_ops.values().nth(0).unwrap();
+        assert!(op.has_snap_rotation(), "a second from/to pair rotates");
+        let m = crate::extrude::move_op_transform(&state.doc, op).expect("transform");
+        let landed = m.transform_point3(glam::Vec3::new(10.0, 0.0, 0.0));
+        assert!(
+            (landed - glam::Vec3::new(0.0, 10.0, 0.0)).length() < 1e-2,
+            "start B lands on end B, got {landed:?}"
+        );
+
+        let turned = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.move_bodies{ bodies = {0}, x = 10, rotate = { z = 90 } }
+            "#,
+        );
+        let op = turned.doc.move_ops.values().next().unwrap();
+        assert_eq!(op.rz, "90");
+
+        let state = run_lua(
+            r#"
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            local ok, err = pcall(bearcad.move_bodies, {
+                bodies = {0},
+                from_b = { body = 0, vertex = {10, 0, 0} },
+            })
+            assert(not ok, "from_b must be gone")
+            err = tostring(err)
+            assert(err:find("from_b"), "the error should name from_b: " .. err)
+            "#,
+        );
+        assert_eq!(state.doc.move_ops.len(), 0);
+    }
+
+    /// #669: a second `from`/`to` pair adds the rotation — the bodies turn about end
+    /// point A so start point B lands on end point B.
     #[test]
     fn lua_move_b_pair_adds_the_rotation() {
         let state = run_lua(
@@ -19913,10 +20144,14 @@ pub mod tests {
             -- (10, 0, 0) swings onto (0, 10, 0), both 10 from the pivot.
             bearcad.move_bodies{
                 bodies = {0},
-                from   = { body = 0, vertex = {0, 0, 0} },
-                to     = { body = 0, vertex = {0, 0, 0} },
-                from_b = { body = 0, vertex = {10, 0, 0} },
-                to_b   = { body = 0, vertex = {0, 10, 0} },
+                from = {
+                    { body = 0, vertex = {0, 0, 0} },
+                    { body = 0, vertex = {10, 0, 0} },
+                },
+                to = {
+                    { body = 0, vertex = {0, 0, 0} },
+                    { body = 0, vertex = {0, 10, 0} },
+                },
             }
             "#,
         );
@@ -19941,10 +20176,10 @@ pub mod tests {
         assert!(!translate_only.doc.move_ops.values().nth(0).unwrap().has_snap_rotation());
     }
 
-    /// `from_c`/`to_c` pin the spin about `end A → end B` that the B pair leaves free.
+    /// A third `from`/`to` pair pins the spin about `end A → end B` that the B pair leaves free.
     #[test]
     fn lua_move_c_pair_pins_the_remaining_spin() {
-        let source = |c: &str| {
+        let source = |c_from: &str, c_to: &str| {
             format!(
                 r#"
             bearcad.rect{{ width = 10, height = 10 }}
@@ -19953,17 +20188,22 @@ pub mod tests {
             -- about the X axis; C is what decides that turn.
             bearcad.move_bodies{{
                 bodies = {{0}},
-                from   = {{ body = 0, vertex = {{0, 0, 0}} }},
-                to     = {{ body = 0, vertex = {{0, 0, 0}} }},
-                from_b = {{ body = 0, vertex = {{10, 0, 0}} }},
-                to_b   = {{ body = 0, vertex = {{10, 0, 0}} }},
-                {c}
+                from = {{
+                    {{ body = 0, vertex = {{0, 0, 0}} }},
+                    {{ body = 0, vertex = {{10, 0, 0}} }},
+                    {c_from}
+                }},
+                to = {{
+                    {{ body = 0, vertex = {{0, 0, 0}} }},
+                    {{ body = 0, vertex = {{10, 0, 0}} }},
+                    {c_to}
+                }},
             }}
             "#
             )
         };
         // Without C the spin is undecided, so nothing turns.
-        let free = run_lua(&source(""));
+        let free = run_lua(&source("", ""));
         assert!(!free.doc.move_ops.values().nth(0).unwrap().has_snap_roll());
         let m = crate::extrude::move_op_transform(&free.doc, &free.doc.move_ops.values().nth(0).unwrap()).unwrap();
         let corner = glam::Vec3::new(0.0, 0.0, 10.0);
@@ -19971,8 +20211,8 @@ pub mod tests {
 
         // With C, the top corner swings a quarter turn onto +10 Y.
         let state = run_lua(&source(
-            "from_c = { body = 0, vertex = {0, 0, 10} },
-             to_c   = { body = 0, vertex = {0, 10, 0} },",
+            "{ body = 0, vertex = {0, 0, 10} }",
+            "{ body = 0, vertex = {0, 10, 0} }",
         ));
         let op = &state.doc.move_ops.values().nth(0).unwrap();
         assert!(op.has_snap_roll(), "both C points pin the spin");
@@ -20010,12 +20250,16 @@ pub mod tests {
             bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 10 }
             bearcad.ui.begin_move{
                 bodies = {1},
-                from   = { body = 1, vertex = {40, 0, 0} },
-                to     = { body = 0, vertex = {0, 0, 10} },
-                from_b = { body = 1, vertex = {50, 0, 0} },
-                to_b   = { body = 0, on_edge = {10, 0, 10} },
-                from_c = { body = 1, vertex = {40, 0, 10} },
-                to_c   = { body = 0, on_edge = {0, 10, 10} },
+                from = {
+                    { body = 1, vertex = {40, 0, 0} },
+                    { body = 1, vertex = {50, 0, 0} },
+                    { body = 1, vertex = {40, 0, 10} },
+                },
+                to = {
+                    { body = 0, vertex = {0, 0, 10} },
+                    { body = 0, on_edge = {10, 0, 10} },
+                    { body = 0, on_edge = {0, 10, 10} },
+                },
             }
             "#,
         );
@@ -20644,10 +20888,14 @@ pub mod tests {
             bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
             bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
             bearcad.move_bodies{ bodies = {0},
-              from = { body = 0, vertex = {0, 0, 0} },
-              to   = { body = 1, vertex = {40, 0, 0} },
-              from_b = { body = 0, vertex = {10, 0, 0} },
-              to_b = { body = 1, vertex = {50, 0, 0} },
+              from = {
+                { body = 0, vertex = {0, 0, 0} },
+                { body = 0, vertex = {10, 0, 0} },
+              },
+              to = {
+                { body = 1, vertex = {40, 0, 0} },
+                { body = 1, vertex = {50, 0, 0} },
+              },
               roll = 90 }
             "#,
         );
@@ -20686,11 +20934,23 @@ pub mod tests {
         assert!(crate::extrude::move_op_transform(&state.doc, op).is_some());
 
         // A B pair means the turn is coming from points, which is Point Snap.
-        let with_b = run_lua(&script(
-            r#",
-                  from_b = { body = 0, vertex = {0, 0, 5} },
-                  to_b = { body = 1, vertex = {40, 0, 5} }"#,
-        ));
+        let with_b = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.rect{ x = 40, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            bearcad.move_bodies{ bodies = {0},
+              from = {
+                { body = 0, on_face = {5, 5, 5}, normal = {0, 0, 1} },
+                { body = 0, vertex = {0, 0, 5} },
+              },
+              to = {
+                { body = 1, on_face = {40, 5, 2.5}, normal = {-1, 0, 0} },
+                { body = 1, vertex = {40, 0, 5} },
+              } }
+            "#,
+        );
         assert_eq!(
             with_b.doc.move_ops.values().next().unwrap().translate_mode,
             crate::model::MoveTranslateMode::PointSnap

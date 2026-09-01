@@ -25,7 +25,7 @@ bearcad.ui.wait(2)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(1)
 
-bearcad.ui.palette("show")
+bearcad.ui.palette{ open = true }
 bearcad.ui.wait(2)
 bearcad.ui.screenshot(out, true)
 

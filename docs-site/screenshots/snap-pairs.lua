@@ -88,10 +88,14 @@ shoot("snap-pairs-a")
 plate, slab = scene()
 bearcad.ui.begin_move{
   bodies = { slab },
-  from   = { body = slab, vertex = START_A },
-  to     = { body = plate, on_edge = END_A },
-  from_b = { body = slab, vertex = START_B },
-  to_b   = { body = plate, on_edge = END_B },
+  from = {
+    { body = slab, vertex = START_A },
+    { body = slab, vertex = START_B },
+  },
+  to = {
+    { body = plate, on_edge = END_A },
+    { body = plate, on_edge = END_B },
+  },
 }
 shoot("snap-pairs-ab")
 
@@ -100,12 +104,16 @@ shoot("snap-pairs-ab")
 plate, slab = scene()
 bearcad.ui.begin_move{
   bodies = { slab },
-  from   = { body = slab, vertex = START_A },
-  to     = { body = plate, on_edge = END_A },
-  from_b = { body = slab, vertex = START_B },
-  to_b   = { body = plate, on_edge = END_B },
-  from_c = { body = slab, vertex = START_C },
-  to_c   = { body = plate, on_edge = END_C },
+  from = {
+    { body = slab, vertex = START_A },
+    { body = slab, vertex = START_B },
+    { body = slab, vertex = START_C },
+  },
+  to = {
+    { body = plate, on_edge = END_A },
+    { body = plate, on_edge = END_B },
+    { body = plate, on_edge = END_C },
+  },
 }
 shoot("snap-pairs-abc")
 

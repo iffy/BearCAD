@@ -60,8 +60,10 @@ box:delete()    -- or `bearcad.delete(box)` / `bearcad.delete{ box, other }`
 A line handle names its vertices: `line:start()` or `line:endpoint("end")`.
 
 Anywhere an index is accepted — `bodies`, `profiles`, `extrusion`, `{ kind, index }` — a
-handle, its `id` string, or a name works too. `bearcad.element(id)` turns an id back into a
-handle; `bearcad.id(el)` is the method spelled as a function.
+handle, its `id` string, or a name works too. `bearcad.element` is the lookup — `element(kind, index)`, `element(id)`, or
+`element(name)`. `bearcad.find(name)` is sugar for a name (`nil` if missing).
+`bearcad.get(handle)` (or `get{ kind, index }` / `get(kind, index)`) reads properties.
+`bearcad.id(el)` is the method spelled as a function.
 
 ## Sketch, draw, and name elements
 

@@ -18,9 +18,11 @@ bearcad.ui.ground("off")
 local function arm()
   bearcad.ui.begin_move{
     bodies = {0},
-    from   = { body = 0, vertex = {0, 0, 0} },
-    to     = { body = 1, vertex = {60, 0, 0} },
-    from_b = { body = 0, vertex = {20, 0, 0} },
+    from = {
+      { body = 0, vertex = {0, 0, 0} },
+      { body = 0, vertex = {20, 0, 0} },
+    },
+    to = { body = 1, vertex = {60, 0, 0} },
   }
 end
 arm()

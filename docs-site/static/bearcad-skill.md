@@ -171,7 +171,8 @@ bearcad.sketch_conflicts()
 print(bearcad.status())    -- the status bar: what the last action said
 ```
 
-`bearcad.find("Main box")` looks an element up by name; `bearcad.set_name(el, "…")` renames
+`bearcad.element` is the lookup (`kind, index` / id / name). `bearcad.find("Main box")` is
+sugar for a name (`nil` if missing). `bearcad.get(el)` reads properties. `bearcad.set_name(el, "…")` renames
 one. Options tables reject unknown keys and list the accepted ones, so a typo fails
 immediately — wrap in `pcall` if you want to handle that yourself.
 

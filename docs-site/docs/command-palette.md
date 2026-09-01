@@ -34,9 +34,9 @@ search already run.
 ## Scripting
 
 ```lua
-bearcad.ui.palette("show")            -- show / hide / toggle
-bearcad.ui.palette("run", "view top") -- run the best-matching entry for a query
+bearcad.ui.palette{ open = true }     -- the window; open = false hides it
+bearcad.ui.palette("view top")        -- run the best-matching entry for a query
 
--- A command that asks for something takes it as a third value.
-bearcad.ui.palette("run", "mcmaster", "socket head screw")
+-- A command that asks for something takes it as a second value.
+bearcad.ui.palette("mcmaster", "socket head screw")
 ```
