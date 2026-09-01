@@ -2606,7 +2606,9 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   order is a depth sort **repaired pairwise** (#1820): a flat spans a range of depths, so
   overlapping pairs are re-asked which is really in front where they meet and topologically
   sorted (`drawing::painter_order`) — otherwise a bar's shaded side leaks through onto the top
-  of the block it grows out of. Sketch views have no solid, so they always draw wireframe.
+  of the block it grows out of. Pairs whose planes **cross** on the page (both depth orders
+  in the overlap — a section cut behind a body that straddles the cut) are split along the
+  intersection first (#1908); no single order can draw two wholes. Sketch views have no solid, so they always draw wireframe.
   Two more styles draw by hand: **Loose pencil** (#1809) wobbles and overshoots the visible
   edges, and **Colored pencil** (#1821/#1825) is the viewport's colored-pencil mode on the
   page — the same hand-drawn edges, in a deepened version of the body's own color when the
