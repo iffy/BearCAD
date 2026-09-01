@@ -17326,6 +17326,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             let mut sweep_edit: Option<context::SweepEdit> = None;
             let mut plane_tool_edit: Option<context::PlaneToolEdit> = None;
             let mut section_plane_edit: Option<context::SectionPlaneEdit> = None;
+            let mut section_plane_unarm = false;
             let mut loft_body_choice: Option<actions::RevolveBodyChoice> = None;
             let mut loft_commit = false;
             let mut boolean_edit: Option<context::BooleanEdit> = None;
@@ -17399,7 +17400,13 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         &mut |edit| revolve_edit = Some(edit),
                         &mut |edit| sweep_edit = Some(edit),
                         &mut |edit| plane_tool_edit = Some(edit),
-                        &mut |edit| section_plane_edit = Some(edit),
+                        &mut |edit| {
+                            if edit == context::SectionPlaneEdit::FocusValue {
+                                section_plane_unarm = true;
+                            } else {
+                                section_plane_edit = Some(edit);
+                            }
+                        },
                         &mut |choice| loft_body_choice = Some(choice),
                         &mut || loft_commit = true,
                         &mut |edit| boolean_edit = Some(edit),
@@ -17598,6 +17605,10 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     }
                 }
             }
+            if section_plane_unarm {
+                // Offset / Tilt / Turn / Cut depth took the keyboard (#1904).
+                self.state.picker_focus = None;
+            }
             if let Some(edit) = section_plane_edit {
                 match edit {
                     context::SectionPlaneEdit::SetOffset(value) => {
@@ -17672,6 +17683,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                             cs.pending_focus = false;
                         }
                     }
+                    context::SectionPlaneEdit::FocusValue => {}
                     context::SectionPlaneEdit::Commit => {
                         self.state.apply(Action::CommitSectionPlane);
                     }
@@ -23705,7 +23717,7 @@ fn should_grab_unfocused_tool_typing(field_has_focus: bool, wants_keyboard_input
 
 /// Keep requesting focus for a floating tool field only until it lands — never
 /// steal focus back from another focused widget (parameter pane, etc.) (#506).
-fn should_request_pending_tool_focus(pending_focus: bool, other_widget_focused: bool) -> bool {
+pub(crate) fn should_request_pending_tool_focus(pending_focus: bool, other_widget_focused: bool) -> bool {
     pending_focus && !other_widget_focused
 }
 
