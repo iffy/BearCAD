@@ -20369,7 +20369,11 @@ pub mod tests {
             (origin.z - 10.0).abs() < 0.05,
             "origin should sit on the top plane z=10, got {origin:?}"
         );
-        // The mesh key's vertex average is the bug: it is *not* the geometric centre.
+        // The mesh key's vertex average is the bug: where it drifts off the geometric
+        // centre, the origin must follow the geometry, not the average. Whether it drifts
+        // at all is up to the tessellator — it does on some platforms and not others
+        // (#1951) — so this checks the consequence where the precondition holds rather
+        // than insisting on the precondition.
         if let Some(crate::model::FaceId::BodyMeshFace {
             body,
             centroid,
@@ -20379,10 +20383,13 @@ pub mod tests {
             let tris = crate::extrude::body_face_triangles(&state.doc, body, centroid, normal)
                 .expect("top triangles");
             let averaged = crate::extrude::face_group_center(&tris);
-            assert!(
-                (averaged.x - 20.0).abs() > 0.1 || (averaged.y - 20.0).abs() > 0.1,
-                "this case only reproduces when the vertex average drifts, got {averaged:?}"
-            );
+            if (averaged.x - 20.0).abs() > 0.1 || (averaged.y - 20.0).abs() > 0.1 {
+                assert!(
+                    (origin.x - averaged.x).abs() > 0.05
+                        || (origin.y - averaged.y).abs() > 0.05,
+                    "the origin followed the drifting vertex average {averaged:?}"
+                );
+            }
         }
     }
 
