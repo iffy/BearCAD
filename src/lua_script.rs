@@ -8734,21 +8734,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     // #1641: the size of the area `bearcad.ui.click`/`move` address, so a script can aim at
     // the middle of the viewport (or the drawing sheet) without hard-coding a window size.
+    // #1935: the whole rect, taken from the one the frame actually laid out — not from
+    // `state.viewport_height`/`aspect`, which hold a pre-layout default until the viewport
+    // first draws and so reported a rect that was never on screen. `nil` while there is no
+    // laid-out rect yet; the Lua wrapper waits for one rather than handing back a guess.
+    // Whole pixels, because clicks are pixels and `string.format("%d", …)` errors on a float.
     api.set(
-        "viewport",
+        "_viewport",
         lua.create_function(|lua, ()| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let state = unsafe { tick.state() };
+            let Some(vp) = tick.viewport else {
+                return Ok(Value::Nil);
+            };
             let t = lua.create_table()?;
-            t.set("height", state.viewport_height)?;
-            t.set("width", state.viewport_height * state.viewport_aspect)?;
+            t.set("width", vp.width().round())?;
+            t.set("height", vp.height().round())?;
             // Where that area sits in the window (#1692). Rect helpers speak window pixels;
             // `click(rect)` converts. `click(x, y)` is still relative to this origin.
-            if let Some(vp) = tick.viewport {
-                t.set("x", vp.min.x)?;
-                t.set("y", vp.min.y)?;
-            }
-            Ok(t)
+            t.set("x", vp.min.x.round())?;
+            t.set("y", vp.min.y.round())?;
+            Ok(Value::Table(t))
         })?,
     )?;
 
@@ -12869,6 +12874,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "right_click", "right_click_ground", "context_menu",
             "key", "keydown", "keyup", "type",
             "_view", "_view_home", "_zoom_fit", "_wait", "_wait_ms", "_screenshot",
+            "_viewport",
         }
         for _, name in ipairs(ui_funcs) do
             bearcad.ui[name] = bearcad[name]
@@ -12962,6 +12968,38 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 local result = native(...)
                 coroutine.yield()
                 return result
+            end
+        end
+        -- #1935: the viewport rect only exists once a frame has laid it out. Waiting for
+        -- one beats handing back the pre-layout default, which a script would then size
+        -- its clicks from and miss.
+        do
+            local native = bearcad.ui._viewport
+            local function same(a, b)
+                return a and b and a.x == b.x and a.y == b.y
+                       and a.width == b.width and a.height == b.height
+            end
+            bearcad.ui.viewport = function()
+                local waited = 0
+                local v = native()
+                while not v do
+                    if waited >= SETTLE_FRAMES then
+                        error("viewport: the viewport never drew")
+                    end
+                    waited = waited + 1
+                    coroutine.yield()
+                    v = native()
+                end
+                -- Panes glide open, so the first laid-out rect is not the final one. Settle
+                -- on two frames that agree, but hand back what we have rather than failing
+                -- if something on screen never stops moving.
+                for _ = 1, 120 do
+                    coroutine.yield()
+                    local again = native()
+                    if same(v, again) then return v end
+                    v = again or v
+                end
+                return v
             end
         end
         do
@@ -21105,6 +21143,27 @@ pub mod tests {
                 }
             )],
             "the loupe is what the script selected"
+        );
+    }
+
+    /// #1935: `bearcad.ui.viewport()` reports the origin the docs promise, taken from the
+    /// same rect clicks are measured against, in whole pixels so `string.format("%d", …)`
+    /// works.
+    #[test]
+    fn lua_viewport_reports_its_origin_in_whole_pixels() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            local v = bearcad.ui.viewport()
+            assert(v.x ~= nil and v.y ~= nil, "viewport must report x and y")
+            assert(v.x == math.floor(v.x) and v.y == math.floor(v.y), "x/y whole pixels")
+            assert(v.width == math.floor(v.width) and v.height == math.floor(v.height),
+                   "width/height whole pixels: " .. v.width .. "x" .. v.height)
+            assert(string.format("%d,%d", v.x, v.y) ~= nil)
+            assert(v.width == 960 and v.height == 560,
+                   "the rect clicks address: " .. v.width .. "x" .. v.height)
+            assert(v.x == 0 and v.y == 40, "its origin: " .. v.x .. "," .. v.y)
+            "#,
         );
     }
 
