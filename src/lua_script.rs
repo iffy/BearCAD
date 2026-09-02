@@ -26487,6 +26487,51 @@ pub mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// #1940: an edge dimension renders on every orientation. On back / right / top — the
+    /// three whose camera sits on a positive axis — the front-most and back-most edges
+    /// collapse to one page line, and the world edge that survived was the far one, so a
+    /// dimension named against the near (visible) edge matched nothing and never drew.
+    #[test]
+    fn lua_edge_dimensions_render_on_every_orientation() {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        // One cuboid x[-40,40] y[-30,30] z[0,20]; each orientation dimensions an edge that
+        // is genuinely visible in it.
+        let cases: [(&str, [i32; 3], [i32; 3]); 7] = [
+            ("front", [-40, -30, 0], [40, -30, 0]),
+            ("left", [-40, -30, 0], [-40, 30, 0]),
+            ("bottom", [-40, -30, 0], [40, -30, 0]),
+            ("iso", [-40, -30, 0], [40, -30, 0]),
+            ("back", [-40, 30, 0], [40, 30, 0]),
+            ("right", [40, -30, 0], [40, 30, 0]),
+            ("top", [-40, -30, 20], [40, -30, 20]),
+        ];
+        for (orientation, a, b) in cases {
+            let path = dir.join(format!("bearcad_dim_{orientation}_{pid}.svg"));
+            let _ = std::fs::remove_file(&path);
+            let p = path.to_string_lossy().replace('\\', "/");
+            run_lua(&format!(
+                r#"
+                bearcad.new()
+                local body = bearcad.cuboid{{ width = 80, depth = 60, height = 20 }}
+                local d = bearcad.drawing{{}}
+                bearcad.drawing_view{{ drawing = d, body = body, orientation = "{orientation}" }}
+                bearcad.drawing_dimension{{ drawing = d, view = 0,
+                                            a = {{{ax}, {ay}, {az}}}, b = {{{bx}, {by}, {bz}}} }}
+                bearcad.export_drawing_svg{{ drawing = d, path = "{p}" }}
+                "#,
+                ax = a[0], ay = a[1], az = a[2],
+                bx = b[0], by = b[1], bz = b[2],
+            ));
+            let svg = std::fs::read_to_string(&path).expect("svg file was written");
+            let _ = std::fs::remove_file(&path);
+            assert!(
+                svg.contains("mm</text>") || svg.contains(" mm<"),
+                "{orientation}: the dimension label is missing from the sheet"
+            );
+        }
+    }
+
     /// #1206: projection-line endpoints land on the facing silhouette of the body at each
     /// shared-axis extreme — not on floating AABB corners. A short body on the left and a tall
     /// one on the right make the Front-Top AABB's top-left corner empty; the left line must

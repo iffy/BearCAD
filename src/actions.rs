@@ -5515,6 +5515,46 @@ impl AppState {
         }
     }
 
+    /// The quantized endpoints of the *logical* page line that the world edge `a`–`b`
+    /// draws as in view `view` of `drawing` (#1940). Edges stacked behind one another
+    /// collapse to a single line whose identity is one arbitrary member; this maps any
+    /// member of that stack — the near edge, the far one — onto the surviving identity, so
+    /// a dimension named against world coordinates lands on the line the page actually
+    /// draws. `None` when no line covers those endpoints.
+    fn drawing_logical_edge_for(
+        &self,
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        a: [i32; 3],
+        b: [i32; 3],
+    ) -> Option<([i32; 3], [i32; 3])> {
+        let d = self.doc.drawings.get(drawing)?;
+        let v = d.views.get(view)?;
+        let (right, up) = crate::drawing::resolved_view_axes(&d.views, v);
+        let project = |p: glam::Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+        let raw = crate::drawing::drawing_view_dimensionable_edges(&self.doc, &d.views, v);
+        let logical = crate::drawing::logical_pick_edges(&raw, &project);
+        let unq = |q: [i32; 3]| glam::Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32) / 100.0;
+        let (pa, pb) = (project(unq(a)), project(unq(b)));
+        const TOL: f32 = 0.05; // mm on the page — the span-collapse tolerance
+        for (ea, eb) in logical {
+            let (qa, qb) = (
+                crate::hierarchy::quantize_body_point(ea),
+                crate::hierarchy::quantize_body_point(eb),
+            );
+            if (qa == a && qb == b) || (qa == b && qb == a) {
+                return Some((qa, qb));
+            }
+            let (la, lb) = (project(ea), project(eb));
+            let same = ((la - pa).length() < TOL && (lb - pb).length() < TOL)
+                || ((la - pb).length() < TOL && (lb - pa).length() < TOL);
+            if same {
+                return Some((qa, qb));
+            }
+        }
+        None
+    }
+
     /// The single selected dimension `(drawing, view, a, b)`, or `None` unless exactly one
     /// dimension is selected (#346).
     pub fn selected_drawing_dimension(
@@ -15604,6 +15644,14 @@ impl AppState {
                 a,
                 b,
             } => {
+                // #1940: name the *logical* edge the page draws. Edges that stack behind one
+                // another collapse to one page line, and only one of them survives as that
+                // line's identity — so a dimension named against a different member of the
+                // stack (which is what a script does when it names world endpoints, and what
+                // the near edge is on back/right/top views) matched nothing and never drew.
+                let (a, b) = self
+                    .drawing_logical_edge_for(drawing, view, a, b)
+                    .unwrap_or((a, b));
                 // Order-normalize so the key is independent of which endpoint was clicked.
                 let key = if a <= b { (a, b) } else { (b, a) };
                 let Some(v) = self
