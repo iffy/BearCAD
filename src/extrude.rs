@@ -8258,7 +8258,39 @@ fn split_group_by_plane(tris: &[[Vec3; 3]]) -> Vec<Vec<[Vec3; 3]>> {
             None => planes.push((n, d, vec![*tri])),
         }
     }
-    planes.into_iter().map(|(_, _, group)| group).collect()
+    // One plane means the group was flat all along — keep it as it is.
+    if planes.len() <= 1 {
+        return planes.into_iter().map(|(_, _, group)| group).collect();
+    }
+    // Otherwise the group spans a curve, and most of these "planes" are single tessellation
+    // steps of it — a sphere is a couple of thousand of them, and offering each as a face to
+    // hover, mate against and sketch on is worse than the merged group ever was.
+    //
+    // Two tests tell a face from a facet. A group whose biggest plane is a sliver of the
+    // whole is curved right through (a sphere, a cone) and stays one surface; in a group
+    // that does hold a flat, the curve's steps are a small fraction of it while the other
+    // flats in the chain are comparable.
+    const CURVE_THROUGHOUT: f32 = 0.10;
+    const FACET_OF_LARGEST: f32 = 0.20;
+    let area = |g: &Vec<[Vec3; 3]>| -> f32 {
+        g.iter()
+            .map(|t| (t[1] - t[0]).cross(t[2] - t[0]).length() * 0.5)
+            .sum()
+    };
+    let areas: Vec<f32> = planes.iter().map(|(_, _, g)| area(g)).collect();
+    let total: f32 = areas.iter().sum();
+    let largest = areas.iter().copied().fold(0.0f32, f32::max);
+    if total <= 0.0 || largest / total < CURVE_THROUGHOUT {
+        // Curved right through: the group is one surface, as it always was. A sphere is
+        // still one thing to point at, and its face key still resolves.
+        return vec![tris.to_vec()];
+    }
+    planes
+        .into_iter()
+        .zip(areas)
+        .filter(|(_, a)| *a >= largest * FACET_OF_LARGEST)
+        .map(|((_, _, group), _)| group)
+        .collect()
 }
 
 /// Bounding boxes for [`body_flat_face_groups`], in the same order (#1951).
