@@ -80,6 +80,16 @@ bearcad.select(bearcad.find("Main box"))
 bearcad.set_name(sides[1], "Front edge")
 ```
 
+A solid verb makes two things — the operation and the body it produces — and hands the
+**body** back. `name` names both, so the handle you were given carries it and `find` gives
+that handle back. Name the two apart with `shape_name` / `body_name`:
+
+```lua
+local pin = bearcad.cylinder{ radius = 3, height = 8, name = "Pin" }
+assert(pin:name() == "Pin" and bearcad.find("Pin"):id() == pin:id())
+bearcad.cylinder{ radius = 3, height = 8, shape_name = "Pin stock", body_name = "Pin 2" }
+```
+
 Geometry helpers enter a ground-plane sketch automatically if none is open:
 
 ```lua

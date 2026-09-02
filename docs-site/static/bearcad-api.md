@@ -243,7 +243,7 @@ bearcad.body_cylinders(index)
 bearcad.body_edges(index)
 bearcad.body_faces(index)
 bearcad.body_stats(index)
-bearcad.box{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name }
+bearcad.box{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name, shape_name, body_name }
 bearcad.calibrate_image{ image, from, to, length }
 bearcad.calibration_point{ image, index, x, y }
 bearcad.chamfer{ body, edges, edge, extrusion, shape, primitive, distance }
@@ -253,16 +253,16 @@ bearcad.circle{ x, y, r, radius, diameter, name }
 bearcad.clear()
 bearcad.clear_selection()
 bearcad.clone_unit_instance{ instance }
-bearcad.combine{ op, a, b, keep_b, bake, name }
+bearcad.combine{ op, a, b, keep_b, bake, name, shape_name, body_name }
 bearcad.component{ name, parent }?
 bearcad.constrain(name, …)
 bearcad.copy()
 bearcad.count(kind)
 bearcad.count_saved(kind)
 bearcad.cross_section{ name }?
-bearcad.cube{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name }
-bearcad.cuboid{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name }
-bearcad.cylinder{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name }
+bearcad.cube{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name, shape_name, body_name }
+bearcad.cuboid{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name, shape_name, body_name }
+bearcad.cylinder{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name, shape_name, body_name }
 bearcad.debug.mesh_cache()
 bearcad.debug.session_writes()
 bearcad.debug.sqlite_scalar(sql)
@@ -315,21 +315,21 @@ bearcad.edit_drawing_loupe{ drawing, view, index, at, radius, to, to_radius, sty
 bearcad.edit_extrusion{ index, extrusion, distance, by, to }
 bearcad.edit_fillet{ index, edge, edges, body, extrusion, shape, primitive, radius }
 bearcad.edit_joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin, frame_axis, frame_axis2, position, position2, position3, slide_min, slide_max, slide_min_to, slide_max_to, turn_min, turn_max, name }
-bearcad.edit_loft{ index, circle, circles, polygon, polygons, body, bodies, name }
+bearcad.edit_loft{ index, circle, circles, polygon, polygons, body, bodies, name, shape_name, body_name }
 bearcad.edit_mirror{ index, plane, bodies, output }
 bearcad.edit_move{ bodies, images, x, y, z, rotate, rx, ry, rz, roll, flip, spin, gap, from, to, index }
 bearcad.edit_parameter{ name, private, min, max, step, rename }
 bearcad.edit_repeat{ index, bodies, axis, around, flip, mode, count, spacing, length, to }
-bearcad.edit_revolve{ index, circle, circles, polygon, axis, angle, revolutions, pitch, offset, gap, symmetric, body, bodies, name }
+bearcad.edit_revolve{ index, circle, circles, polygon, axis, angle, revolutions, pitch, offset, gap, symmetric, body, bodies, name, shape_name, body_name }
 bearcad.edit_section_plane{ view, cut, offset, roll, depth, flip, bodies, exclude_bodies }
-bearcad.edit_shape{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name }
+bearcad.edit_shape{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name, shape_name, body_name }
 bearcad.edit_shell{ index, bodies, faces, thickness }
 bearcad.edit_sketch_mirror{ index, sketch, line, lines, circles }
 bearcad.edit_sketch_offset{ index, sketch, lines, circles, distance, construction }
 bearcad.edit_sketch_repeat{ index, sketch, lines, circles, angle, dir, mode, count, spacing, length }
 bearcad.edit_sketch_slice{ index, lines, circles, faces, cutters }
 bearcad.edit_slice{ index, bodies, cutters, extend }
-bearcad.edit_sweep{ index, circle, circles, polygon, path, body, bodies, name }
+bearcad.edit_sweep{ index, circle, circles, polygon, path, body, bodies, name, shape_name, body_name }
 bearcad.element(kind, index?)
 bearcad.exit_sketch()
 bearcad.export_3mf(path, body?)
@@ -339,7 +339,7 @@ bearcad.export_lua(path)
 bearcad.export_preview(path, opts? | { yaw, pitch })
 bearcad.export_step(path, body?)
 bearcad.export_stl(path, body?)
-bearcad.extrude{ distance, to, profiles, circle, circles, polygon, polygons, text, boolean, body, name, symmetric, taper, taper_mode }
+bearcad.extrude{ distance, to, profiles, circle, circles, polygon, polygons, text, boolean, body, name, shape_name, body_name, symmetric, taper, taper_mode }
 bearcad.extrude_edges(index)
 bearcad.extrude_face{ … }
 bearcad.fillet{ body, edges, edge, extrusion, shape, primitive, r, radius, diameter }
@@ -364,7 +364,7 @@ bearcad.material{ name, color, bodies }
 bearcad.materials()
 bearcad.mirror_bodies{ plane, bodies, output, name }
 bearcad.mirror_sketch{ sketch, line, lines, circles }
-bearcad.move_bodies{ bodies, images, x, y, z, rotate, rx, ry, rz, roll, flip, spin, gap, from, to, name }
+bearcad.move_bodies{ bodies, images, x, y, z, rotate, rx, ry, rz, roll, flip, spin, gap, from, to, name, shape_name, body_name }
 bearcad.move_to_component{ kind, index, component }
 bearcad.new()
 bearcad.offset_sketch{ sketch, lines, circles, distance, construction }
@@ -384,13 +384,13 @@ bearcad.quit()
 bearcad.rebuild_geometry()
 bearcad.rect{ x, y, width, height, name }
 bearcad.remove_calibration_point{ image, index }
-bearcad.repeat_bodies{ bodies, axis, around, flip, mode, count, spacing, length, to, name }
+bearcad.repeat_bodies{ bodies, axis, around, flip, mode, count, spacing, length, to, name, shape_name, body_name }
 bearcad.repeat_cut{ cuts, axis, around, flip, mode, count, spacing, length, to }
 bearcad.repeat_sketch{ sketch, lines, circles, angle, dir, mode, count, spacing, length }
 bearcad.repeat_sketches{ sketches, axis, around, flip, mode, count, spacing, length, to }
 bearcad.revert_joint(op)
 bearcad.revert_joints()
-bearcad.revolve{ profiles, circle, circles, polygon, polygons, axis, symmetric, bodies, body, revolutions, angle, pitch, name }
+bearcad.revolve{ profiles, circle, circles, polygon, polygons, axis, symmetric, bodies, body, revolutions, angle, pitch, name, shape_name, body_name }
 bearcad.save(path?)
 bearcad.section_plane{ view, plane, origin, normal, offset, roll, depth, flip, bodies, exclude_bodies }
 bearcad.section_planes(view?)
@@ -407,13 +407,13 @@ bearcad.set_parameter(target, expression)
 bearcad.set_unit_parameter{ instance, name, value, expression }
 bearcad.set_units{ length, angle, component, sketch }
 bearcad.set_visible(element, visible)
-bearcad.shell{ bodies, faces, thickness, name }
+bearcad.shell{ bodies, faces, thickness, name, shape_name, body_name }
 bearcad.sketch_conflicts(sketch?)
 bearcad.sketch_dof(sketch?)
 bearcad.sketch_faces(sketch?)
-bearcad.slice{ bodies, cutters, extend, name }
+bearcad.slice{ bodies, cutters, extend, name, shape_name, body_name }
 bearcad.slice_sketch{ sketch, lines, circles, faces, cutters }
-bearcad.sphere{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name }
+bearcad.sphere{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name, shape_name, body_name }
 bearcad.status()
 bearcad.sweep{ … }
 bearcad.sync_unit(value)

@@ -3520,7 +3520,7 @@ fn check_shape_keys(opts: &Table, call: &str) -> mlua::Result<()> {
         call,
         &[
             "index", "shape", "at", "normal", "u_axis", "width", "depth", "height", "size",
-            "r", "radius", "diameter", "name",
+            "r", "radius", "diameter", "name", "shape_name", "body_name",
         ],
     )
 }
@@ -4651,13 +4651,39 @@ fn apply_optional_name(
     // so running it first would leave the caller with nothing to hold.
     let created = Created(unsafe { tick.runner().last_created.clone() });
     let Some(opts) = opts else { return Ok(created) };
-    let Ok(name) = opts.get::<String>("name") else {
+    // #1930: a solid verb makes two things — the operation and the body it produces — and
+    // hands the **body** back. `name` used to land on the operation, so the handle the
+    // caller was just given reported no name and `find(name)` returned something else
+    // entirely. `name` now names both, which is what a script means by naming the thing it
+    // just made; `shape_name` and `body_name` name one side each when they differ.
+    let body = created
+        .0
+        .iter()
+        .find(|e| matches!(e, SceneElement::Body(_)))
+        .cloned();
+    let shape_name = opts.get::<Option<String>>("shape_name").unwrap_or(None);
+    let body_name = opts.get::<Option<String>>("body_name").unwrap_or(None);
+    let both = opts.get::<Option<String>>("name").unwrap_or(None);
+    let mut renames: Vec<(SceneElement, String)> = Vec::new();
+    if let Some(name) = shape_name.or_else(|| both.clone()) {
+        renames.push((element.clone(), name));
+    }
+    if let Some(name) = body_name.or(both) {
+        // Only when the verb actually produced one, and never twice over the same element
+        // (a verb whose "operation" *is* the body — an imported mesh, say).
+        if let Some(body) = body.filter(|b| *b != element) {
+            renames.push((body, name));
+        }
+    }
+    if renames.is_empty() {
         return Ok(created);
-    };
+    }
     // The rename rides along on a creation call: keep the creation's status
     // ("Added extrusion (12.0 mm)") instead of clobbering it with "Renamed to …".
     let creation_status = unsafe { tick.state().status.clone() };
-    unsafe { tick.exec(Instruction::SetElementName { element, name })? };
+    for (element, name) in renames {
+        unsafe { tick.exec(Instruction::SetElementName { element, name })? };
+    }
     unsafe { tick.state().status = creation_status };
     Ok(created)
 }
@@ -9959,7 +9985,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "text",
                     "boolean",
                     "body",
-                    "name",
+                    "name", "shape_name", "body_name",
                     "symmetric",
                     "taper",
                     "taper_mode",
@@ -10110,7 +10136,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "repeat_bodies",
-                &["bodies", "axis", "around", "flip", "mode", "count", "spacing", "length", "to", "name"],
+                &["bodies", "axis", "around", "flip", "mode", "count", "spacing", "length", "to", "name", "shape_name", "body_name"],
             )?;
             let (targets, axis, around_axis, flip, mode, count, spacing, length, length_target) =
                 parse_repeat_op_args(lua, &opts)?;
@@ -10603,7 +10629,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "move_bodies",
-                &[MOVE_OP_KEYS, &["name"]].concat(),
+                &[MOVE_OP_KEYS, &["name", "shape_name", "body_name"]].concat(),
             )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let (targets, images, tx, ty, tz, rx, ry, rz, roll_angle, face_flip, face_spin,
@@ -10879,7 +10905,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "combine",
-                &["op", "a", "b", "keep_b", "bake", "name"],
+                &["op", "a", "b", "keep_b", "bake", "name", "shape_name", "body_name"],
             )?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
@@ -10960,7 +10986,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "slice",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "slice", &["bodies", "cutters", "extend", "name"])?;
+            check_keys(&opts, "slice", &["bodies", "cutters", "extend", "name", "shape_name", "body_name"])?;
             let (targets, cutters, extend_infinite) = parse_slice_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::CreateSliceOp { targets, cutters, extend_infinite })?;
@@ -10996,7 +11022,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "shell",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "shell", &["bodies", "faces", "thickness", "name"])?;
+            check_keys(&opts, "shell", &["bodies", "faces", "thickness", "name", "shape_name", "body_name"])?;
             let (targets, open_faces, thickness) = parse_shell_op_args(lua, &opts)?;
             unsafe {
                 tick.exec(Instruction::CreateShellOp {
@@ -11101,7 +11127,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "revolutions",
                     "angle",
                     "pitch",
-                    "name",
+                    "name", "shape_name", "body_name",
                 ],
             )?;
             // Helical pitch (mm per full turn) is `pitch` only (#1894).
@@ -11166,7 +11192,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "symmetric",
                     "body",
                     "bodies",
-                    "name",
+                    "name", "shape_name", "body_name",
                 ],
             )?;
             let op: usize = opts.ordinal_req("index")?;
@@ -11402,7 +11428,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "path",
                     "body",
                     "bodies",
-                    "name",
+                    "name", "shape_name", "body_name",
                 ],
             )?;
             let op: usize = opts.ordinal_req("index")?;
@@ -11493,7 +11519,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "polygons",
                     "body",
                     "bodies",
-                    "name",
+                    "name", "shape_name", "body_name",
                 ],
             )?;
             let op: usize = opts.ordinal_req("index")?;
@@ -19500,10 +19526,15 @@ pub mod tests {
         );
         assert_eq!(state.doc.extrusions.len(), 1);
         assert_eq!(state.doc.extrusions[xkey(0)].distance, 20.0);
+        // Both sides carry the name (#1930); it resolves to the body the call handed back.
         assert_eq!(
-            find_element_by_name(&state.doc, "Boss"),
-            Some(SceneElement::Extrusion(xkey(0)))
+            crate::names::element_name(&state.doc, SceneElement::Extrusion(xkey(0))),
+            Some("Boss")
         );
+        assert!(matches!(
+            find_element_by_name(&state.doc, "Boss"),
+            Some(SceneElement::Body(_))
+        ));
         // The extrusion produces a body that depends on it.
         assert_eq!(state.doc.bodies.len(), 1);
         assert_eq!(
@@ -20176,6 +20207,51 @@ pub mod tests {
             live.source.cut_extrusion_indices().len(),
             2,
             "both cuts must stay on the combined body, not become orphan extrusions"
+        );
+    }
+
+    /// #1930: a creation call hands back the **body** it made, so `name =` has to name that
+    /// body — it used to name the operation, leaving `handle:name()` nil for every primitive
+    /// a script created and `find(name)` returning a different element than the call
+    /// returned. `shape_name` / `body_name` name one side each when they need to differ.
+    #[test]
+    fn lua_a_creation_name_names_the_body_it_returns() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            local a = bearcad.cuboid{ width = 40, depth = 20, height = 20, name = "Block" }
+            assert(a:kind() == "body", "cuboid returns a body, got " .. a:kind())
+            assert(a:name() == "Block", "the handle carries the name, got " .. tostring(a:name()))
+            assert(bearcad.find("Block"):id() == a:id(),
+                   "find gives back what the call returned, got " .. bearcad.find("Block"):id())
+            -- The shape behind it takes the name too, so the Elements pane reads right.
+            assert(bearcad.get("shape", 0).name == "Block")
+
+            local sides = bearcad.rect{ width = 10, height = 10 }
+            local ex = bearcad.extrude{ profiles = sides, distance = 5, name = "Ex" }
+            assert(ex:kind() == "body")
+            assert(ex:name() == "Ex", "an extrusion's body is named too: " .. tostring(ex:name()))
+            assert(bearcad.find("Ex"):id() == ex:id())
+
+            -- The two sides can be named apart.
+            local c = bearcad.cylinder{ radius = 3, height = 8, at = {80, 0, 0},
+                                        shape_name = "Pin shape", body_name = "Pin" }
+            assert(c:name() == "Pin", "body_name names the body, got " .. tostring(c:name()))
+            assert(bearcad.find("Pin shape"):kind() == "shape")
+            assert(bearcad.find("Pin"):id() == c:id())
+
+            -- A boolean's output is a body too (#1930's follow-up).
+            local x = bearcad.cuboid{ width = 10, depth = 10, height = 10, at = {200, 0, 0} }
+            local y = bearcad.cuboid{ width = 10, depth = 10, height = 10, at = {205, 0, 0} }
+            local u = bearcad.combine{ op = "union", a = {x}, b = {y}, name = "Jamb" }
+            assert(u:kind() == "body", "combine returns a body, got " .. u:kind())
+            assert(u:name() == "Jamb", "…named by `name`, got " .. tostring(u:name()))
+            assert(bearcad.find("Jamb"):id() == u:id())
+
+            -- Sketch geometry has no body; `name` still names the thing itself.
+            local line = bearcad.line{ x = 0, y = 0, length = 5, angle = 0, name = "Edge" }
+            assert(bearcad.find("Edge"):kind() == "line")
+            "#,
         );
     }
 
