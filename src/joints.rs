@@ -70,10 +70,38 @@ fn mate_frame(doc: &Document, joint: &Joint) -> Option<Frame> {
         .as_ref()
         .or(joint.placement.end_point_a.as_ref())
         .and_then(|p| crate::extrude::move_point_world(doc, p))
+        // #1947: a picked axis that has a *location* — a hole or shaft's centre line, a
+        // body edge — puts the frame there. Naming a pin's centre line as the axis means
+        // "turn about this pin"; falling through to the world origin swung the part about
+        // (0, 0, z) unless a face mate or an explicit `frame_origin` happened to say
+        // otherwise. A world axis and a face normal carry no such location of their own.
+        .or_else(|| {
+            joint
+                .frame
+                .primary
+                .as_ref()
+                .and_then(|r| located_axis_origin(doc, r))
+        })
         .unwrap_or(Vec3::ZERO);
     let y = (secondary - x * secondary.dot(x)).normalize_or_zero();
     let y = if y.length_squared() > 0.5 { y } else { x.any_orthonormal_vector() };
     Some(Frame { origin, x, y, z: x.cross(y).normalize_or_zero() })
+}
+
+/// Where an axis pick sits, when the pick names a line that has a place in the world
+/// (#1947): a hole/shaft centre line or a body edge. `None` for a world axis (whose line
+/// runs through the origin already) and for planes and faces, whose pick contributes a
+/// direction rather than a line to turn about.
+fn located_axis_origin(doc: &Document, r: &crate::model::MateRef) -> Option<Vec3> {
+    match r {
+        crate::model::MateRef::HoleAxis { .. } | crate::model::MateRef::Edge { .. } => {
+            match crate::mate::resolve(doc, r)? {
+                crate::mate::MateGeom::Line { origin, .. } => Some(origin),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// A stored [`crate::model::JointFrame`]'s two axes (#1079). `None` when no primary axis is
@@ -572,6 +600,21 @@ pub fn evaluated_positions(doc: &Document, joint: &Joint) -> (f32, f32, f32) {
             deg(&joint.position2),
             deg(&joint.position3),
         ),
+    }
+}
+
+/// Whether position slot `slot` of a joint of this `kind` reads as an angle (#1946):
+/// degrees for a turn, millimetres for a slide. The same split
+/// [`evaluated_positions`] applies, named so a drag can write the value back with the
+/// right unit.
+pub fn position_slot_is_angle(kind: &JointKind, slot: usize) -> bool {
+    match kind {
+        JointKind::Rigid => false,
+        JointKind::Slider => false,
+        JointKind::Revolute | JointKind::Screw { .. } => slot == 0,
+        JointKind::Cylindrical | JointKind::PinSlot => slot == 1,
+        JointKind::Planar => slot == 2,
+        JointKind::Ball => true,
     }
 }
 

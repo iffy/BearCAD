@@ -121,7 +121,10 @@ bearcad.joint{
 }
 bearcad.joint{ parts = {a, b, c}, kind = "rigid" }
 bearcad.joint{ a = base, b = moving, kind = "screw", lead = 2, position = 720 }
-bearcad.edit_joint{ index = 0, position = 45 }
+bearcad.edit_joint{ index = 0, position = 45 }   -- partial: only what you name changes
+-- A pin's centre line as the axis turns the part about that pin, not the world origin.
+bearcad.joint{ a = jamb, b = door, kind = "revolute",
+               frame_axis = bearcad.body_cylinders(pin)[1].axis, position = "swing" }
 bearcad.set_joint_rest(0)
 bearcad.revert_joint(0)
 bearcad.revert_joints()

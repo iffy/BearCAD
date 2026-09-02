@@ -6357,6 +6357,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     t.set("position", joint.position.as_str())?;
                     t.set("position2", joint.position2.as_str())?;
                     t.set("position3", joint.position3.as_str())?;
+                    // The set pose to revert to, and the travel stops (#1945): a partial
+                    // `edit_joint` has to be checkable, and the limits were unreadable.
+                    t.set("rest", joint.rest.as_str())?;
+                    t.set("rest2", joint.rest2.as_str())?;
+                    t.set("rest3", joint.rest3.as_str())?;
+                    t.set("slide_min", joint.limits.slide_min.as_str())?;
+                    t.set("slide_max", joint.limits.slide_max.as_str())?;
+                    t.set("turn_min", joint.limits.turn_min.as_str())?;
+                    t.set("turn_max", joint.limits.turn_max.as_str())?;
+                    if let crate::model::JointKind::Screw { lead } = &joint.kind {
+                        t.set("lead", lead.as_str())?;
+                    }
                     if let Some(name) = &joint.name {
                         t.set("name", name.as_str())?;
                     }
@@ -10623,11 +10635,89 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let op: usize = opts.ordinal_req("index")?;
             let (members, base, kind, placement, frame, position, position2, position3, limits) =
                 parse_joint_op_args(lua, &opts, "edit_joint")?;
-            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe {
-                tick.exec(Instruction::EditJointOp {
-                    op, members, base, kind, placement, frame, position, position2, position3, limits,
-                })?;
+            // #1945: a partial edit changes the fields it names and leaves the rest alone.
+            // Every key was previously read as "set to whatever a fresh table says", so
+            // `edit_joint{ index, position }` erased the members (and reset the kind to
+            // rigid) and was refused — the only way to re-drive a joint from a parameter
+            // was to re-specify parts, kind, frame, limits and name.
+            let existing = {
+                let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+                let doc = unsafe { &tick.state().doc };
+                let existing = doc.joints.keys().nth(op).map(|k| doc.joints[k].clone());
+                existing
+            };
+            let (members, base, kind, placement, frame, position, position2, position3, limits) = {
+                match existing {
+                    None => (
+                        members, base, kind, placement, frame, position, position2, position3,
+                        limits,
+                    ),
+                    Some(now) => {
+                        let named = |key: &str| opts.contains_key(key).unwrap_or(false);
+                        let keep_str = |given: String, key: &str, current: &str| {
+                            if named(key) { given } else { current.to_string() }
+                        };
+                        let mut limits = limits;
+                        limits.slide_min =
+                            keep_str(limits.slide_min, "slide_min", &now.limits.slide_min);
+                        limits.slide_max =
+                            keep_str(limits.slide_max, "slide_max", &now.limits.slide_max);
+                        limits.turn_min =
+                            keep_str(limits.turn_min, "turn_min", &now.limits.turn_min);
+                        limits.turn_max =
+                            keep_str(limits.turn_max, "turn_max", &now.limits.turn_max);
+                        if !named("slide_min_to") {
+                            limits.slide_min_target = now.limits.slide_min_target.clone();
+                        }
+                        if !named("slide_max_to") {
+                            limits.slide_max_target = now.limits.slide_max_target.clone();
+                        }
+                        let mut frame = frame;
+                        if !named("frame_origin") {
+                            frame.origin = now.frame.origin.clone();
+                        }
+                        if !named("frame_axis") {
+                            frame.primary = now.frame.primary.clone();
+                        }
+                        if !named("frame_axis2") {
+                            frame.secondary = now.frame.secondary.clone();
+                        }
+                        (
+                            if named("parts") || named("a") || named("b") {
+                                members
+                            } else {
+                                now.members.clone()
+                            },
+                            if named("base") { base } else { now.base },
+                            if named("kind") || named("lead") { kind } else { now.kind.clone() },
+                            if named("face") || named("line_up") {
+                                placement
+                            } else {
+                                now.placement.clone()
+                            },
+                            frame,
+                            keep_str(position, "position", &now.position),
+                            keep_str(position2, "position2", &now.position2),
+                            keep_str(position3, "position3", &now.position3),
+                            limits,
+                        )
+                    }
+                }
+            };
+            let joint_key = {
+                let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+                unsafe {
+                    tick.exec(Instruction::EditJointOp {
+                        op, members, base, kind, placement, frame, position, position2, position3,
+                        limits,
+                    })?;
+                };
+                let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+                let key = unsafe { tick.state().doc.joints.keys().nth(op) };
+                key
+            };
+            if let Some(key) = joint_key {
+                apply_optional_name(lua, SceneElement::Joint(key), Some(opts))?;
             }
             Ok(())
         })?,
@@ -26485,6 +26575,61 @@ pub mod tests {
         let content = std::fs::read_to_string(&path).expect("svg file was written");
         assert!(content.contains("<svg"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #1947: a hole/cylinder centre line used as `frame_axis` puts the joint origin **on
+    /// that line**. It used to contribute only a direction, so a revolute with no face mate
+    /// swung the part about the world origin rather than about the pin.
+    #[test]
+    fn lua_a_cylinder_axis_frame_puts_the_origin_on_the_pin() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.add_parameter("swing", "90")
+            local jamb = bearcad.cuboid{ width = 40, depth = 3, height = 40, at = {20, 1.5, 0} }
+            local door = bearcad.cuboid{ width = 40, depth = 3, height = 40, at = {-20, 1.5, 0} }
+            local pin  = bearcad.cylinder{ at = {0, 1.5, -1}, radius = 2.4, height = 42 }
+            bearcad.joint{ a = jamb, b = door, kind = "revolute",
+                           frame_axis = bearcad.body_cylinders(pin)[1].axis,
+                           position = "swing" }
+            local bb = bearcad.body_stats(door).bbox
+            -- Turned 90° about the pin at (0, 1.5), the door sweeps to y ≈ -38.5..1.5 and
+            -- stays within a leaf thickness of x = 0. About the *world* origin it would
+            -- land at x -3..0, y -40..0 instead.
+            assert(math.abs(bb.min.y - (-38.5)) < 0.5,
+                   "door swings about the pin, min.y = " .. bb.min.y)
+            assert(math.abs(bb.max.y - 1.5) < 0.5, "max.y = " .. bb.max.y)
+            assert(math.abs(bb.min.x - (-1.5)) < 0.5, "min.x = " .. bb.min.x)
+            assert(math.abs(bb.max.x - 1.5) < 0.5, "max.x = " .. bb.max.x)
+            "#,
+        );
+    }
+
+    /// #1945: a partial `edit_joint` changes only the fields it names. Passing just
+    /// `index` and `position` used to be refused with "Pick two parts to join", because
+    /// the omitted `a`/`b` read as an empty member list (and `kind` reset to rigid).
+    #[test]
+    fn lua_edit_joint_changes_only_what_it_names() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.add_parameter("swing", "0")
+            local a = bearcad.cuboid{ width = 20, depth = 3, height = 20, at = {10, 1.5, 0} }
+            local b = bearcad.cuboid{ width = 20, depth = 3, height = 20, at = {-10, 1.5, 0} }
+            bearcad.joint{ a = a, b = b, kind = "revolute", frame_axis = { axis = "z" },
+                           position = "0", turn_max = "110", name = "Swing" }
+            bearcad.edit_joint{ index = 0, position = 45 }
+            local j = bearcad.get{ kind = "joint", index = 0 }
+            assert(j.position == "45", "position changed: " .. tostring(j.position))
+            assert(j.kind == "revolute", "kind kept: " .. tostring(j.kind))
+            assert(j.name == "Swing", "name kept: " .. tostring(j.name))
+            assert(j.turn_max == "110", "limits kept: " .. tostring(j.turn_max))
+            -- And an expression goes back on just as easily.
+            bearcad.edit_joint{ index = 0, position = "swing" }
+            assert(bearcad.get{ kind = "joint", index = 0 }.position == "swing",
+                   "the parameter drives the joint again")
+            "#,
+        );
     }
 
     /// #1940: an edge dimension renders on every orientation. On back / right / top — the

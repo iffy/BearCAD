@@ -1295,6 +1295,15 @@ struct JointSelectDrag {
     /// The expressions as committed — restored on release so the drag lands as one
     /// undoable edit instead of a per-frame smear.
     original: (String, String, String),
+    /// The parameter each slot's expression names, when it names one (#1946). A drag on a
+    /// parameter-driven joint writes the value **into that parameter** on release instead
+    /// of replacing the expression with a number, so the Parameters pane, `set_parameter`
+    /// and dragging stay in sync.
+    driven: (
+        Option<model::ParameterKey>,
+        Option<model::ParameterKey>,
+        Option<model::ParameterKey>,
+    ),
     origin: Vec3,
     axis: Vec3,
     y_axis: Vec3,
@@ -12174,6 +12183,24 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     joint.position2.clone(),
                     joint.position3.clone(),
                 );
+                // #1946: which slots are driven by a bare parameter name.
+                let named_parameter = |expr: &str| -> Option<model::ParameterKey> {
+                    let expr = expr.trim();
+                    if expr.is_empty() {
+                        return None;
+                    }
+                    self.state
+                        .doc
+                        .parameters
+                        .iter()
+                        .find(|(_, p)| p.name == expr)
+                        .map(|(k, _)| k)
+                };
+                let driven = (
+                    named_parameter(&original.0),
+                    named_parameter(&original.1),
+                    named_parameter(&original.2),
+                );
                 let start_cursor_angle = project(origin)
                     .map(|c| (grab.start_screen.y - c.y).atan2(grab.start_screen.x - c.x));
                 self.joint_select_drag = Some(JointSelectDrag {
@@ -12181,6 +12208,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                     start_screen: grab.start_screen,
                     start,
                     original,
+                    driven,
                     origin,
                     axis,
                     y_axis,
@@ -12278,6 +12306,42 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         if landed == drag.original {
             return;
         }
+        // #1946: a slot driven by a parameter keeps its expression — the drag writes the
+        // value into the parameter, so the slider in the Parameters pane and the drag are
+        // the same control. Only free slots land as a literal.
+        let mut position = landed;
+        let slots = [
+            (0usize, drag.driven.0, &mut position.0),
+            (1, drag.driven.1, &mut position.1),
+            (2, drag.driven.2, &mut position.2),
+        ];
+        let mut parameter_edits: Vec<(model::ParameterKey, String)> = Vec::new();
+        let original = [&drag.original.0, &drag.original.1, &drag.original.2];
+        for (slot, parameter, value) in slots {
+            let Some(key) = parameter else { continue };
+            let Some(number) = value.trim().parse::<f32>().ok() else { continue };
+            let bare = self.state.doc.parameters.get(key).is_some_and(|p| {
+                p.expression.trim().parse::<f64>().is_ok() || p.expression.trim().is_empty()
+            });
+            let expression = if bare {
+                format!("{number}")
+            } else if joints::position_slot_is_angle(&joint.kind, slot) {
+                format!("{number}deg")
+            } else {
+                format!("{number}mm")
+            };
+            parameter_edits.push((key, expression));
+            *value = original[slot].clone();
+        }
+        for (key, expression) in parameter_edits {
+            self.state.apply(Action::CommitParameterExpression {
+                index: key,
+                expression,
+            });
+        }
+        if position == drag.original {
+            return;
+        }
         self.state.apply(Action::EditJointOperation {
             op: drag.joint,
             members: joint.members,
@@ -12285,9 +12349,9 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             kind: joint.kind,
             placement: joint.placement,
             frame: joint.frame,
-            position: landed.0,
-            position2: landed.1,
-            position3: landed.2,
+            position: position.0,
+            position2: position.1,
+            position3: position.2,
             limits: joint.limits,
         });
     }
