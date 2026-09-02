@@ -279,19 +279,19 @@ bearcad.dimension{ kind, type, value, index, a, b, sign, point, line, anchor, mo
 bearcad.drag_line(first, anchor_u?, anchor_v?, u?, v?)
 bearcad.drag_vertex(first, u?, v?)
 bearcad.drawing{ … }?
-bearcad.drawing_align_view{ … }
+bearcad.drawing_align_view{ drawing, parent, dir, pos }
 bearcad.drawing_angle{ … }
 bearcad.drawing_circle_dim_offset{ … }
-bearcad.drawing_circle_dimension{ … }
+bearcad.drawing_circle_dimension{ drawing, view, center }
 bearcad.drawing_curve_dimension{ drawing, view, points }
 bearcad.drawing_dim_offset{ drawing, view, a, b, offset, angle, side }
-bearcad.drawing_dimension{ … }
+bearcad.drawing_dimension{ drawing, view, a, b }
 bearcad.drawing_loupe{ drawing, view, at, radius, to, to_radius }
 bearcad.drawing_loupe_dimension{ drawing, view, index, a, b }
 bearcad.drawing_loupes{ drawing, view }
-bearcad.drawing_move_view{ … }
+bearcad.drawing_move_view{ drawing, view, x, y }
 bearcad.drawing_page{ drawing, width, height, margin }
-bearcad.drawing_paper{ … }
+bearcad.drawing_paper{ drawing, paper }
 bearcad.drawing_point_dim_offset{ drawing, view, index, offset }
 bearcad.drawing_point_dimension{ drawing, view, a, b, axis }
 bearcad.drawing_point_dimension_axis{ drawing, view, index, axis }
@@ -300,7 +300,7 @@ bearcad.drawing_text{ … }
 bearcad.drawing_view{ drawing, body, bodies, component, sketch, cross_section, orientation }
 bearcad.drawing_view_add{ drawing, view, body, bodies, component }
 bearcad.drawing_view_align_lines{ … }
-bearcad.drawing_view_label{ … }
+bearcad.drawing_view_label{ drawing, view, hidden, pos, text }
 bearcad.drawing_view_lines{ … }
 bearcad.drawing_view_orientation{ … }
 bearcad.drawing_view_scale{ drawing, view, scale }
@@ -333,7 +333,7 @@ bearcad.edit_sweep{ index, circle, circles, polygon, path, body, bodies, name }
 bearcad.element(kind, index?)
 bearcad.exit_sketch()
 bearcad.export_3mf(path, body?)
-bearcad.export_drawing_pdf{ … }
+bearcad.export_drawing_pdf{ drawing, path }
 bearcad.export_drawing_svg{ … }
 bearcad.export_preview(path)
 bearcad.export_step(path, body?)
@@ -359,7 +359,7 @@ bearcad.joint{ index, a, b, parts, kind, lead, base, face, line_up, frame_origin
 bearcad.line{ x, y, x1, y1, length, angle, bezier, dimension, name }
 bearcad.line_endpoints(index)
 bearcad.loft{ … }
-bearcad.material{ … }
+bearcad.material{ name, color, bodies }
 bearcad.mirror_bodies{ plane, bodies, output, name }
 bearcad.mirror_sketch{ sketch, line, lines, circles }
 bearcad.move_bodies{ bodies, images, x, y, z, rotate, rx, ry, rz, roll, flip, spin, gap, from, to, name }
@@ -396,14 +396,14 @@ bearcad.section_stats(index)
 bearcad.select(…)
 bearcad.selection()
 bearcad.session_log(…)
-bearcad.set_body_shadow{ … }
+bearcad.set_body_shadow{ body, shadow }
 bearcad.set_construction(element, construction)
 bearcad.set_joint_rest(op)
-bearcad.set_material{ … }
+bearcad.set_material{ body, material }
 bearcad.set_name(element, name)
 bearcad.set_parameter(target, expression)
 bearcad.set_unit_parameter{ instance, name, value, expression }
-bearcad.set_units{ … }
+bearcad.set_units{ length, angle, component, sketch }
 bearcad.set_visible(element, visible)
 bearcad.shell{ bodies, faces, thickness, name }
 bearcad.sketch_conflicts(sketch?)

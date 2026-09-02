@@ -515,27 +515,10 @@ impl PickRule {
 /// The body an element sits on, for [`PickRule::OnBodies`]/[`OffBodies`](PickRule::OffBodies).
 /// `None` for anything that belongs to no body — the origin, a world axis, sketch geometry.
 fn element_body(doc: &Document, element: &SceneElement) -> Option<crate::model::BodyKey> {
-    match element {
-        SceneElement::Body(index) => Some(*index),
-        SceneElement::BodyEdge { body, .. }
-        | SceneElement::BodyVertex { body, .. }
-        | SceneElement::BodyFace { body, .. } => Some(*body),
-        SceneElement::ProjectedEdge { body, .. } | SceneElement::ProjectedCorner { body, .. } => {
-            *body
-        },
-        SceneElement::MovePoint(point) => point.body(),
-        // Every face that has a body, not just extrusion and revolve ones (#1726): a
-        // primitive's face belongs to the primitive's body, a repeated face to its instance,
-        // a mesh face to the body it was read off.
-        SceneElement::SketchFace(face) => crate::model::body_index_for_face(doc, face),
-        SceneElement::ExtrusionEdge { extrusion, .. } => {
-            crate::model::body_index_for_extrusion(doc, *extrusion)
-        }
-        SceneElement::PrimitiveEdge { primitive, .. } => {
-            crate::model::body_index_for_primitive(doc, *primitive)
-        }
-        _ => None,
-    }
+    // Every face that has a body, not just extrusion and revolve ones (#1726): a
+    // primitive's face belongs to the primitive's body, a repeated face to its instance,
+    // a mesh face to the body it was read off.
+    crate::hierarchy::body_for_element(doc, element)
 }
 
 /// Whether a selection-family pick belongs to the open sketch (#742): while a sketch is

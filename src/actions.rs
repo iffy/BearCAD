@@ -5460,10 +5460,15 @@ fn resolve_export_body(doc: &Document, spec: &str) -> Option<crate::model::BodyK
     {
         return Some(k);
     }
-    if let Some(crate::hierarchy::SceneElement::Body(k)) =
-        crate::hierarchy::element_from_id(doc, spec)
+    // #1931: every other element operand coerces a name or id to the body it belongs to.
+    // Export only ever matched a body's own name, so `cuboid{ name = "X" }` — which names
+    // the *shape* — exported nothing.
+    if let Some(element) = crate::hierarchy::element_from_id(doc, spec)
+        .or_else(|| crate::names::find_element_by_name(doc, spec))
     {
-        return Some(k);
+        if let Some(k) = crate::hierarchy::body_for_element(doc, &element) {
+            return Some(k);
+        }
     }
     if spec.chars().all(|c| c.is_ascii_digit()) {
         if let Ok(i) = spec.parse::<usize>() {

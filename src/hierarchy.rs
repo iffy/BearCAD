@@ -3343,6 +3343,41 @@ pub fn owning_component(
     }
 }
 
+/// The body an element names or belongs to (#1931): the body itself, the body a feature
+/// (shape, extrusion, revolve, loft, sweep) built, or the body a face/edge/vertex sits on.
+/// `None` for anything that has no body — sketch geometry, a plane, a parameter.
+pub fn body_for_element(doc: &Document, element: &SceneElement) -> Option<crate::model::BodyKey> {
+    match element {
+        SceneElement::Body(index) => Some(*index),
+        SceneElement::BodyEdge { body, .. }
+        | SceneElement::BodyVertex { body, .. }
+        | SceneElement::BodyFace { body, .. } => Some(*body),
+        SceneElement::ProjectedEdge { body, .. } | SceneElement::ProjectedCorner { body, .. } => {
+            *body
+        }
+        SceneElement::MovePoint(point) => point.body(),
+        SceneElement::SketchFace(face) => crate::model::body_index_for_face(doc, face),
+        SceneElement::Extrusion(index) | SceneElement::ExtrusionEdge { extrusion: index, .. } => {
+            crate::model::body_index_for_extrusion(doc, *index)
+        }
+        SceneElement::Shape(index) | SceneElement::PrimitiveEdge { primitive: index, .. } => {
+            crate::model::body_index_for_primitive(doc, *index)
+        }
+        SceneElement::Revolution(index) => crate::model::body_index_for_revolution(doc, *index),
+        SceneElement::Loft(index) => doc
+            .bodies
+            .iter()
+            .find(|(_, b)| b.source == crate::model::BodySource::Loft(*index))
+            .map(|(k, _)| k),
+        SceneElement::SweepOp(index) => doc
+            .bodies
+            .iter()
+            .find(|(_, b)| b.source == crate::model::BodySource::Sweep(*index))
+            .map(|(k, _)| k),
+        _ => None,
+    }
+}
+
 fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement> {
     match element {
         // A drawing item's parent is its page, which has no scene element of its own (#967).

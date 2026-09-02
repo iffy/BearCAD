@@ -271,6 +271,24 @@ impl UserData for LuaElement {
 /// since ordinals shift when elements are deleted or consumed by an operation.
 pub struct Ordinal(pub usize);
 
+/// How a rejected argument reads back in an error (#1933): Lua's own type name, and the
+/// handle's id when the value *is* a BearCAD handle — never the raw `AnyUserData(Ref(0x…))`
+/// debug form, which tells a script author nothing.
+fn describe_lua_value(value: &Value) -> String {
+    if let Value::UserData(ud) = value {
+        if let Ok(el) = ud.borrow::<LuaElement>() {
+            return crate::hierarchy::element_id(&el.element)
+                .unwrap_or_else(|| element_kind_name(el.element.clone()).to_string());
+        }
+    }
+    match value {
+        Value::String(s) => format!("string '{}'", s.to_string_lossy()),
+        Value::Table(_) => "a table".to_string(),
+        Value::Nil => "nil".to_string(),
+        other => format!("a {}", other.type_name()),
+    }
+}
+
 impl mlua::FromLua for Ordinal {
     fn from_lua(value: Value, lua: &Lua) -> mlua::Result<Self> {
         match value {
@@ -289,8 +307,9 @@ impl mlua::FromLua for Ordinal {
                     .map_err(|_| mlua::Error::external(format!("no element '{text}'")))?;
                 ordinal_of_element(lua, &element)
             }
-            other => Err(mlua::Error::external(format!(
-                "expected an index, an element handle, or a name, got {other:?}"
+            ref other => Err(mlua::Error::external(format!(
+                "expected an index, an element handle, or a name, got {}",
+                describe_lua_value(other)
             ))),
         }
     }
@@ -1207,14 +1226,16 @@ fn resolve_element(lua: &Lua, value: Value) -> mlua::Result<SceneElement> {
 /// The table is kept so kinds that take extra keys (`drawing`, `view`) can read them.
 fn parse_get_target(lua: &Lua, args: MultiValue) -> mlua::Result<(String, usize, Option<Table>)> {
     let args = args.into_vec();
+    // #1933: the positional form honours the same index contract as the table form — an
+    // ordinal, a handle, an id, or a name — and names the bad value instead of leaking
+    // Lua's userdata pointer.
     let lua_index = |v: &Value| -> mlua::Result<usize> {
-        match v {
-            Value::Integer(i) if *i >= 0 => Ok(*i as usize),
-            Value::Number(n) if *n >= 0.0 && n.is_finite() => Ok(n.round() as usize),
-            other => Err(mlua::Error::external(format!(
-                "get index must be a non-negative integer, got {other:?}"
-            ))),
-        }
+        Ordinal::from_lua(v.clone(), lua).map(|o| o.0).map_err(|e| {
+            mlua::Error::external(format!(
+                "get index must be an ordinal, a handle, an id, or a name, got {}: {e}",
+                describe_lua_value(v)
+            ))
+        })
     };
     match args.as_slice() {
         [Value::Table(t)] if t.contains_key("kind")? => {
@@ -5277,6 +5298,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "set_units",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "set_units", &["length", "angle", "component", "sketch"])?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let length_name: Option<String> = opts.get("length")?;
             let length = length_name
@@ -7105,6 +7127,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "material",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "material", &["name", "color", "bodies"])?;
             let name: Option<String> = opts.get("name")?;
             let color = match opts.get::<Option<String>>("color")? {
                 Some(text) => Some(parse_hex_color(&text)?),
@@ -7119,6 +7142,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "set_material",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "set_material", &["body", "material"])?;
             let body: usize = opts.ordinal_req("body")?;
             let material: Option<usize> = opts.get("material")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -7132,6 +7156,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "set_body_shadow",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "set_body_shadow", &["body", "shadow"])?;
             let body: usize = opts.ordinal_req("body")?;
             let shadow: bool = opts.get("shadow")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -11672,6 +11697,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "export_drawing_pdf",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "export_drawing_pdf", &["drawing", "path"])?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let drawing: usize = opts.ordinal_req("drawing")?;
             let path: String = opts.get("path")?;
@@ -11684,6 +11710,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "drawing_move_view",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "drawing_move_view", &["drawing", "view", "x", "y"])?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let drawing: usize = opts.ordinal_req("drawing")?;
             let view: usize = opts.ordinal_req("view")?;
@@ -11775,6 +11802,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "drawing_align_view",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "drawing_align_view", &["drawing", "parent", "dir", "pos"])?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let drawing: usize = opts.ordinal_req("drawing")?;
             let parent: usize = opts.ordinal_req("parent")?;
@@ -11799,6 +11827,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "drawing_dimension",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "drawing_dimension", &["drawing", "view", "a", "b"])?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let drawing: usize = opts.ordinal_req("drawing")?;
             let view: usize = opts.ordinal_req("view")?;
@@ -12269,6 +12298,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "drawing_paper",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "drawing_paper", &["drawing", "paper"])?;
             let drawing: usize = opts.ordinal_req("drawing")?;
             let paper: String = opts.get("paper")?;
             let white = match paper.to_ascii_lowercase().as_str() {
@@ -12400,6 +12430,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "drawing_view_label",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "drawing_view_label", &["drawing", "view", "hidden", "pos", "text"])?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let drawing: usize = opts.ordinal_req("drawing")?;
             let view: usize = opts.ordinal_req("view")?;
@@ -12428,6 +12459,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "drawing_circle_dimension",
         lua.create_function(|lua, opts: Table| {
+            check_keys(&opts, "drawing_circle_dimension", &["drawing", "view", "center"])?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let drawing: usize = opts.ordinal_req("drawing")?;
             let view: usize = opts.ordinal_req("view")?;
@@ -18680,6 +18712,104 @@ pub mod tests {
         ));
         for p in [&stl_h, &stl_i, &stl_n, &stl_o, &step_h, &mf_h] {
             let bytes = std::fs::read(p).unwrap_or_else(|_| panic!("exported {}", p.display()));
+            let _ = std::fs::remove_file(p);
+            assert!(bytes.len() > 80, "{} too small: {}", p.display(), bytes.len());
+        }
+    }
+
+    /// #1939: every options-table verb rejects an unrecognized key with the documented
+    /// message. `material`, `set_units`, `set_body_shadow` and the drawing-layout verbs
+    /// used to swallow a typo (a misspelled option was a silent no-op) or fail with an
+    /// unrelated "expected a number, got nil".
+    #[test]
+    fn lua_options_tables_all_reject_unknown_keys() {
+        run_lua_expect_ok(
+            r##"
+            bearcad.new()
+            local b = bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = b, orientation = "front" }
+            local function rejects(name, fn)
+              local ok, err = pcall(fn)
+              assert(not ok, name .. " must reject an unknown key")
+              assert(tostring(err):find("unknown key `zzz`"),
+                     name .. " must say so: " .. tostring(err))
+              assert(tostring(err):find("accepted keys"),
+                     name .. " must list the accepted keys: " .. tostring(err))
+            end
+            rejects("material", function()
+              bearcad.material{ name = "Zed", color = "#112233", zzz = 1 } end)
+            rejects("set_material", function()
+              bearcad.set_material{ body = b, material = 0, zzz = 1 } end)
+            rejects("set_units", function() bearcad.set_units{ length = "mm", zzz = 1 } end)
+            rejects("set_body_shadow", function()
+              bearcad.set_body_shadow{ body = b, shadow = false, zzz = 1 } end)
+            rejects("export_drawing_pdf", function()
+              bearcad.export_drawing_pdf{ drawing = d, path = "/tmp/zzz.pdf", zzz = 1 } end)
+            rejects("drawing_move_view", function()
+              bearcad.drawing_move_view{ drawing = d, view = 0, x = 0.2, y = 0.2, zzz = 1 } end)
+            rejects("drawing_align_view", function()
+              bearcad.drawing_align_view{ drawing = d, parent = 0, dir = "below", zzz = 1 } end)
+            rejects("drawing_paper", function()
+              bearcad.drawing_paper{ drawing = d, paper = "white", zzz = 1 } end)
+            rejects("drawing_view_label", function()
+              bearcad.drawing_view_label{ drawing = d, view = 0, hidden = true, zzz = 1 } end)
+            rejects("drawing_dimension", function()
+              bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {1,0,0}, zzz = 1 } end)
+            rejects("drawing_circle_dimension", function()
+              bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = {0,0,0}, zzz = 1 } end)
+            "##,
+        );
+    }
+
+    /// #1933: the positional `get(kind, index)` form takes a handle, id, or name for the
+    /// index, the same as the table form and every other index operand.
+    #[test]
+    fn lua_get_positional_index_accepts_a_handle() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 10, name = "Box" }
+            local pl = bearcad.plane{ offset = 30, name = "Deck" }
+            assert(bearcad.get("plane", pl).name == "Deck", "handle")
+            assert(bearcad.get("plane", pl:id()).name == "Deck", "id")
+            assert(bearcad.get("plane", "Deck").name == "Deck", "name")
+            assert(bearcad.get("plane", pl:index()).name == "Deck", "ordinal")
+            local ok, err = pcall(bearcad.get, "plane", {})
+            assert(not ok, "a bogus index still errors")
+            assert(not tostring(err):find("AnyUserData"), "no raw userdata in the error: " .. tostring(err))
+            "#,
+        );
+    }
+
+    /// #1931: the single-body export overload resolves a name the way every other operand
+    /// does — a shape's name coerces to the body it built, not just a body's own name.
+    #[test]
+    fn lua_export_body_resolves_a_shape_name() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir();
+        let stl = dir.join(format!("bearcad_lua_export_shapename_{pid}.stl"));
+        let step = dir.join(format!("bearcad_lua_export_shapename_{pid}.step"));
+        let mf = dir.join(format!("bearcad_lua_export_shapename_{pid}.3mf"));
+        for p in [&stl, &step, &mf] {
+            let _ = std::fs::remove_file(p);
+        }
+        let esc = |p: &std::path::Path| p.to_string_lossy().replace('\\', "\\\\");
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{{ width = 40, depth = 20, height = 20, name = "Body" }}
+            bearcad.export_stl("{stl}", "Body")
+            bearcad.export_step("{step}", "Body")
+            bearcad.export_3mf("{mf}", "Body")
+            "#,
+            stl = esc(&stl),
+            step = esc(&step),
+            mf = esc(&mf),
+        ));
+        for p in [&stl, &step, &mf] {
+            let bytes = std::fs::read(p)
+                .unwrap_or_else(|_| panic!("a shape name must export {}", p.display()));
             let _ = std::fs::remove_file(p);
             assert!(bytes.len() > 80, "{} too small: {}", p.display(), bytes.len());
         }
