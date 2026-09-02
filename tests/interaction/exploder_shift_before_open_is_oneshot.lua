@@ -18,6 +18,8 @@ bearcad.ui.wait(5)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(5)
 
+-- `bearcad.select` takes `construction_plane`; `bearcad.selection()` reports the canonical
+-- `plane`, the name `count`/`get` use.
 local function has_kind(sel, kind)
   for _, e in ipairs(sel) do
     if e.kind == kind then return true end
@@ -37,7 +39,7 @@ end
 -- ── Shift held when the fan opens: one additive pick, then dismiss ──────────
 bearcad.select{ kind = "construction_plane", index = 0 }
 bearcad.ui.wait(3)
-assert(has_kind(bearcad.selection(), "construction_plane"),
+assert(has_kind(bearcad.selection(), "plane"),
   "precondition: a plane is selected before the fan")
 
 bearcad.ui.move_ground(40, 30)
@@ -56,7 +58,7 @@ bearcad.ui.wait(8)
 assert(#bearcad.ui.exploder() == 0,
   "a pick after Shift-opened fan should dismiss it immediately")
 local sel = bearcad.selection()
-assert(has_kind(sel, "construction_plane"),
+assert(has_kind(sel, "plane"),
   "the plane selected before the fan must still be selected (additive)")
 assert(has_kind(sel, "body"),
   "the body picked through the fan must be added to the selection")
@@ -83,7 +85,7 @@ bearcad.ui.wait(8)
 assert(#bearcad.ui.exploder() > 0,
   "Shift-clicking a loupe after a plain open should keep the fan up")
 sel = bearcad.selection()
-assert(has_kind(sel, "construction_plane"),
+assert(has_kind(sel, "plane"),
   "plane should remain selected after Shift-click through the fan")
 assert(has_kind(sel, "body"),
   "body should be added by the Shift-click")

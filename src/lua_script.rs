@@ -11627,19 +11627,25 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             check_keys(&opts, "drawing_view_section", &["drawing", "view", "cross_section"])?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            // #1951: every operand here takes a handle, an id or a name like the rest of
+            // the API — `drawing` and `view` read a raw number, so passing the handle
+            // `bearcad.drawing{}` returned failed with a Lua-userdata conversion error.
             let cross_section = match opts.get::<Value>("cross_section")? {
                 Value::Nil | Value::Boolean(false) => None,
-                Value::Integer(i) if i >= 0 => Some(i as usize),
-                Value::Number(n) if n >= 0.0 => Some(n as usize),
-                other => {
-                    return Err(mlua::Error::external(format!(
-                        "cross_section expects a view index or false, got {other:?}"
-                    )))
-                }
+                ref value => Some(
+                    Ordinal::from_lua(value.clone(), lua)
+                        .map_err(|e| {
+                            mlua::Error::external(format!(
+                                "cross_section expects a cross-section view or false, got {}: {e}",
+                                describe_lua_value(value)
+                            ))
+                        })?
+                        .0,
+                ),
             };
             let instr = Instruction::SetDrawingViewCrossSection {
-                drawing: opts.get("drawing")?,
-                view: opts.get("view")?,
+                drawing: opts.ordinal_req("drawing")?,
+                view: opts.ordinal_req("view")?,
                 cross_section,
             };
             unsafe { tick.exec(instr) }
@@ -11655,8 +11661,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let instr = Instruction::EditSectionPlane {
-                view: opts.get("view")?,
-                cut: opts.get("cut")?,
+                view: opts.ordinal_opt("view")?,
+                cut: opts.ordinal_req("cut")?,
                 offset: opts.get("offset")?,
                 roll_deg: opts.get("roll")?,
                 // `depth` is left alone when absent; `false` runs the cut through again;
@@ -11682,8 +11688,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(&opts, "delete_section_plane", &["view", "cut"])?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let instr = Instruction::DeleteSectionPlane {
-                view: opts.get("view")?,
-                cut: opts.get("cut")?,
+                view: opts.ordinal_opt("view")?,
+                cut: opts.ordinal_req("cut")?,
             };
             unsafe { tick.exec(instr) }
         })?,
@@ -11697,8 +11703,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(&opts, "begin_edit_section_plane", &["view", "cut"])?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let instr = Instruction::BeginEditSectionPlane {
-                view: opts.get("view")?,
-                cut: opts.get("cut")?,
+                view: opts.ordinal_opt("view")?,
+                cut: opts.ordinal_req("cut")?,
             };
             unsafe { tick.exec(instr) }
         })?,
@@ -12220,9 +12226,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 if let Some(parent) = view.aligned_parent {
                     t.set("aligned_to", parent)?;
                 }
-                // The cross section this projection shows, if any (#1776).
+                // The cross section this projection shows, if any (#1776) — as the ordinal
+                // every other read-back speaks, not the arena slot (#1951): a script
+                // comparing it against `handle:index()` was comparing two different
+                // numbering schemes, and they only agreed until something was deleted.
                 if let Some(key) = view.cross_section {
-                    t.set("cross_section", key.index())?;
+                    t.set(
+                        "cross_section",
+                        doc.cross_sections.keys().position(|k| k == key),
+                    )?;
                 }
                 // The bodies this view projects (#1915), as creation-order ordinals.
                 let bodies: Vec<usize> = view
@@ -20164,6 +20176,59 @@ pub mod tests {
             live.source.cut_extrusion_indices().len(),
             2,
             "both cuts must stay on the combined body, not become orphan extrusions"
+        );
+    }
+
+    /// #1951: a pocket cut into an extrusion's cap leaves a face that shares the cap's
+    /// **centre** but not its area, and a centroid-only match handed back the cap — so the
+    /// same model resolved to a mesh face on macOS and to `extrude_cap` on Linux and
+    /// Windows, depending only on how the tessellator happened to split the frame. The
+    /// remaining top is its own face whichever way the triangles fall.
+    #[test]
+    fn a_pocketed_cap_is_not_the_cap_it_was_cut_from() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 40 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.begin_sketch{
+                kind = "extrude_cap", extrusion = 0,
+                profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
+            }
+            -- A pocket centred on the cap: what is left has the cap's centre — this one
+            -- averages to exactly (20, 20) — and five eighths of its area.
+            bearcad.rect{ x = 10, y = 5, width = 20, height = 30 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = -8, body = "cut" }
+            local live
+            for i = 0, 20 do
+              local b = bearcad.get{ kind = "body", index = i }
+              if b == nil then break end
+              if not b.shadow then live = i end
+            end
+            local top
+            for _, f in ipairs(bearcad.body_faces(live)) do
+              if f.normal[3] > 0.9 and f.face[3] > 5 then top = f end
+            end
+            assert(top, "the cut body has a remaining top")
+            bearcad.begin_sketch(top)
+            local s = bearcad.get{ kind = "sketch", index = bearcad.count("sketch") - 1 }
+            assert(s.face == "body_mesh_face",
+                   "the frame left by the pocket is its own face, got " .. tostring(s.face))
+
+            -- …while an *untouched* cap still resolves analytically: same centre, same area.
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 40 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            local whole
+            for _, f in ipairs(bearcad.body_faces(0)) do
+              if f.normal[3] > 0.9 and f.face[3] > 5 then whole = f end
+            end
+            assert(whole, "the plain plate has a top")
+            bearcad.begin_sketch(whole)
+            local w = bearcad.get{ kind = "sketch", index = bearcad.count("sketch") - 1 }
+            assert(w.face == "extrude_cap",
+                   "an uncut cap keeps its analytic identity, got " .. tostring(w.face))
+            "#,
         );
     }
 

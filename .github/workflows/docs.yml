@@ -365,7 +365,10 @@ jobs:
   # #1836: a red scheduled run used to sit unread in the Actions tab while the published
   # screenshots froze. Say it in the one place that reaches a person: an issue.
   alert:
-    if: always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || needs.plan.outputs.stale == 'true')
+    # Stale screenshots are only an alarm if this run did not fix them: a nightly that
+    # regenerates and deploys them has already dealt with the drift the plan job measured
+    # (#1951 — it fired on every nightly that had any new commits).
+    if: always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || (needs.plan.outputs.stale == 'true' && needs.plan.outputs.generate != 'true'))
     needs: [plan, webapp, build, deploy]
     runs-on: ubuntu-latest
     permissions:
@@ -375,6 +378,9 @@ jobs:
       - name: File or update the nightly screenshot alarm
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job checks nothing out, so `gh` has no git remote to infer the repo from
+          # and every call failed with "not a git repository" (#1951).
+          GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           FAILED: ${{ contains(needs.*.result, 'failure') }}
           STALE: ${{ needs.plan.outputs.stale }}

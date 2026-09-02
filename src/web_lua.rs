@@ -734,7 +734,7 @@ fn json_parameter_index(
                     )),
                 };
             }
-            Ok(doc.parameters.values().position(|p| p.name == name))
+            Ok(doc.parameters.values().position(|p| p.name == *name))
         }
         Value::Object(_) => {
             let element = resolve_element(value, doc)?;

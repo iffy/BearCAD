@@ -69,6 +69,10 @@ fn elements_list_row_rects_id() -> egui::Id {
 /// neighbour that mounts in one of egui's passes and not the other cannot renumber it —
 /// `ui.horizontal` / `id_salt` mix in the parent's running counter, which is what made the
 /// same row rect report two ids and log a multipass clash.
+/// How far each tree level indents a row, points. Rows add this as leading space, so a
+/// script's row rect has to skip it to land on anything (#1951).
+const ROW_INDENT: f32 = 18.0;
+
 fn elements_row_id(node: HierarchyNode) -> egui::Id {
     egui::Id::new(("elements_row", node))
 }
@@ -5096,8 +5100,14 @@ pub fn show_pane(
                         active_component,
                         on_activate_component,
                     );
+                    // Past the indent (#1951): the recorded rect used to start at the pane's
+                    // left edge, so for a nested row its *centre* landed in the empty
+                    // indent — a script clicking or dragging "where the row really is" hit
+                    // nothing, and whether it worked came down to how wide the label
+                    // happened to render.
+                    let x = ui.min_rect().x_range();
                     let row_rect = egui::Rect::from_x_y_ranges(
-                        ui.min_rect().x_range(),
+                        (x.min + row_depth as f32 * ROW_INDENT).min(x.max)..=x.max,
                         row_top..=ui.cursor().top(),
                     );
                     list_rows.push((node_label(doc, node), row_rect));
@@ -6135,7 +6145,7 @@ fn show_section_row(
     section_collapsed: &mut SectionCollapse,
 ) {
     ui.horizontal(|ui| {
-        ui.add_space(depth as f32 * 18.0);
+        ui.add_space(depth as f32 * ROW_INDENT);
         let collapsed = section_collapsed.collapsed(node);
         // Triangle replaces the eye column, so match eye width for type-icon alignment (#1232).
         if collapse_triangle(ui, collapsed, ICON_DISPLAY_SIZE).clicked() {
@@ -6197,7 +6207,7 @@ fn show_component_row(
         rolled_back,
     );
     let row = ui.horizontal(|ui| {
-        ui.add_space(depth as f32 * 18.0);
+        ui.add_space(depth as f32 * ROW_INDENT);
         let collapsed = collapsed_components.contains(&ci);
         if collapse_triangle(ui, collapsed, DISCLOSURE_BEFORE_EYE_WIDTH).clicked() {
             if collapsed {
@@ -6367,7 +6377,7 @@ fn show_row(
     // here with a plain label.
     if is_section_node(node) {
         ui.horizontal(|ui| {
-            ui.add_space(depth as f32 * 18.0);
+            ui.add_space(depth as f32 * ROW_INDENT);
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
@@ -6443,7 +6453,7 @@ fn show_row(
             crate::model::VertexTreatmentKind::Fillet => "fillet",
         };
         ui.horizontal(|ui| {
-            ui.add_space(depth as f32 * 18.0);
+            ui.add_space(depth as f32 * ROW_INDENT);
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
@@ -6468,7 +6478,7 @@ fn show_row(
     // whisks you onto another workbench the moment you brush the row.
     if let HierarchyNode::Drawing(index) = node {
         ui.horizontal(|ui| {
-            ui.add_space(depth as f32 * 18.0);
+            ui.add_space(depth as f32 * ROW_INDENT);
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
@@ -6504,7 +6514,7 @@ fn show_row(
     // explains itself instead of selecting — nothing in a unit can be edited from here.
     if let HierarchyNode::UnitChild { .. } = node {
         ui.horizontal(|ui| {
-            ui.add_space(depth as f32 * 18.0);
+            ui.add_space(depth as f32 * ROW_INDENT);
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(
                     egui::Image::new(sized_texture(ui.ctx(), icon))
@@ -6532,7 +6542,7 @@ fn show_row(
     | HierarchyNode::DrawingLoupe { drawing, .. } = node
     {
         ui.horizontal(|ui| {
-            ui.add_space(depth as f32 * 18.0);
+            ui.add_space(depth as f32 * ROW_INDENT);
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
@@ -6572,7 +6582,7 @@ fn show_row(
     );
 
     ui.horizontal(|ui| {
-        ui.add_space(depth as f32 * 18.0);
+        ui.add_space(depth as f32 * ROW_INDENT);
         // A unit instance row grows a collapse triangle (#723), like a component's: its
         // read-only contents expand beneath it in the List.
         if let HierarchyNode::UnitInstance(index) = node {
@@ -8718,7 +8728,7 @@ label_hidden: false,
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             // Normal list row leading controls: eye, then type-icon placeholder.
             ui.horizontal(|ui| {
-                ui.add_space(depth as f32 * 18.0);
+                ui.add_space(depth as f32 * ROW_INDENT);
                 let _ = icon_button(ui, icon_for_visibility(true), "Hide");
                 let (icon_rect, _) = ui.allocate_exact_size(
                     egui::vec2(ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE),
@@ -8728,7 +8738,7 @@ label_hidden: false,
             });
             // Drawings section: disclosure (eye-width), then type-icon placeholder.
             ui.horizontal(|ui| {
-                ui.add_space(depth as f32 * 18.0);
+                ui.add_space(depth as f32 * ROW_INDENT);
                 let _ = collapse_triangle(ui, false, ICON_DISPLAY_SIZE);
                 let (icon_rect, _) = ui.allocate_exact_size(
                     egui::vec2(ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE),
@@ -8745,7 +8755,7 @@ label_hidden: false,
         let mut narrow_icon_x = f32::NAN;
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.horizontal(|ui| {
-                ui.add_space(depth as f32 * 18.0);
+                ui.add_space(depth as f32 * ROW_INDENT);
                 let _ = collapse_triangle(ui, false, DISCLOSURE_BEFORE_EYE_WIDTH);
                 let (icon_rect, _) = ui.allocate_exact_size(
                     egui::vec2(ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE),

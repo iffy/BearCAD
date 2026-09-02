@@ -1238,6 +1238,51 @@ pub fn analytic_face_from_mesh(
     found
 }
 
+/// A coplanar mesh face group's area, mm² (#1951) — the sum of its triangles.
+fn mesh_group_area(triangles: &[[Vec3; 3]]) -> f32 {
+    triangles
+        .iter()
+        .map(|t| (t[1] - t[0]).cross(t[2] - t[0]).length() * 0.5)
+        .sum()
+}
+
+/// A planar boundary loop's area, mm² (#1951): the shoelace formula in the loop's own plane.
+fn loop_area(points: &[Vec3]) -> f32 {
+    if points.len() < 3 {
+        return 0.0;
+    }
+    let mut twice = Vec3::ZERO;
+    for i in 0..points.len() {
+        twice += points[i].cross(points[(i + 1) % points.len()]);
+    }
+    twice.length() * 0.5
+}
+
+/// The area of the mesh face group sitting at `centroid` with `normal` (#1951), when the
+/// body has one. `None` when the caller's centroid names no group on the live mesh — an
+/// old key, or a face spec a script wrote by hand.
+fn mesh_group_area_at(
+    doc: &Document,
+    body: crate::model::BodyKey,
+    centroid: [i32; 3],
+    normal: [i32; 3],
+) -> Option<f32> {
+    let q = crate::hierarchy::quantize_body_point;
+    crate::extrude::body_face_groups(doc, body)
+        .iter()
+        .find(|tris| {
+            if tris.is_empty() {
+                return false;
+            }
+            let n = (tris[0][1] - tris[0][0])
+                .cross(tris[0][2] - tris[0][0])
+                .normalize_or_zero();
+            q(crate::extrude::face_group_center(tris)) == centroid
+                && (q(n) == normal || q(-n) == normal)
+        })
+        .map(|tris| mesh_group_area(tris))
+}
+
 fn analytic_face_from_mesh_uncached(
     doc: &Document,
     body: crate::model::BodyKey,
@@ -1245,17 +1290,35 @@ fn analytic_face_from_mesh_uncached(
     normal: [i32; 3],
 ) -> Option<FaceId> {
     let q = crate::hierarchy::quantize_body_point;
+    // #1951: a centroid alone does not identify a face. Cut a centred pocket into an
+    // extrusion's cap and what is left is a frame — a different face with the *same* centre
+    // as the cap it was cut from, so the cap won every time the triangulation happened to
+    // average out symmetrically. That made the identity depend on the tessellator: the same
+    // model resolved to a mesh face on one platform and to the cap on another. Areas tell
+    // them apart, so the match wants both.
+    let mesh_area = mesh_group_area_at(doc, body, centroid, normal);
     for face in analytic_faces_of_body(doc, body) {
         let Some(frame) = sketch_frame(doc, face.clone()) else {
             continue;
         };
-        let c = crate::extrude::face_boundary_loop_world(doc, &face)
+        let boundary = crate::extrude::face_boundary_loop_world(doc, &face);
+        let c = boundary
+            .as_ref()
             .map(|pts| pts.iter().copied().sum::<Vec3>() / pts.len().max(1) as f32)
             .unwrap_or(frame.origin);
         let n = frame.normal.normalize_or_zero();
-        if q(c) == centroid && (q(n) == normal || q(-n) == normal) {
-            return Some(face);
+        if q(c) != centroid || (q(n) != normal && q(-n) != normal) {
+            continue;
         }
+        if let (Some(mesh_area), Some(pts)) = (mesh_area, boundary.as_ref()) {
+            let analytic_area = loop_area(pts);
+            // A percent of slack absorbs the tessellation of a curved boundary; the
+            // difference this guards against is a whole pocket's worth.
+            if (analytic_area - mesh_area).abs() > analytic_area.max(mesh_area) * 0.01 + 1e-3 {
+                continue;
+            }
+        }
+        return Some(face);
     }
     None
 }

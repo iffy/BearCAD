@@ -32,9 +32,13 @@ local card = bearcad.ui.drawing_view_rect(0)
 assert(card, "the base projection has a card on the page")
 bearcad.ui.drag(row, card)
 
+-- `drawing_views` reports the cross section as an ordinal, which is what a handle's
+-- `index()` gives back.
 local base, child = sections()
-assert(base == cs, "the dropped cross section applies to the projection, got " .. tostring(base))
-assert(child == cs, "the aligned child sections with its base, got " .. tostring(child))
+assert(base == cs:index(),
+  "the dropped cross section applies to the projection, got " .. tostring(base))
+assert(child == cs:index(),
+  "the aligned child sections with its base, got " .. tostring(child))
 
 print("ok: dropping a cross section on a projection sections it and its aligned children")
 bearcad.quit()

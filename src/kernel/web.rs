@@ -314,6 +314,12 @@ impl Shape {
         false
     }
 
+    /// The multi-solid path writer (#1938) is likewise path-based: nothing to write to
+    /// here, so the caller falls back to the byte/faceted route.
+    pub fn write_step_many(_shapes: &[Shape], _path: &std::path::Path, _name: &str) -> bool {
+        false
+    }
+
     pub fn read_step(_path: &std::path::Path) -> Option<Shape> {
         None
     }
