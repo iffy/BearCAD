@@ -6143,9 +6143,24 @@ fn body_face_key_groups(
     if let Some(hit) = cached {
         return Some(hit);
     }
+    // Split by plane the way `body_flat_face_groups` does (#1951): a face key names a
+    // *flat*, and the smooth chaining that lets `fit_cylinder` see a whole wall also drags
+    // a flat into the fillet running off it — so the key of a filleted cap's remaining top
+    // matched no group and the sketch frame came back "Body face does not exist".
     let groups = std::rc::Rc::new(
         body_solid_mesh_for_face_key(doc, body)
-            .map(|m| crate::gpu_viewport::solid_mesh_coplanar_faces(&m))
+            .map(|m| {
+                crate::gpu_viewport::solid_mesh_coplanar_faces(&m)
+                    .into_iter()
+                    .flat_map(|tris| {
+                        if fit_cylinder(&tris).is_some() {
+                            vec![tris]
+                        } else {
+                            split_group_by_plane(&tris)
+                        }
+                    })
+                    .collect::<Vec<Vec<[Vec3; 3]>>>()
+            })
             .unwrap_or_default(),
     );
     FACE_KEY_GROUP_CACHE.with(|cache| {
@@ -7753,6 +7768,9 @@ thread_local! {
         std::cell::RefCell::new((0, HashMap::new()));
     static BODY_EDGE_CHAIN_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, std::rc::Rc<Vec<Vec<(Vec3, Vec3)>>>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
+    /// #1951: the flats, split out of the smooth groups above.
+    static BODY_FLAT_FACE_GROUP_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, std::rc::Rc<Vec<Vec<[Vec3; 3]>>>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
     static BODY_FEATURE_EDGE_CACHE: std::cell::RefCell<(u64, HashMap<crate::model::BodyKey, std::rc::Rc<Vec<(Vec3, Vec3)>>>)> =
         std::cell::RefCell::new((0, HashMap::new()));
 }
@@ -8173,11 +8191,78 @@ pub fn cylinder_scene_element(body: crate::model::BodyKey, cyl: &BodyCylinder) -
 
 /// A body's **flat** face groups (#1013): the coplanar groups that aren't cylinders, which is
 /// what a face pick, a face key and a mating plane all mean by "a face".
-pub fn body_flat_face_groups(doc: &Document, body_index: crate::model::BodyKey) -> Vec<Vec<[Vec3; 3]>> {
-    body_face_groups(doc, body_index)
+///
+/// [`body_face_groups`] chains triangles that share an edge and turn by less than the crease
+/// threshold — which is what a *smooth* surface is, and is what [`fit_cylinder`] needs to see
+/// a whole wall. But that relation is transitive, so a fillet running off a flat drags the
+/// flat into its chain: a filleted cap had no flat group of its own, nothing to hover and
+/// nothing to sketch on (#1325/#1951). Splitting each non-cylinder group by plane puts the
+/// flat back without disturbing what the cylinder fit is given.
+pub fn body_flat_face_groups(doc: &Document, body_index: crate::model::BodyKey) -> std::rc::Rc<Vec<Vec<[Vec3; 3]>>> {
+    let fingerprint = document_pose_fingerprint(doc);
+    let groups = body_face_groups(doc, body_index);
+    BODY_FLAT_FACE_GROUP_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            cache.0 = fingerprint;
+            cache.1.clear();
+        }
+        if let Some(flats) = cache.1.get(&body_index) {
+            return flats.clone();
+        }
+        let mut out: Vec<Vec<[Vec3; 3]>> = Vec::new();
+        for tris in groups.iter() {
+            if fit_cylinder(tris).is_some() {
+                continue;
+            }
+            out.extend(split_group_by_plane(tris));
+        }
+        let out = std::rc::Rc::new(out);
+        cache.1.insert(body_index, out.clone());
+        out
+    })
+}
+
+/// One coplanar face per plane the group's triangles lie in (#1951). A group that is already
+/// flat comes back whole; a smooth chain comes back as the flats it runs between, with the
+/// curved steps dropped once they no longer make a face of their own.
+fn split_group_by_plane(tris: &[[Vec3; 3]]) -> Vec<Vec<[Vec3; 3]>> {
+    const PLANE_TOL: f32 = 0.02; // mm
+    let mut planes: Vec<(Vec3, f32, Vec<[Vec3; 3]>)> = Vec::new();
+    for tri in tris {
+        let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            continue;
+        }
+        // Coplanar triangles can be wound either way (two-sided shading), so key on the
+        // plane, not the side: flip to a canonical direction before comparing.
+        let (n, d) = {
+            let d = n.dot(tri[0]);
+            if d < 0.0 || (d == 0.0 && (n.x < 0.0 || (n.x == 0.0 && n.y < 0.0))) {
+                (-n, -d)
+            } else {
+                (n, d)
+            }
+        };
+        match planes
+            .iter_mut()
+            .find(|(pn, pd, _)| pn.dot(n) > 0.999_8 && (pd - d).abs() <= PLANE_TOL)
+        {
+            Some((_, _, group)) => group.push(*tri),
+            None => planes.push((n, d, vec![*tri])),
+        }
+    }
+    planes.into_iter().map(|(_, _, group)| group).collect()
+}
+
+/// Bounding boxes for [`body_flat_face_groups`], in the same order (#1951).
+pub fn body_flat_face_group_bounds(
+    doc: &Document,
+    body_index: crate::model::BodyKey,
+) -> Vec<(Vec3, Vec3)> {
+    body_flat_face_groups(doc, body_index)
         .iter()
-        .filter(|tris| fit_cylinder(tris).is_none())
-        .cloned()
+        .map(|tris| triangle_bounds(tris).unwrap_or((Vec3::ZERO, Vec3::ZERO)))
         .collect()
 }
 

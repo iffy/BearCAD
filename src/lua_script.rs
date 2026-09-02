@@ -6846,12 +6846,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 return Ok(Value::Table(out));
             };
             // Flat faces only (#1013): a round wall is a cylinder, reported by
-            // `body_cylinders`, and would give a mate a nonsense plane to land on.
-            for (i, tris) in crate::gpu_viewport::solid_mesh_coplanar_faces(&mesh)
-                .iter()
-                .filter(|tris| crate::extrude::fit_cylinder(tris).is_none())
-                .enumerate()
-            {
+            // `body_cylinders`, and would give a mate a nonsense plane to land on. The
+            // flats are split out of the smooth chains (#1951), so a filleted cap's
+            // remaining top is listed as the face it is.
+            let _ = &mesh;
+            for (i, tris) in crate::extrude::body_flat_face_groups(doc, key).iter().enumerate() {
                 out.set(i + 1, body_face_table(lua, index, tris)?)?;
             }
             Ok(Value::Table(out))
@@ -7021,6 +7020,29 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                             vec3_lua(lua, crate::hierarchy::dequantize_body_point(*dir))?,
                         )?;
                     }
+                    // A body's remaining flat picked as a *sketchable* face is the same
+                    // thing as picking it directly (#1871/#1951): report the identity, not
+                    // just a display label and a dummy index.
+                    SceneElement::SketchFace(crate::model::FaceId::BodyMeshFace {
+                        body,
+                        centroid,
+                        normal,
+                    }) => {
+                        let ordinal = state.doc.bodies.keys().position(|k| k == *body).unwrap_or(0);
+                        entry.set("index", ordinal)?;
+                        entry.set("body", ordinal)?;
+                        entry.set(
+                            "face",
+                            vec3_lua(lua, crate::hierarchy::dequantize_body_point(*centroid))?,
+                        )?;
+                        entry.set(
+                            "normal",
+                            vec3_lua(
+                                lua,
+                                crate::hierarchy::dequantize_body_point(*normal).normalize_or_zero(),
+                            )?,
+                        )?;
+                    }
                     SceneElement::FaceEdge(_) => {
                         entry.set("index", element_index(&state.doc, element.clone()))?;
                     }
@@ -7082,23 +7104,32 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 if let Some(label) = face_element_label(doc, &element) {
                     entry.set("label", label)?;
                 }
-                if let SceneElement::BodyFace {
-                    body,
-                    centroid,
-                    normal,
-                } = &element
-                {
-                    let ordinal = doc.bodies.keys().position(|k| k == *body).unwrap_or(0);
+                // A body's flat, whether it was picked as a face or as a sketchable
+                // surface, reports the same identity (#1871/#1951) — body + centroid +
+                // normal, not a display label and a dummy index.
+                let mesh_face = match &element {
+                    SceneElement::BodyFace { body, centroid, normal } => {
+                        Some((*body, *centroid, *normal))
+                    }
+                    SceneElement::SketchFace(crate::model::FaceId::BodyMeshFace {
+                        body,
+                        centroid,
+                        normal,
+                    }) => Some((*body, *centroid, *normal)),
+                    _ => None,
+                };
+                if let Some((body, centroid, normal)) = mesh_face {
+                    let ordinal = doc.bodies.keys().position(|k| k == body).unwrap_or(0);
                     entry.set("body", ordinal)?;
                     entry.set(
                         "face",
-                        vec3_lua(lua, crate::hierarchy::dequantize_body_point(*centroid))?,
+                        vec3_lua(lua, crate::hierarchy::dequantize_body_point(centroid))?,
                     )?;
                     entry.set(
                         "normal",
                         vec3_lua(
                             lua,
-                            crate::hierarchy::dequantize_body_point(*normal).normalize_or_zero(),
+                            crate::hierarchy::dequantize_body_point(normal).normalize_or_zero(),
                         )?,
                     )?;
                 }

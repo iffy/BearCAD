@@ -1172,12 +1172,14 @@ fn mesh_surface_under(doc: &Document, face: &FaceId, point: Vec3) -> MeshSurface
     let Some(body) = crate::model::body_index_for_face(doc, face) else {
         return MeshSurface::Unknown;
     };
-    let groups = crate::extrude::body_face_groups(doc, body);
+    // The flats (#1951), so the area compared against is the surface that is really there
+    // rather than the whole smooth chain a fillet drags it into.
+    let groups = crate::extrude::body_flat_face_groups(doc, body);
     if groups.is_empty() {
         return MeshSurface::Unknown;
     }
     const TOL: f32 = 1e-3;
-    let bounds = crate::extrude::body_face_group_bounds(doc, body);
+    let bounds = crate::extrude::body_flat_face_group_bounds(doc, body);
     for (gi, triangles) in groups.iter().enumerate() {
         if let Some((lo, hi)) = bounds.get(gi) {
             if point.cmplt(*lo - TOL).any() || point.cmpgt(*hi + TOL).any() {
@@ -1863,13 +1865,11 @@ pub fn pick_sketch_face(
         }) {
             continue;
         }
-        let group_bounds = crate::extrude::body_face_group_bounds(doc, bi);
-        let groups = crate::extrude::body_face_groups(doc, bi);
+        // #1951: the flats, split out of the smooth chains — a filleted cap's remaining
+        // top is a face of its own, not part of the fillet that runs off it.
+        let group_bounds = crate::extrude::body_flat_face_group_bounds(doc, bi);
+        let groups = crate::extrude::body_flat_face_groups(doc, bi);
         for (gi, triangles) in groups.iter().enumerate() {
-            // Cylindrical walls are not sketchable flats.
-            if crate::extrude::fit_cylinder(triangles).is_some() {
-                continue;
-            }
             if !group_bounds.get(gi).is_some_and(|b| {
                 crate::construction::screen_bounds_hit(screen, project, *b, 0.0)
             }) {
@@ -2050,10 +2050,7 @@ pub fn sketch_faces_near(
         if body.shadow {
             continue;
         }
-        for triangles in crate::extrude::body_face_groups(doc, bi).iter() {
-            if crate::extrude::fit_cylinder(triangles).is_some() {
-                continue;
-            }
+        for triangles in crate::extrude::body_flat_face_groups(doc, bi).iter() {
             let Some((dist, c)) = mesh_face_pick_distance(screen, project, triangles) else {
                 continue;
             };
