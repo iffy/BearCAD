@@ -1724,6 +1724,101 @@ pub struct CreatingJoint {
 /// the inputs empty for the user, and one that does can still be overruled. It runs where the
 /// joint is built rather than at commit, so a scripted joint is seeded exactly like a drawn
 /// one.
+/// Where a view of this orientation belongs on a projection sheet (#1942), as a column and
+/// row on a 3×3 grid centred on Front. Third-angle: Top above Front, Bottom below, Left to
+/// its left, Right to its right; Back and Isometric take the two free diagonal corners
+/// (Back is a rear elevation, so it sits out beyond Left; Iso is a pictorial, so it takes
+/// the top-right, where drawings conventionally put one). Anything else — an edge view, a
+/// corner view, a free angle — has no standard place and falls back to the cascade.
+fn projection_slot(orientation: crate::model::DrawingOrientation) -> Option<(i8, i8)> {
+    use crate::model::DrawingOrientation as O;
+    Some(match orientation {
+        O::Front => (0, 0),
+        O::Top => (0, -1),
+        O::Bottom => (0, 1),
+        O::Left => (-1, 0),
+        O::Right => (1, 0),
+        O::Back => (-1, 1),
+        O::Isometric => (1, -1),
+        _ => return None,
+    })
+}
+
+/// Give a view about to join the sheet its starting placement (#1942): its standard
+/// projection slot when the orientation has one and no view is there yet, else the old
+/// down-right cascade from the page centre, so overlapping placements still step apart.
+fn place_new_drawing_view(
+    doc: &Document,
+    drawing: crate::model::DrawingKey,
+    view: &mut crate::model::DrawingView,
+) {
+    let Some(d) = doc.drawings.get(drawing) else { return };
+    let taken = |slot: (i8, i8)| {
+        d.views
+            .iter()
+            .any(|v| v.auto_placed && projection_slot(v.orientation) == Some(slot))
+    };
+    if projection_slot(view.orientation).is_some_and(|slot| !taken(slot)) {
+        // `relayout_drawing_views` works out where, once the view is on the sheet.
+        view.auto_placed = true;
+        return;
+    }
+    // Cascade new placements down-right from the page centre so they don't fully
+    // stack (#274); wrap back after a handful.
+    let step = (d.views.len() % 6) as f32 * 0.06;
+    view.pos_x = (0.35 + step).min(0.9);
+    view.pos_y = (0.35 + step).min(0.9);
+}
+
+/// Place a view the sheet has just gained (#1942), and re-fit the ones already on it.
+///
+/// A new placement used to cascade down-right from the page centre — fine for one card the
+/// user is about to drag anyway, useless for a scripted sheet, where four views landed
+/// 85% on top of each other. Views whose orientation has a standard projection position
+/// take it; the card size shrinks to whatever the occupied columns and rows need, so the
+/// sheet stays on the page as it fills up. A card the user has resized or dragged is left
+/// exactly where it is; only ones still sitting on an auto-placement move.
+fn relayout_drawing_views(doc: &mut Document, drawing: crate::model::DrawingKey) {
+    let Some(d) = doc.drawings.get(drawing) else { return };
+    // Which views are still auto-placed, and the grid they occupy.
+    let auto: Vec<(usize, (i8, i8))> = d
+        .views
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.aligned_parent.is_none() && v.auto_placed)
+        .filter_map(|(i, v)| projection_slot(v.orientation).map(|slot| (i, slot)))
+        .collect();
+    if auto.is_empty() {
+        return;
+    }
+    let (mut c0, mut c1, mut r0, mut r1) = (0i8, 0i8, 0i8, 0i8);
+    for (_, (c, r)) in &auto {
+        c0 = c0.min(*c);
+        c1 = c1.max(*c);
+        r0 = r0.min(*r);
+        r1 = r1.max(*r);
+    }
+    let cols = (c1 - c0 + 1) as f32;
+    let rows = (r1 - r0 + 1) as f32;
+    // Cells fill the page with a small margin; the card sits inside its cell with a gap, and
+    // never grows past the size a lone view has always had.
+    const PAGE_MARGIN: f32 = 0.03;
+    const GAP: f32 = 0.02;
+    let cell_w = (1.0 - 2.0 * PAGE_MARGIN) / cols;
+    let cell_h = (1.0 - 2.0 * PAGE_MARGIN) / rows;
+    let size = (cell_w.min(cell_h) - GAP)
+        .min(crate::model::default_view_size())
+        .max(crate::model::MIN_VIEW_SIZE_FRAC);
+    let Some(d) = doc.drawings.get_mut(drawing) else { return };
+    for (i, (c, r)) in auto {
+        let Some(v) = d.views.get_mut(i) else { continue };
+        v.pos_x = PAGE_MARGIN + ((c - c0) as f32 + 0.5) * cell_w;
+        v.pos_y = PAGE_MARGIN + ((r - r0) as f32 + 0.5) * cell_h;
+        v.size_x = size;
+        v.size_y = size;
+    }
+}
+
 fn seeded_joint_frame(
     frame: &crate::model::JointFrame,
     placement: &crate::model::MoveOperation,
@@ -15064,15 +15159,12 @@ impl AppState {
                 if self.doc.drawings.get(drawing).is_none() {
                     return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 }
-                // Cascade new placements down-right from the page centre so they don't fully
-                // stack (#274); wrap back after a handful.
-                let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
                 // Views start with no dimensions shown (#331); the projection's context pane has
                 // "Show all dimensions"/"Hide all dimensions" buttons to populate or clear them.
                 let mut view = crate::model::DrawingView::from_bodies(bodies.clone(), orientation);
-                view.pos_x = (0.35 + step).min(0.9);
-                view.pos_y = (0.35 + step).min(0.9);
+                place_new_drawing_view(&self.doc, drawing, &mut view);
                 let vi = self.doc.drawings[drawing].push_view(view);
+                relayout_drawing_views(&mut self.doc, drawing);
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 let source = if bodies.len() == 1 {
                     format!("body {}", bodies[0].index())
@@ -15149,12 +15241,11 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
                 let mut page_view = crate::model::DrawingView::from_bodies(bodies, orientation);
                 page_view.cross_section = Some(view);
-                page_view.pos_x = (0.35 + step).min(0.9);
-                page_view.pos_y = (0.35 + step).min(0.9);
+                place_new_drawing_view(&self.doc, drawing, &mut page_view);
                 let vi = self.doc.drawings[drawing].push_view(page_view);
+                relayout_drawing_views(&mut self.doc, drawing);
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 self.status = format!(
                     "Added cross section {} to drawing {}",
@@ -15209,12 +15300,11 @@ impl AppState {
                 if self.doc.drawings.get(drawing).is_none() {
                     return ActionResult::Err(format!("No drawing {}", drawing.index()));
                 }
-                let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
                 // Views start with no dimensions shown (#331).
                 let mut view = crate::model::DrawingView::from_sketch(sketch, orientation);
-                view.pos_x = (0.35 + step).min(0.9);
-                view.pos_y = (0.35 + step).min(0.9);
+                place_new_drawing_view(&self.doc, drawing, &mut view);
                 let vi = self.doc.drawings[drawing].push_view(view);
+                relayout_drawing_views(&mut self.doc, drawing);
                 self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 self.status = format!("Added sketch {} to drawing {}", sketch.index(), drawing.index());
                 ActionResult::Ok
@@ -15283,6 +15373,8 @@ impl AppState {
                 // stays locked to its parent (enforced in `resolved_view_pos`).
                 v.pos_x = pos_x.clamp(0.0, 1.0);
                 v.pos_y = pos_y.clamp(0.0, 1.0);
+                // A hand-placed card is never re-laid-out again (#1942).
+                v.auto_placed = false;
                 ActionResult::Ok
             }
             Action::SetDrawingViewSize {
@@ -15298,6 +15390,8 @@ impl AppState {
                     return ActionResult::Err(format!("No view {view}"));
                 }
                 crate::drawing::apply_view_size(&mut d.views, view, size_x, size_y);
+                // A hand-sized card keeps its size as the sheet fills up (#1942).
+                d.views[view].auto_placed = false;
                 let (sx, sy) = crate::drawing::view_size_frac(&d.views[view]);
                 self.status = format!(
                     "Resized view to {:.0}% × {:.0}%",

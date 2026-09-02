@@ -19092,6 +19092,53 @@ pub mod tests {
         );
     }
 
+    /// #1942: a scripted sheet lays its orthographic views out where they belong — Top
+    /// above Front, Left beside it — instead of cascading every card onto the same spot.
+    /// Four views used to land at 0.35/0.41/0.47/0.53 with a 0.42 card each: an 85% overlap,
+    /// so no sheet was worth exporting without a manual `drawing_move_view` pass first.
+    #[test]
+    fn lua_drawing_views_take_their_projection_positions() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            local p = bearcad.cuboid{ width = 80, depth = 60, height = 20 }
+            local d = bearcad.drawing{}
+            for _, o in ipairs({ "front", "top", "left", "iso" }) do
+              bearcad.drawing_view{ drawing = d, body = p, orientation = o }
+            end
+            "#,
+        );
+        let views = &state.doc.drawings.values().next().unwrap().views;
+        assert_eq!(views.len(), 4);
+        let at = |i: usize| (views[i].pos_x, views[i].pos_y, views[i].size_x, views[i].size_y);
+        let (fx, fy, fw, fh) = at(0);
+        let (tx, ty, ..) = at(1);
+        let (lx, ly, ..) = at(2);
+        let (ix, iy, ..) = at(3);
+        assert!((tx - fx).abs() < 1e-3, "Top shares Front's column: {tx} vs {fx}");
+        assert!(ty < fy - fh * 0.5, "Top sits above Front: {ty} vs {fy}");
+        assert!((ly - fy).abs() < 1e-3, "Left shares Front's row: {ly} vs {fy}");
+        assert!(lx < fx - fw * 0.5, "Left sits beside Front: {lx} vs {fx}");
+        assert!(ix > fx && iy < fy, "Iso takes a free corner: {ix},{iy}");
+        // Every card is on the page, and none of them overlap.
+        for i in 0..views.len() {
+            let (x, y, w, h) = at(i);
+            assert!(
+                x - w * 0.5 >= -1e-3 && x + w * 0.5 <= 1.0 + 1e-3,
+                "view {i} runs off the page: {x} ± {w}"
+            );
+            assert!(y - h * 0.5 >= -1e-3 && y + h * 0.5 <= 1.0 + 1e-3);
+            for j in (i + 1)..views.len() {
+                let (x2, y2, w2, h2) = at(j);
+                assert!(
+                    (x - x2).abs() >= (w + w2) * 0.5 - 1e-3
+                        || (y - y2).abs() >= (h + h2) * 0.5 - 1e-3,
+                    "views {i} and {j} overlap: {x},{y} {w}x{h} vs {x2},{y2} {w2}x{h2}"
+                );
+            }
+        }
+    }
+
     /// #1944: `export_preview` renders the **Home** view the docs promise, and takes an
     /// explicit angle. It used to render one fixed isometric no matter where Home was set,
     /// and it is the only call that produces a clean image (no grid, no world axes) — so a
@@ -26972,7 +27019,8 @@ pub mod tests {
             bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 10 }}
             local d = bearcad.drawing{{}}
             bearcad.drawing_view{{ drawing = d, body = 0, orientation = "front" }}
-            bearcad.drawing_align_view{{ drawing = d, parent = 0, dir = "below", pos = 0.75 }}
+            -- Clear of the parent card, which sits at the page centre (#1942).
+            bearcad.drawing_align_view{{ drawing = d, parent = 0, dir = "below", pos = 0.88 }}
             bearcad.drawing_view_align_lines{{ drawing = d, view = 1, show = true }}
             bearcad.export_drawing_svg{{ drawing = d, path = "{p}" }}
         "#

@@ -5184,6 +5184,11 @@ pub struct DrawingView {
     pub pos_x: f32,
     #[serde(default = "default_view_pos")]
     pub pos_y: f32,
+    /// Still where the sheet put it (#1942): a view laid out by the standard projection
+    /// arrangement, which re-fits as the sheet gains views. Dragging or resizing the card
+    /// clears it, so a hand-placed view is never moved again.
+    #[serde(default)]
+    pub auto_placed: bool,
     /// Card size as a fraction of the page (#1207). Width and height are independent; aligned
     /// views share the matching axis (Above/Below share `size_x`, Left/Right share `size_y`).
     /// Defaults to 0.42 — the historical fixed card size.
@@ -5399,6 +5404,7 @@ impl DrawingView {
             label_hidden: false,
             label_pos: DrawingLabelPos::default(),
             label_text: None,
+            auto_placed: false,
             pos_x: default_view_pos(),
             pos_y: default_view_pos(),
             size_x: default_view_size(),
@@ -5431,6 +5437,7 @@ impl DrawingView {
             label_hidden: false,
             label_pos: DrawingLabelPos::default(),
             label_text: None,
+            auto_placed: false,
             pos_x: default_view_pos(),
             pos_y: default_view_pos(),
             size_x: default_view_size(),

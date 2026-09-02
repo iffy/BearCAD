@@ -28,6 +28,17 @@ bearcad.drawing_view_add{ drawing = d, view = 0, body = 1 }  -- shift-click
 `orientation` defaults to `"front"`; accepts `front`/`back`/`left`/`right`/`top`/`bottom`/`iso`
 or a diagonal like `front-right`. `bearcad.count("drawing")` is the number of drawings.
 
+Views land in their standard projection positions — Top above Front, Left and Right beside
+it, Bottom below, Back and Iso in the free corners — and the cards shrink to fit as the
+sheet fills up, so a scripted sheet is exportable without a layout pass. Moving or resizing
+a card takes it out of that arrangement; it then stays where you put it. Orientations with
+no standard place (an edge or corner view, a free angle) cascade from the page centre.
+
+```lua
+bearcad.drawing_move_view{ drawing = d, view = 0, x = 0.35, y = 0.35 }  -- page fractions
+bearcad.drawing_view_size{ drawing = d, view = 0, width = 0.3, height = 0.3 }
+```
+
 ## Dimensions, style, page
 
 ```lua

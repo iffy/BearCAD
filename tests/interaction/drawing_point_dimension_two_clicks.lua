@@ -9,6 +9,9 @@ bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
 bearcad.exit_sketch()
 local d = bearcad.drawing{}
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+-- Park the card up-left of the page centre: this test needs blank paper below and right of
+-- it, and a lone view is otherwise laid out in the middle (#1942).
+bearcad.drawing_move_view{ drawing = d, view = 0, x = 0.35, y = 0.35 }
 -- Hide the side panes (CI's WM-less Xvfb can't maximize; see tests/interaction).
 bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")

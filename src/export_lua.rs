@@ -1032,19 +1032,27 @@ impl<'a> EmitCtx<'a> {
                         );
                         out.push('\n');
                     }
-                    out.push_str(
-                        &Instruction::MoveDrawingView {
-                            drawing: dord,
-                            view: vi,
-                            x: view.pos_x,
-                            y: view.pos_y,
-                        }
-                        .as_lua_in(Some(self.doc)),
-                    );
-                    out.push('\n');
-                    // Card size (#1207): only emit when it differs from the default.
+                    // A view the sheet laid out for itself (#1942) needs no placement: the
+                    // replay puts it in the same slot, and emitting a move would pin it
+                    // there and stop the sheet re-fitting as later views arrive.
+                    if !view.auto_placed {
+                        out.push_str(
+                            &Instruction::MoveDrawingView {
+                                drawing: dord,
+                                view: vi,
+                                x: view.pos_x,
+                                y: view.pos_y,
+                            }
+                            .as_lua_in(Some(self.doc)),
+                        );
+                        out.push('\n');
+                    }
+                    // Card size (#1207): only emit when it differs from the default — and
+                    // never for an auto-placed view, whose size the layout picks.
                     let def = crate::drawing::CELL_FRAC;
-                    if (view.size_x - def).abs() > 1e-4 || (view.size_y - def).abs() > 1e-4 {
+                    if !view.auto_placed
+                        && ((view.size_x - def).abs() > 1e-4 || (view.size_y - def).abs() > 1e-4)
+                    {
                         out.push_str(
                             &Instruction::SetDrawingViewSize {
                                 drawing: dord,
