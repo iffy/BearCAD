@@ -19301,6 +19301,51 @@ pub mod tests {
         }
     }
 
+    /// #1938: a multi-body STEP export writes one real BREP solid per body, and importing it
+    /// back gives that many bodies again. It used to concatenate every body's triangles into
+    /// one `CLOSED_SHELL` — not a closed shell at all for disjoint solids — with every curved
+    /// surface tessellated away, so three parts came back as one lump of the wrong volume.
+    #[test]
+    fn lua_multi_body_step_round_trips_as_separate_solids() {
+        let path = std::env::temp_dir().join(format!("bearcad_multi_{}.step", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_string_lossy().replace('\\', "/");
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{{ width = 10, depth = 10, height = 10, name = "A" }}
+            bearcad.cuboid{{ width = 10, depth = 10, height = 10, at = {{50, 0, 0}}, name = "B" }}
+            bearcad.cylinder{{ radius = 5, height = 10, at = {{100, 0, 0}}, name = "C" }}
+            assert(bearcad.count("live_body") == 3)
+            bearcad.export_step("{p}")
+            "#
+        ));
+        let text = std::fs::read_to_string(&path).expect("exported");
+        assert_eq!(
+            text.matches("MANIFOLD_SOLID_BREP").count(),
+            3,
+            "one real solid per body, not one merged shell"
+        );
+        assert!(
+            text.contains("CYLINDRICAL_SURFACE"),
+            "the cylinder keeps its curved surface"
+        );
+        assert_eq!(text.matches("FACETED_BREP").count(), 0, "not the faceted fallback");
+
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.import_step("{p}")
+            "#
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            state.doc.bodies.len(),
+            3,
+            "three solids come back as three bodies"
+        );
+    }
+
     /// #106: a single-body document exports real BREP STEP in kernel builds, and a
     /// curved fillet survives the export → import round-trip.
     #[test]

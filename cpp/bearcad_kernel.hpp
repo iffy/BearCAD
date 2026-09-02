@@ -126,6 +126,13 @@ BearcadShape* bearcad_shape_clone(const BearcadShape* shape);
 // failure (OCCT error, write failure).
 int bearcad_shape_write_step(const BearcadShape* s, const char* path, const char* name);
 
+/// Write several solids into one STEP file (#1938) — one BREP solid per shape.
+int bearcad_shapes_write_step(
+    const BearcadShape* const* shapes,
+    int count,
+    const char* path,
+    const char* name);
+
 // Read the first/combined shape from a STEP file at `path` (curved surfaces
 // included). Returns a new owned shape, or NULL on failure / an empty file.
 BearcadShape* bearcad_read_step(const char* path);

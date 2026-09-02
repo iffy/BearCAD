@@ -556,8 +556,8 @@ local img = bearcad.get{ kind = "image", index = 0 }        -- plane/from/to/len
 bearcad.image_opacity{ image = 0, opacity = 0.5 }          -- 0..1; expressions ok
 ```
 
-STEP export writes real BREP and import reads it back, curved/NURBS surfaces
-included.
+STEP export writes real BREP — one solid per body, curved/NURBS surfaces included — and
+import reads it back as one body per solid.
 
 ## Document lifecycle
 

@@ -1323,6 +1323,45 @@ extern "C" int bearcad_shape_write_step(const BearcadShape* s, const char* path,
     }
 }
 
+// Several solids in one STEP file (#1938). Each shape is transferred into the same
+// writer, so the file holds one MANIFOLD_SOLID_BREP per body instead of a single merged
+// (and, being disjoint, invalid) CLOSED_SHELL. The header name is the document's; per-body
+// product names are set by the same pass `bearcad_shape_write_step` uses, which walks the
+// whole model, so all products share the file name — that is still better than the merge.
+extern "C" int bearcad_shapes_write_step(
+    const BearcadShape* const* shapes,
+    int count,
+    const char* path,
+    const char* name) {
+    if (shapes == nullptr || count <= 0 || path == nullptr) {
+        return 1;
+    }
+    try {
+        STEPControl_Writer writer;
+        int transferred = 0;
+        for (int i = 0; i < count; i++) {
+            const BearcadShape* s = shapes[i];
+            if (s == nullptr || s->shape.IsNull()) {
+                continue;
+            }
+            if (writer.Transfer(s->shape, STEPControl_AsIs) != IFSelect_RetDone) {
+                return 1;
+            }
+            transferred++;
+        }
+        if (transferred == 0) {
+            return 1;
+        }
+        bearcad_step_set_name(writer, name);
+        IFSelect_ReturnStatus status = writer.Write(path);
+        return status == IFSelect_RetDone ? 0 : 1;
+    } catch (const Standard_Failure&) {
+        return 1;
+    } catch (...) {
+        return 1;
+    }
+}
+
 extern "C" BearcadShape* bearcad_read_step(const char* path) {
     if (path == nullptr) {
         return nullptr;

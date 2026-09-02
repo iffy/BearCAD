@@ -132,6 +132,12 @@ mod ffi {
             path: *const c_char,
             name: *const c_char,
         ) -> c_int;
+        pub fn bearcad_shapes_write_step(
+            shapes: *const *const BearcadShape,
+            count: c_int,
+            path: *const c_char,
+            name: *const c_char,
+        ) -> c_int;
         pub fn bearcad_read_step(path: *const c_char) -> *mut BearcadShape;
     }
 }
@@ -615,6 +621,41 @@ impl Shape {
             .collect();
         let label = std::ffi::CString::new(cleaned).unwrap_or_default();
         let rc = unsafe { ffi::bearcad_shape_write_step(self.raw, c.as_ptr(), label.as_ptr()) };
+        rc == 0
+    }
+
+    /// Write several shapes into one STEP file (#1938) — one real BREP solid per shape,
+    /// rather than the faceted single shell a multi-body export used to collapse to.
+    /// `true` on success.
+    pub fn write_step_many(
+        shapes: &[Shape],
+        path: &std::path::Path,
+        name: &str,
+    ) -> bool {
+        if shapes.is_empty() {
+            return false;
+        }
+        let Some(s) = path.to_str() else {
+            return false;
+        };
+        let Ok(c) = std::ffi::CString::new(s) else {
+            return false;
+        };
+        let cleaned: String = name
+            .chars()
+            .filter(|c| *c != '\0' && !c.is_control())
+            .collect();
+        let label = std::ffi::CString::new(cleaned).unwrap_or_default();
+        let raws: Vec<*const ffi::BearcadShape> =
+            shapes.iter().map(|s| s.raw as *const ffi::BearcadShape).collect();
+        let rc = unsafe {
+            ffi::bearcad_shapes_write_step(
+                raws.as_ptr(),
+                raws.len() as std::os::raw::c_int,
+                c.as_ptr(),
+                label.as_ptr(),
+            )
+        };
         rc == 0
     }
 

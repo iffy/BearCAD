@@ -6690,7 +6690,46 @@ impl AppState {
         self.write_step_file(path, name, mesh)
     }
 
-    /// Byte-level document/import/export entry points for the **web build** (no
+    /// Every live body in one STEP file, each as its own real BREP solid (#1938).
+    ///
+    /// A multi-body export used to fall to the hand-rolled faceted writer, which
+    /// concatenated the whole document's triangles into a *single* `CLOSED_SHELL` — not a
+    /// closed shell at all when the bodies are disjoint, with every curved surface
+    /// tessellated away and every name lost. Falls back to that writer if the kernel
+    /// cannot build or write the shapes.
+    fn write_step_bodies_file(
+        &mut self,
+        path: &str,
+        bodies: &[(crate::model::BodyKey, String)],
+    ) -> ActionResult {
+        let shapes: Vec<crate::kernel::Shape> = bodies
+            .iter()
+            .filter_map(|(bi, _)| crate::extrude::posed_body_shape(&self.doc, *bi))
+            .collect();
+        let document = self
+            .path
+            .as_deref()
+            .and_then(|p| std::path::Path::new(p).file_stem())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "bearcad".to_string());
+        if shapes.len() == bodies.len()
+            && crate::kernel::Shape::write_step_many(
+                &shapes,
+                std::path::Path::new(path),
+                &document,
+            )
+        {
+            self.status = format!(
+                "Exported {} bodies to {path} (STEP BREP)",
+                bodies.len()
+            );
+            return ActionResult::Ok;
+        }
+        let mesh = Some(crate::extrude::document_solid_mesh(&self.doc));
+        self.write_step_file(path, "bearcad", mesh)
+    }
+
+    /// Byte-level document/import/export entry points for the **web build** (no    /// Byte-level document/import/export entry points for the **web build** (no
     /// filesystem — the browser hands us bytes from a picked file, and downloads bytes we
     /// hand back). Compiled everywhere so native tests can exercise them.
     ///
@@ -6872,6 +6911,34 @@ impl AppState {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn import_step_file(&mut self, name: &str, path: &std::path::Path) -> ActionResult {
         if let Some(shape) = crate::kernel::Shape::read_step(path) {
+            // #1938: a STEP file holding several solids comes back as one compound. Split
+            // it, so a three-part file imports as three bodies rather than one lump — the
+            // export writes one solid per body, and the round trip has to match.
+            let solids = shape.solids();
+            if solids.len() > 1 {
+                let meshes: Vec<Vec<[Vec3; 3]>> = solids
+                    .iter()
+                    .map(|s| s.tessellate(crate::extrude::OCCT_DEFLECTION as f64))
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                if meshes.len() > 1 {
+                    crate::diag::log(format!(
+                        "step: kernel read {} — {} solids",
+                        path.display(),
+                        meshes.len()
+                    ));
+                    let total: usize = meshes.iter().map(|m| m.len()).sum();
+                    for (i, tris) in meshes.into_iter().enumerate() {
+                        // The source bytes ride on the first body only: they are the whole
+                        // file, and re-exporting them once per solid would duplicate it.
+                        let bytes = (i == 0).then(|| std::fs::read(path).ok()).flatten();
+                        self.import_mesh_body(name, tris, bytes);
+                    }
+                    self.status =
+                        format!("Imported {total} triangle(s) from {name}");
+                    return ActionResult::Ok;
+                }
+            }
             let tris = shape.tessellate(crate::extrude::OCCT_DEFLECTION as f64);
             if !tris.is_empty() {
                 crate::diag::log(format!(
@@ -10943,35 +11010,32 @@ impl AppState {
                         }
                     }
                 }
-                // Whole-document export: when the document holds exactly one live body,
-                // route it through the per-body path so kernel builds write real BREP
-                // (curved surfaces survive the round-trip, #106). Multi-body documents
-                // keep the hand-rolled faceted concatenation (OCCT export is per single
-                // body — see `write_step_body_file`).
+                // Whole-document export: real BREP, one solid per live body (#106/#1938).
+                // Shadow bodies are consumed operation inputs, not deliverables, so they
+                // are left out. The hand-rolled faceted writer stays as the fallback for
+                // whatever the kernel cannot represent.
                 None => {
-                    // Shadow bodies are consumed operation inputs, not deliverables — skip
-                    // them so a single real output (e.g. a beveled body, #531) still writes
-                    // real BREP rather than the faceted multi-body fallback.
-                    let only = {
-                        let mut live = self.doc.bodies.iter().filter(|(_, b)| !b.shadow);
-                        match (live.next(), live.next()) {
-                            (Some((bi, b)), None) => Some((
+                    let live: Vec<(crate::model::BodyKey, String)> = self
+                        .doc
+                        .bodies
+                        .iter()
+                        .filter(|(_, b)| !b.shadow)
+                        .map(|(bi, b)| {
+                            (
                                 bi,
                                 b.name
                                     .clone()
                                     .unwrap_or_else(|| format!("body-{}", bi.index())),
-                            )),
-                            _ => None,
-                        }
-                    };
-                    match only {
-                        Some((bi, name)) => {
-                            self.write_step_body_file(&path, &name, bi)
-                        }
-                        _ => {
+                            )
+                        })
+                        .collect();
+                    match live.as_slice() {
+                        [(bi, name)] => self.write_step_body_file(&path, name, *bi),
+                        [] => {
                             let mesh = Some(crate::extrude::document_solid_mesh(&self.doc));
                             self.write_step_file(&path, "bearcad", mesh)
                         }
+                        many => self.write_step_bodies_file(&path, many),
                     }
                 }
             },

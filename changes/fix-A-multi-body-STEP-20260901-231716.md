@@ -1,0 +1,1 @@
+A multi-body STEP export now writes one real BREP solid per body — curved surfaces intact — instead of merging every body's triangles into a single faceted shell, and importing such a file gives one body per solid.
