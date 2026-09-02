@@ -15171,6 +15171,7 @@ mod loose_pencil_tests {
         let shape = doc.primitives.insert(crate::model::Primitive {
             kind: crate::model::PrimitiveKind::Cuboid,
             origin: Vec3::ZERO.into(),
+            origin_expression: Default::default(),
             normal: Vec3::Z.into(),
             u_axis: Vec3::X.into(),
             width: "40".into(),

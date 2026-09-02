@@ -1184,6 +1184,7 @@ pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     rebake_revolution_values(doc);
     rebake_edge_treatment_amounts(doc);
     rebake_plane_definitions(doc);
+    rebake_primitive_origins(doc);
     // Offset outputs track their sources and distance expressions.
     crate::actions::rebuild_sketch_offsets(doc);
     // Mirror outputs track their sources and mirror line (#523).
@@ -1209,6 +1210,7 @@ pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     rebake_revolution_values(doc);
     rebake_edge_treatment_amounts(doc);
     rebake_plane_definitions(doc);
+    rebake_primitive_origins(doc);
     crate::actions::rebuild_sketch_offsets(doc);
     crate::actions::rebuild_sketch_mirrors(doc);
     crate::actions::rebuild_sketch_vertex_treatments(doc);
@@ -1384,7 +1386,23 @@ pub fn rebake_edge_treatment_amounts(doc: &mut Document) {
     }
 }
 
-/// Re-evaluate construction-plane offset/angle from stored expressions (#1489).
+/// Re-evaluate a shape's placement from its stored expressions (#1929). Sizes have always
+/// re-baked; the origin did not, so a part grew about the corner it was first built on.
+pub fn rebake_primitive_origins(doc: &mut Document) {
+    for i in doc.primitives.keys().collect::<Vec<_>>() {
+        for axis in 0..3 {
+            let expr = doc.primitives[i].origin_expression[axis].clone();
+            if expr.trim().is_empty() {
+                continue;
+            }
+            if let Some(v) = crate::value::eval_length_mm_in_doc(&expr, doc) {
+                doc.primitives[i].origin[axis] = v;
+            }
+        }
+    }
+}
+
+/// Re-evaluate construction-plane offset/angle from stored expressions (#1489)./// Re-evaluate construction-plane offset/angle from stored expressions (#1489).
 pub fn rebake_plane_definitions(doc: &mut Document) {
     for i in doc.construction_planes.keys().collect::<Vec<_>>() {
         let def = doc.construction_planes[i].definition.clone();

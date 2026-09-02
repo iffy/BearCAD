@@ -2882,6 +2882,7 @@ mod tests {
         let key = doc.primitives.insert(Primitive {
             kind: PrimitiveKind::Cuboid,
             origin: [0.0, 0.0, 0.0],
+            origin_expression: Default::default(),
             normal: [0.0, 0.0, 1.0],
             u_axis: [1.0, 0.0, 0.0],
             width: "10".into(),

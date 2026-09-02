@@ -4640,7 +4640,19 @@ fn shape_lua_call(shape: &crate::model::Primitive, edit: Option<usize>) -> Strin
         parts.push(format!("index = {index}"));
         parts.push(format!("shape = {:?}", shape.kind.script_name()));
     }
-    parts.push(format!("at = {}", point(shape.origin)));
+    // #1929: a placement written as an expression is emitted as that expression, so the
+    // replayed script is as parametric as the document.
+    let at: Vec<String> = (0..3)
+        .map(|i| {
+            let expr = shape.origin_expression[i].trim();
+            if expr.is_empty() {
+                num(shape.origin[i])
+            } else {
+                format!("{expr:?}")
+            }
+        })
+        .collect();
+    parts.push(format!("at = {{{}}}", at.join(", ")));
     if shape.normal != [0.0, 0.0, 1.0] {
         parts.push(format!("normal = {}", point(shape.normal)));
     }

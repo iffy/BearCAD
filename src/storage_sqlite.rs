@@ -198,6 +198,10 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             depth TEXT NOT NULL DEFAULT '',
             height TEXT NOT NULL DEFAULT '',
             radius TEXT NOT NULL DEFAULT '',
+            -- Expressions driving ox/oy/oz (#1929); '' is a plain number.
+            ox_expr TEXT NOT NULL DEFAULT '',
+            oy_expr TEXT NOT NULL DEFAULT '',
+            oz_expr TEXT NOT NULL DEFAULT '',
             name TEXT
         );
         CREATE TABLE IF NOT EXISTS sweeps (
@@ -1158,8 +1162,9 @@ fn save_primitives(tx: &Connection, arena: &Arena<Primitive>) -> Result<()> {
     for (key, p) in arena.iter() {
         tx.execute(
             "INSERT INTO primitives (id, kind, ox, oy, oz, nx, ny, nz, ux, uy, uz,
-             width, depth, height, radius, name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             width, depth, height, radius, ox_expr, oy_expr, oz_expr, name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                     ?16, ?17, ?18, ?19)",
             params![
                 key_bits(key),
                 p.kind.script_name(),
@@ -1176,6 +1181,9 @@ fn save_primitives(tx: &Connection, arena: &Arena<Primitive>) -> Result<()> {
                 p.depth,
                 p.height,
                 p.radius,
+                p.origin_expression[0],
+                p.origin_expression[1],
+                p.origin_expression[2],
                 p.name,
             ],
         )
@@ -2581,7 +2589,8 @@ fn load_revolutions(conn: &Connection) -> Result<Arena<Revolution>> {
 fn load_primitives(conn: &Connection) -> Result<Arena<Primitive>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, kind, ox, oy, oz, nx, ny, nz, ux, uy, uz, width, depth, height, radius, name
+            "SELECT id, kind, ox, oy, oz, nx, ny, nz, ux, uy, uz, width, depth, height, radius,
+                    ox_expr, oy_expr, oz_expr, name
              FROM primitives",
         )
         .map_err(|e| e.to_string())?;
@@ -2603,14 +2612,36 @@ fn load_primitives(conn: &Connection) -> Result<Arena<Primitive>> {
                 row.get::<_, String>(12)?,
                 row.get::<_, String>(13)?,
                 row.get::<_, String>(14)?,
-                row.get::<_, Option<String>>(15)?,
+                (
+                    row.get::<_, String>(15)?,
+                    row.get::<_, String>(16)?,
+                    row.get::<_, String>(17)?,
+                ),
+                row.get::<_, Option<String>>(18)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut entries = Vec::new();
     for row in rows {
-        let (id, kind, ox, oy, oz, nx, ny, nz, ux, uy, uz, width, depth, height, radius, name) =
-            row.map_err(|e| e.to_string())?;
+        let (
+            id,
+            kind,
+            ox,
+            oy,
+            oz,
+            nx,
+            ny,
+            nz,
+            ux,
+            uy,
+            uz,
+            width,
+            depth,
+            height,
+            radius,
+            origin_expression,
+            name,
+        ) = row.map_err(|e| e.to_string())?;
         let kind = crate::model::PrimitiveKind::from_name(&kind)
             .ok_or_else(|| format!("unknown primitive kind {kind}"))?;
         entries.push((
@@ -2618,6 +2649,11 @@ fn load_primitives(conn: &Connection) -> Result<Arena<Primitive>> {
             Primitive {
                 kind,
                 origin: [ox as f32, oy as f32, oz as f32],
+                origin_expression: [
+                    origin_expression.0,
+                    origin_expression.1,
+                    origin_expression.2,
+                ],
                 normal: [nx as f32, ny as f32, nz as f32],
                 u_axis: [ux as f32, uy as f32, uz as f32],
                 width,

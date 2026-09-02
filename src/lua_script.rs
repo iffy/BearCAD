@@ -3580,6 +3580,20 @@ fn parse_shape_args(
     if let Some(p) = point("at", true)? {
         shape.origin = p;
     }
+    // #1929: keep the expressions the placement was written with, so a shape is as
+    // parametric in *where* it sits as in how big it is. Evaluating them and throwing the
+    // text away froze every part at the corner it was first built on.
+    if let Some(table) = opts.get::<Option<Table>>("at")? {
+        for i in 0..3 {
+            if let Value::String(text) = table.get::<Value>(i + 1)? {
+                let text = text.to_str()?.trim().to_string();
+                // A bare number is a number, not an expression worth re-evaluating.
+                if text.parse::<f64>().is_err() {
+                    shape.origin_expression[i] = text;
+                }
+            }
+        }
+    }
     if let Some(p) = point("normal", false)? {
         shape.normal = p;
     }
@@ -6257,6 +6271,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         K::Sphere => t.set("radius", r.radius)?,
                     }
                     t.set("at", vec3_lua(lua, r.origin)?)?;
+                    // How it was *placed*, not only where it landed (#1929): the
+                    // expressions driving the components that have one.
+                    if shape.origin_expression.iter().any(|e| !e.trim().is_empty()) {
+                        let at = lua.create_table()?;
+                        for (i, expr) in shape.origin_expression.iter().enumerate() {
+                            if !expr.trim().is_empty() {
+                                at.set(i + 1, expr.as_str())?;
+                            }
+                        }
+                        t.set("at_expression", at)?;
+                    }
                     t.set("normal", vec3_lua(lua, r.normal)?)?;
                     t.set("u_axis", vec3_lua(lua, r.u)?)?;
                     if let Some(name) = &shape.name {
@@ -20207,6 +20232,49 @@ pub mod tests {
             live.source.cut_extrusion_indices().len(),
             2,
             "both cuts must stay on the combined body, not become orphan extrusions"
+        );
+    }
+
+    /// #1929: a shape's `at` keeps the expression it was written with, so a model can be
+    /// parametrically *placed* as well as sized. The size fields were live and the position
+    /// was not, so changing a parameter grew a part about a frozen corner — and the call
+    /// accepted the expression and reported success, which is the worst of it.
+    #[test]
+    fn lua_shape_at_stays_parametric() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.add_parameter("u", "10")
+            local b = bearcad.cuboid{ width = "u*4", depth = "u*2", height = "u*2",
+                                      at = {0, 0, "u*3"}, name = "Body" }
+            local function span()
+              local s = bearcad.body_stats(b).bbox
+              return s.min.z, s.max.z
+            end
+            local lo, hi = span()
+            assert(math.abs(lo - 30) < 0.01 and math.abs(hi - 50) < 0.01,
+                   "u=10: z[" .. lo .. ", " .. hi .. "]")
+            bearcad.set_parameter("u", "5")
+            lo, hi = span()
+            assert(math.abs(lo - 15) < 0.01 and math.abs(hi - 25) < 0.01,
+                   "u=5 should be z[15, 25], got z[" .. lo .. ", " .. hi .. "]")
+            bearcad.set_parameter("u", "12")
+            lo, hi = span()
+            assert(math.abs(lo - 36) < 0.01 and math.abs(hi - 60) < 0.01,
+                   "u=12 should be z[36, 60], got z[" .. lo .. ", " .. hi .. "]")
+
+            -- `get` reports how it was placed, not only where it landed.
+            local g = bearcad.get("shape", 0)
+            assert(g.at_expression and g.at_expression[3] == "u*3",
+                   "the expression reads back: " .. tostring(g.at_expression and g.at_expression[3]))
+            assert(math.abs(g.at[3] - 36) < 0.01, "…evaluated too: " .. g.at[3])
+
+            -- A plain number is still a plain number.
+            local c = bearcad.cylinder{ radius = 2, height = 4, at = {7, 0, 0} }
+            local cg = bearcad.get("shape", 1)
+            assert(math.abs(cg.at[1] - 7) < 0.01)
+            assert(cg.at_expression == nil, "no expression for a bare number")
+            "#,
         );
     }
 

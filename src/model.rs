@@ -3133,6 +3133,11 @@ pub struct Primitive {
     pub kind: PrimitiveKind,
     /// Where the shape sits, in world mm.
     pub origin: [f32; 3],
+    /// The expressions driving `origin`, per component (#1929); an empty string is a plain
+    /// number. Sizes were live and the placement was not, so changing a parameter grew a
+    /// part about a frozen corner — a model could be parametrically sized but not placed.
+    #[serde(default)]
+    pub origin_expression: [String; 3],
     /// The anchor plane's normal — the direction the shape grows along.
     pub normal: [f32; 3],
     /// The anchor plane's first in-plane direction: a cuboid's width runs along it, its
@@ -3163,6 +3168,7 @@ impl Primitive {
         Self {
             kind,
             origin: [0.0, 0.0, 0.0],
+            origin_expression: [String::new(), String::new(), String::new()],
             normal: [0.0, 0.0, 1.0],
             u_axis: [1.0, 0.0, 0.0],
             width: String::new(),

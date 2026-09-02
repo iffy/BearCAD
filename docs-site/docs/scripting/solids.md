@@ -18,6 +18,10 @@ bearcad.cylinder{ at = {100, 0, 0}, radius = 5, height = 20 }
 bearcad.sphere{ at = {200, 0, 0}, radius = 8 }
 bearcad.edit_shape{ index = block, height = "side * 3" }
 bearcad.ui.begin_edit_shape{ index = block }  -- reopen in the Shape tool
+-- `at` takes expressions and keeps them, so a part is parametrically placed as well as
+-- sized: edit `deck` and the block moves with it.
+bearcad.cuboid{ width = 20, depth = 20, height = 5, at = {0, 0, "deck * 3"} }
+bearcad.get("shape", 0).at_expression   -- the expressions, per component
 ```
 
 ## Combine
