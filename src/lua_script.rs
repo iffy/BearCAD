@@ -4788,6 +4788,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1937: the export side of `import_lua` — a deterministic script that recreates the
+    // document, with no `bearcad.ui` in it. The round trip a scripted build wants to diff.
+    api.set(
+        "export_lua",
+        lua.create_function(|lua, path: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ExportLua { path }) }
+        })?,
+    )?;
+
     // #1223: Home zoom-to-fit PNG preview (same image saved into .bearcad for Finder).
     api.set(
         "export_preview",
@@ -19025,6 +19035,50 @@ pub mod tests {
             assert(not ok, "a bogus index still errors")
             assert(not tostring(err):find("AnyUserData"), "no raw userdata in the error: " .. tostring(err))
             "#,
+        );
+    }
+
+    /// #1937: `bearcad.export_lua(path)` writes the deterministic script that recreates the
+    /// document — the round trip a scripted build wants to diff against. Every other format
+    /// was symmetric; Lua was import-only, its export reachable from the GUI file dialog and
+    /// therefore not at all from a headless `--script` run.
+    #[test]
+    fn lua_export_lua_writes_a_replayable_script() {
+        let path = std::env::temp_dir()
+            .join(format!("bearcad_export_lua_{}.lua", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_string_lossy().replace('\\', "/");
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            bearcad.add_parameter("side", "30")
+            bearcad.cuboid{{ width = "side", depth = 20, height = 10, name = "Block" }}
+            bearcad.export_lua("{p}")
+            "#
+        ));
+        let script = std::fs::read_to_string(&path).expect("the script was written");
+        let _ = std::fs::remove_file(&path);
+        assert!(script.contains("bearcad.cuboid"), "the shape is in it: {script}");
+        assert!(script.contains("side"), "the parameter survives: {script}");
+        assert!(!script.contains("bearcad.ui."), "no ui verbs: {script}");
+
+        // …and replaying it rebuilds the same document.
+        let state = run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.add_parameter("side", "30")
+            bearcad.cuboid{{ width = "side", depth = 20, height = 10, name = "Block" }}
+            bearcad.export_lua("{p}")
+            bearcad.new()
+            bearcad.import_lua{{ path = "{p}", force = true }}
+            "#
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(state.doc.primitives.len(), 1, "the replay rebuilds the shape");
+        assert_eq!(
+            state.doc.parameters.len(),
+            1,
+            "and the parameter that drives it"
         );
     }
 

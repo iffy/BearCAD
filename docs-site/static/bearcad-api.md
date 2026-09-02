@@ -335,6 +335,7 @@ bearcad.exit_sketch()
 bearcad.export_3mf(path, body?)
 bearcad.export_drawing_pdf{ drawing, path }
 bearcad.export_drawing_svg{ … }
+bearcad.export_lua(path)
 bearcad.export_preview(path)
 bearcad.export_step(path, body?)
 bearcad.export_stl(path, body?)

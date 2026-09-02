@@ -155,6 +155,10 @@ pub enum Instruction {
     ExportStep { path: String, body: Option<String> },
     /// Write a Home zoom-to-fit PNG preview of the document (#1223).
     ExportPreview { path: String },
+    /// #1937: write the deterministic script that recreates the document (no `bearcad.ui`),
+    /// the export side of `import_lua`. Every other format was symmetric; this one lived
+    /// only behind a GUI file dialog, so a headless run could never produce one.
+    ExportLua { path: String },
     /// Import an STL file at `path` as a new body (#70).
     ImportStl { path: String },
     /// Import another BearCAD document as a unit with a first instance (#721).
@@ -1278,6 +1282,7 @@ impl Instruction {
             Instruction::Save(Some(path)) => format!("bearcad.save({path:?})"),
             Instruction::RebuildGeometry => "bearcad.rebuild_geometry()".to_string(),
             Instruction::ExportPreview { path } => format!("bearcad.export_preview({path:?})"),
+            Instruction::ExportLua { path } => format!("bearcad.export_lua({path:?})"),
             Instruction::ExportStl { path, body: None } => format!("bearcad.export_stl({path:?})"),
             Instruction::ExportStl {
                 path,
@@ -7186,6 +7191,16 @@ impl ScriptRunner {
                 match crate::file_preview::export_preview_png(&state.doc, &path) {
                     Ok(()) => {}
                     Err(e) => self.record_action_error(crate::actions::ActionResult::Err(e)),
+                }
+                StepResult::Continue
+            }
+            Instruction::ExportLua { path } => {
+                let script = crate::export_lua::document_to_lua(&state.doc);
+                match std::fs::write(&path, script) {
+                    Ok(()) => state.status = format!("Exported Lua script to {path}"),
+                    Err(e) => self.record_action_error(crate::actions::ActionResult::Err(
+                        format!("Export failed: {path}: {e}"),
+                    )),
                 }
                 StepResult::Continue
             }

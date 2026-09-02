@@ -78,8 +78,8 @@ Other flags:
 - `--timeout <seconds>` — force-exit (non-zero) if the app hasn't closed in time.
 - `--rebuild` — discard cached tessellation after open and rebuild geometry.
 - `--show-commands` — echo GUI actions as `bearcad.*` calls on stdout.
-- **File → Export → Lua Script…** — write a deterministic script that recreates the
-  current document (no `bearcad.ui`).
+- **File → Export → Lua Script…** / `bearcad.export_lua(path)` — write a deterministic
+  script that recreates the current document (no `bearcad.ui`).
 - **File → Import → Lua Script…** / `bearcad.import_lua(path)` — run such a script;
   refuses a non-blank document unless `force = true`.
 - `--tutorial <name>` — start a tutorial on launch. The browser app takes it as a URL
