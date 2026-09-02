@@ -11683,6 +11683,7 @@ pub const INSPECT_KINDS: &[&str] = &[
     "sketch_chamfer",
     "shape",
     "body",
+    "live_body",
     "drawing",
     "cross_section",
     "section_plane",
@@ -11722,6 +11723,9 @@ pub fn count_kind(doc: &crate::model::Document, kind: &str) -> Option<usize> {
         "sketch_slice" => doc.sketch_slice_ops.len(),
         "sketch_chamfer" | "sketch_fillet" => doc.sketch_vertex_treatment_ops.len(),
         "body" => doc.bodies.len(),
+        // #1934: bodies that are actually in the scene — an operation's consumed inputs
+        // linger as shadow bodies, hidden and unexported, and inflate `count("body")`.
+        "live_body" => doc.bodies.iter().filter(|(_, b)| !b.shadow).count(),
         "drawing" => doc.drawings.len(),
         "cross_section" | "section" => doc.cross_sections.len(),
         "section_plane" | "cutting_plane" => crate::model::section_plane_count(doc),

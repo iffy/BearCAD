@@ -18583,6 +18583,10 @@ op,
             }
             Action::ClearSceneSelection => {
                 self.scene_selection.clear();
+                // #1941: drawing page items are part of the selection `bearcad.select`
+                // arms and `bearcad.selection()` reports, so deselect has to reach them —
+                // otherwise a projection keeps its handles in every screenshot.
+                self.clear_drawing_selection();
                 ActionResult::Ok
             }
             Action::CopySelection => self.copy_selection(),

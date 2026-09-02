@@ -612,6 +612,14 @@ pub fn scene_element_from_kind(
         "parameter" => Some(SceneElement::Parameter(doc.parameters.keys().nth(index)?)),
         "extrusion" => Some(SceneElement::Extrusion(doc.extrusions.keys().nth(index)?)),
         "body" => Some(SceneElement::Body(doc.bodies.keys().nth(index)?)),
+        // #1934: the shadow-free view of the same arena.
+        "live_body" => Some(SceneElement::Body(
+            doc.bodies
+                .iter()
+                .filter(|(_, b)| !b.shadow)
+                .map(|(k, _)| k)
+                .nth(index)?,
+        )),
         "boolean_op" | "boolean" => {
             Some(SceneElement::BooleanOp(doc.boolean_ops.keys().nth(index)?))
         }
@@ -692,6 +700,17 @@ fn elements_of_kind(doc: &crate::model::Document, kind: &str) -> Vec<SceneElemen
     }
     match kind.to_ascii_lowercase().as_str() {
         "body" => all!(doc.bodies, SceneElement::Body),
+        // #1934: only the bodies that are really there — consumed operation inputs linger
+        // as shadow bodies, so `count("body")` (which has to match the ordinal space) is
+        // not the count a script means by "how many parts did I build".
+        "live_body" => {
+            return doc
+                .bodies
+                .iter()
+                .filter(|(_, b)| !b.shadow)
+                .map(|(k, _)| SceneElement::Body(k))
+                .collect()
+        }
         "shape" | "primitive" => all!(doc.primitives, SceneElement::Shape),
         "line" => all!(doc.lines, SceneElement::Line),
         "circle" => all!(doc.circles, SceneElement::Circle),
@@ -5530,6 +5549,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let element = resolve_element(lua, element)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let state = unsafe { tick.state() };
+            // #1934: a shadow body is hidden in the viewport (bar hover/select) and left out
+            // of export, so a read-back that called it visible was simply wrong. Its own
+            // edges/faces/vertices inherit that, same as any other body sub-element.
+            if let Some(body) = crate::hierarchy::body_for_element(&state.doc, &element) {
+                if state.doc.bodies.get(body).is_some_and(|b| b.shadow) {
+                    return Ok(false);
+                }
+            }
             Ok(state.element_visibility.effective_visible(&state.doc, element))
         })?,
     )?;
@@ -5947,9 +5974,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         t.set("name", name.as_str())?;
                     }
                 }
-                "body" => {
-                    // The script's `index` is the body's ordinal among the live ones (#1055).
-                    let Some(body) = doc.bodies.keys().nth(index).map(|k| &doc.bodies[k]) else {
+                "body" | "live_body" => {
+                    // The script's `index` is the body's ordinal among the live ones (#1055);
+                    // `live_body` indexes the same arena with consumed shadows skipped (#1934).
+                    let key = if kind == "live_body" {
+                        doc.bodies
+                            .iter()
+                            .filter(|(_, b)| !b.shadow)
+                            .map(|(k, _)| k)
+                            .nth(index)
+                    } else {
+                        doc.bodies.keys().nth(index)
+                    };
+                    let Some(body) = key.map(|k| &doc.bodies[k]) else {
                         return Ok(Value::Nil);
                     };
                     if let Some(name) = &body.name {
@@ -21051,6 +21088,69 @@ pub mod tests {
                 }
             )],
             "the loupe is what the script selected"
+        );
+    }
+
+    /// #1934: a consumed (shadow) body is hidden everywhere and omitted from export, so
+    /// `bearcad.visible()` must say so — and `live_body` counts and indexes only the bodies
+    /// that are really there, which is the assertion a script actually wants to write.
+    #[test]
+    fn lua_shadow_bodies_read_back_as_hidden_and_are_filterable() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            local a = bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            local b = bearcad.cuboid{ width = 10, depth = 10, height = 10, at = {30, 0, 0} }
+            bearcad.combine{ op = "union", a = {a}, b = {b} }
+            local shadows, live = 0, 0
+            for i = 0, bearcad.count("body") - 1 do
+              local h = bearcad.element("body", i)
+              if bearcad.get("body", i).shadow then
+                shadows = shadows + 1
+                assert(not bearcad.visible(h), "a shadow body must read back hidden")
+              else
+                live = live + 1
+                assert(bearcad.visible(h), "a live body must read back visible")
+              end
+            end
+            assert(shadows == 2, "two consumed inputs, got " .. shadows)
+            assert(bearcad.count("live_body") == live,
+                   "live_body must count the real bodies: "
+                   .. bearcad.count("live_body") .. " vs " .. live)
+            for i = 0, bearcad.count("live_body") - 1 do
+              assert(not bearcad.get("live_body", i).shadow,
+                     "live_body " .. i .. " must not be a shadow")
+              assert(bearcad.visible(bearcad.element("live_body", i)))
+            end
+            "#,
+        );
+    }
+
+    /// #1941: `bearcad.clear_selection()` clears drawing page items too — `bearcad.select`
+    /// puts them there and `bearcad.selection()` reports them, so the deselect verb has to
+    /// reach them. Without it there is no scripted way to drop a projection's resize
+    /// handles before screenshotting a sheet.
+    #[test]
+    fn lua_clear_selection_clears_drawing_page_items() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 30, depth = 20, height = 20 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_text{ drawing = d, text = "note", x = 0.1, y = 0.2 }
+            bearcad.ui.tool("select")
+            bearcad.select{ kind = "projection", drawing = d, view = 0 }
+            bearcad.select({ kind = "annotation", drawing = d, index = 0 }, { additive = true })
+            assert(#bearcad.selection() == 2, "two page items selected")
+            bearcad.clear_selection()
+            assert(#bearcad.selection() == 0,
+                   "clear_selection must drop them, still " .. #bearcad.selection())
+            "#,
+        );
+        assert!(
+            state.selected_drawing_elements.is_empty(),
+            "the page must not keep the items armed either"
         );
     }
 

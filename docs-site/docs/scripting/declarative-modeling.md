@@ -480,6 +480,18 @@ bearcad.ui.toggle_visibility()         -- current selection
 -- Shadow body: hidden in the viewport (except hover/select) and omitted from export.
 bearcad.set_body_shadow{ body = 0, shadow = true }
 bearcad.set_body_shadow{ body = 0, shadow = false }  -- back to a live body
+bearcad.get("body", 0).shadow          -- true for a consumed operation input
+bearcad.visible(box)                   -- false for a shadow body
+```
+
+An operation leaves its inputs behind as shadow bodies, so `count("body")` — which has to
+match the ordinal space `element`/`get` index — counts them too. `live_body` is the same
+arena with the shadows skipped:
+
+```lua
+bearcad.count("live_body")             -- bodies that are really in the scene
+bearcad.element("live_body", 0)
+bearcad.get("live_body", 0)
 ```
 
 ## Components
