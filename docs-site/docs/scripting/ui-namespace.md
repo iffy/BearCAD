@@ -51,6 +51,7 @@ bearcad.ui.shading("solid_wireframe")   -- "wireframe" | "transparent" | "solid"
                                         -- "loose_pencil" | "dark_pencil"
                                         -- "color_pencil" | "watercolor"
 bearcad.ui.ground("off")                -- ground plane: "grid" | "solid" | "off"
+bearcad.ui.ground(false)                -- false = "off", true = "grid"
 ```
 
 Absolute camera control sets the pose **instantly** (no transition animation), which keeps
@@ -60,6 +61,7 @@ scripted screenshots deterministic; with no pose fields, `camera{}` is a pure re
 local c = bearcad.ui.camera{}           -- { yaw, pitch, distance, target = {x, y, z},
                                         --   projection = "perspective" | "orthographic",
                                         --   shading, ground }
+bearcad.ui.camera{ ground = false }     -- same values as bearcad.ui.ground
 bearcad.ui.camera{ yaw = 45, distance = 200 }         -- angles are degrees
 bearcad.ui.camera{ target = {20, 15, 5}, pitch = -35 }
 bearcad.ui.zoom_fit()                   -- frame selection or document (short glide)

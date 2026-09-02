@@ -271,6 +271,30 @@ impl UserData for LuaElement {
 /// since ordinals shift when elements are deleted or consumed by an operation.
 pub struct Ordinal(pub usize);
 
+/// The ground-plane display an option key names (#1936): one of the documented strings, or
+/// a boolean — `false` is what a script reaches for first when it wants a clean render, and
+/// `true` puts the grid back. A bad value names every accepted one instead of leaking Rust's
+/// "error converting Lua boolean to String".
+fn parse_ground_display(value: Value, call: &str) -> mlua::Result<GroundDisplay> {
+    match value {
+        Value::Boolean(true) => Ok(GroundDisplay::Grid),
+        Value::Boolean(false) => Ok(GroundDisplay::None),
+        Value::String(ref s) => {
+            let name = s.to_str()?.to_string();
+            GroundDisplay::from_name(&name).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "{call}: unknown ground display '{name}' \
+                     (grid, solid, none/off, or a boolean)"
+                ))
+            })
+        }
+        ref other => Err(mlua::Error::external(format!(
+            "{call}: ground must be grid, solid, none/off, or a boolean, got {}",
+            describe_lua_value(other)
+        ))),
+    }
+}
+
 /// How a rejected argument reads back in an error (#1933): Lua's own type name, and the
 /// handle's id when the value *is* a BearCAD handle — never the raw `AnyUserData(Ref(0x…))`
 /// debug form, which tells a script author nothing.
@@ -7578,9 +7602,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // #159: how the ground plane renders ("grid" | "solid").
     api.set(
         "ground",
-        lua.create_function(|lua, name: String| {
-            let mode = GroundDisplay::from_name(&name)
-                .ok_or_else(|| mlua::Error::external(format!("unknown ground display '{name}'")))?;
+        lua.create_function(|lua, value: Value| {
+            let mode = parse_ground_display(value, "ground")?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::GroundDisplay(mode)) }
         })?,
@@ -7644,15 +7667,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                             })?),
                             None => None,
                         },
-                        match t.get::<Option<String>>("ground")? {
-                            Some(name) => Some(GroundDisplay::from_name(&name).ok_or_else(
-                                || {
-                                    mlua::Error::external(format!(
-                                        "camera: unknown ground display '{name}'"
-                                    ))
-                                },
-                            )?),
-                            None => None,
+                        match t.get::<Value>("ground")? {
+                            Value::Nil => None,
+                            value => Some(parse_ground_display(value, "camera")?),
                         },
                     )
                 }
@@ -21088,6 +21105,31 @@ pub mod tests {
                 }
             )],
             "the loupe is what the script selected"
+        );
+    }
+
+    /// #1936: the ground display is an enum whose values were nowhere in the docs, and the
+    /// obvious `ground = false` failed with Rust's conversion error. Booleans work now, and
+    /// a bad value names the accepted ones.
+    #[test]
+    fn lua_camera_ground_takes_a_boolean_and_names_its_values() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.ui.camera{ ground = false }
+            assert(bearcad.ui.camera{}.ground == "off", bearcad.ui.camera{}.ground)
+            bearcad.ui.camera{ ground = true }
+            assert(bearcad.ui.camera{}.ground == "grid", bearcad.ui.camera{}.ground)
+            bearcad.ui.camera{ ground = "solid" }
+            assert(bearcad.ui.camera{}.ground == "solid", bearcad.ui.camera{}.ground)
+            bearcad.ui.ground(false)
+            assert(bearcad.ui.camera{}.ground == "off", bearcad.ui.camera{}.ground)
+            local ok, err = pcall(function() bearcad.ui.camera{ ground = "zzz" } end)
+            assert(not ok, "a bogus ground must error")
+            assert(tostring(err):find("grid") and tostring(err):find("solid")
+                   and tostring(err):find("none"),
+                   "the error must name the accepted values: " .. tostring(err))
+            "#,
         );
     }
 
