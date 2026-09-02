@@ -1154,16 +1154,27 @@ fn sketch_face_is_live(doc: &Document, face: &FaceId) -> bool {
 /// wins on depth, so the pocket's real inner wall behind it never gets a chance.
 ///
 /// Ask the owning body's mesh: does any coplanar triangle cover the world point under the
-/// cursor? Faces with no body behind them (construction planes, sketch profiles, unit
-/// faces) have nothing to ask and stay offerable.
-fn analytic_face_has_material_at(doc: &Document, face: &FaceId, point: Vec3) -> bool {
+/// cursor, and how big is the face group it belongs to? Faces with no body behind them
+/// (construction planes, sketch profiles, unit faces) have nothing to ask and stay
+/// offerable.
+///
+/// What the built solid has where an analytic face's ideal rectangle is being pointed at.
+enum MeshSurface {
+    /// Nothing to consult — no kernel mesh, or a degenerate body.
+    Unknown,
+    /// The booleans took this bit of the ideal face away.
+    None,
+    /// The area, mm², of the mesh face group that covers the point.
+    Group(f32),
+}
+
+fn mesh_surface_under(doc: &Document, face: &FaceId, point: Vec3) -> MeshSurface {
     let Some(body) = crate::model::body_index_for_face(doc, face) else {
-        return true;
+        return MeshSurface::Unknown;
     };
     let groups = crate::extrude::body_face_groups(doc, body);
     if groups.is_empty() {
-        // No mesh to consult (kernel unavailable, degenerate body) — don't hide the face.
-        return true;
+        return MeshSurface::Unknown;
     }
     const TOL: f32 = 1e-3;
     let bounds = crate::extrude::body_face_group_bounds(doc, body);
@@ -1174,10 +1185,10 @@ fn analytic_face_has_material_at(doc: &Document, face: &FaceId, point: Vec3) -> 
             }
         }
         if triangles.iter().any(|tri| point_on_triangle(point, tri, TOL)) {
-            return true;
+            return MeshSurface::Group(mesh_group_area(triangles));
         }
     }
-    false
+    MeshSurface::None
 }
 
 /// Whether `p` lies on `tri` — within `tol` of its plane and inside its edges.
@@ -1202,7 +1213,21 @@ fn point_on_triangle(p: Vec3, tri: &[Vec3; 3], tol: f32) -> bool {
 /// picked up by the edge margin) lands outside the face polygon altogether, so there is no
 /// point on it to judge — those stay offerable, as before.
 fn analytic_face_offerable(doc: &Document, face: &FaceId, dist: f32, at: Vec3) -> bool {
-    dist > 0.0 || analytic_face_has_material_at(doc, face, at)
+    if dist > 0.0 {
+        return true;
+    }
+    match mesh_surface_under(doc, face, at) {
+        MeshSurface::Unknown => true,
+        MeshSurface::None => false,
+        // #1951/#1325: the ideal rectangle also has to still *be* the surface. Fillet a
+        // cap's edges and the flat that is left is smaller than the cap, sharing its
+        // centre — offering the cap there hands back an analytic identity for a face that
+        // no longer exists, which is what made a filleted body's remaining flats
+        // un-hoverable as themselves. A group *larger* than the ideal is fine: coplanar
+        // faces of a fused body merge into one, and the analytic half is still real.
+        MeshSurface::Group(area) => crate::extrude::face_boundary_loop_world(doc, face)
+            .is_none_or(|pts| loop_area(&pts) <= area * 1.01 + 1e-3),
+    }
 }
 
 /// Map a mesh face key (quantized centroid + normal) to an analytic [`FaceId`] on that body

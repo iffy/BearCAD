@@ -17,15 +17,17 @@ bearcad.ui.wait(8)
 bearcad.ui.tool("line")
 bearcad.ui.wait(3)
 
--- The wall is the x = 20 plane; the sketch's own frame puts (0, 0) at the face centre
--- (world y = 24.444, z = 38.333), u along +y and v along +z.
+-- The wall is the x = 20 plane; the sketch's own frame puts (0, 0) at the face centre,
+-- u along +y and v along +z. Read the centre off the sketch rather than hard-coding it —
+-- it is a property of the face, and a change to how a face centre is measured moved it.
+local origin = bearcad.get{ kind = "sketch", index = 2 }.origin
 local function place(y, z)
   bearcad.ui.move_world(20, y, z)
   bearcad.ui.wait(4)
   bearcad.ui.click_world(20, y, z)
   bearcad.ui.wait(5)
 end
-local function u_of(y) return y - 24.4444 end
+local function u_of(y) return y - origin.y end
 
 local first = bearcad.count("line")
 -- Start in open space on the column, and end half a millimetre shy of the wall's y = 0 edge
