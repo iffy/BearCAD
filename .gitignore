@@ -46,3 +46,4 @@ block.step
 /docs-site/static/app/
 .mcp.json
 .envrc
+_tmp
