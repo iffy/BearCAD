@@ -2622,21 +2622,32 @@ fn clip_segment_to_disc(
     c: egui::Pos2,
     r: f32,
 ) -> Option<(egui::Pos2, egui::Pos2)> {
+    // #1950: a point just in front of the near plane projects to a screen coordinate in the
+    // millions, and the loupe magnifies that again. Squaring it overflows `f32` to infinity,
+    // `inf - inf` is NaN, every comparison below is then false, and the "clipped" segment came
+    // back as a pair of NaNs — which the painter drew as a line right across the viewport.
+    // A zoomed-in model with a crowd under the cursor filled the screen with them, and
+    // tessellating that many stray lines is what made the frame crawl. The intersection runs
+    // in `f64` so the arithmetic survives, and anything not finite is simply not drawn.
+    if !(a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite()) {
+        return None;
+    }
     let a_in = (a - c).length() <= r;
     let b_in = (b - c).length() <= r;
     if a_in && b_in {
         return Some((a, b));
     }
-    let d = b - a;
-    let aa = d.dot(d);
+    let (dx, dy) = ((b.x - a.x) as f64, (b.y - a.y) as f64);
+    let aa = dx * dx + dy * dy;
     if aa < 1e-6 {
         return a_in.then_some((a, b));
     }
-    let f = a - c;
-    let bb = 2.0 * f.dot(d);
-    let cc = f.dot(f) - r * r;
+    let (fx, fy) = ((a.x - c.x) as f64, (a.y - c.y) as f64);
+    let r = r as f64;
+    let bb = 2.0 * (fx * dx + fy * dy);
+    let cc = fx * fx + fy * fy - r * r;
     let disc = bb * bb - 4.0 * aa * cc;
-    if disc < 0.0 {
+    if !(disc >= 0.0) {
         return None;
     }
     let sq = disc.sqrt();
@@ -2645,22 +2656,36 @@ fn clip_segment_to_disc(
     if t1 - t0 <= 1e-4 {
         return None;
     }
-    Some((a + d * t0, a + d * t1))
+    let at = |t: f64| egui::pos2((a.x as f64 + dx * t) as f32, (a.y as f64 + dy * t) as f32);
+    let (p0, p1) = (at(t0), at(t1));
+    (p0.x.is_finite() && p0.y.is_finite() && p1.x.is_finite() && p1.y.is_finite())
+        .then_some((p0, p1))
 }
 
 /// Clip a convex screen polygon to a disc (approximated by `N` tangent half-planes), so a face can
 /// be *filled* inside a round loupe without its shading spilling past the frame (#551).
 fn clip_convex_to_disc(poly: &[egui::Pos2], center: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
     const N: usize = 40;
-    let mut out: Vec<egui::Pos2> = poly.to_vec();
+    // A vertex off the near plane arrives here in the millions; keeping it would make every
+    // interpolation below meaningless (#1950).
+    if poly.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
+        return Vec::new();
+    }
+    // In `f64` throughout: a vertex a few million pixels out (the near-plane blow-up above)
+    // interpolated with an `f32` parameter of ~1e-7 loses every significant digit, and the
+    // clipped polygon comes back mis-ordered. egui feathers a `convex_polygon`'s outline, and
+    // feathering a self-crossing one throws slivers right across the viewport — which is what
+    // #1950's stray lines are.
+    let (cx, cy, rr) = (center.x as f64, center.y as f64, r as f64);
+    let mut out: Vec<(f64, f64)> = poly.iter().map(|p| (p.x as f64, p.y as f64)).collect();
     for k in 0..N {
         if out.len() < 3 {
             return Vec::new();
         }
-        let ang = k as f32 / N as f32 * std::f32::consts::TAU;
-        let normal = egui::vec2(ang.cos(), ang.sin());
-        let dist = |p: egui::Pos2| (p - center).dot(normal) - r;
-        let mut clipped: Vec<egui::Pos2> = Vec::with_capacity(out.len() + 1);
+        let ang = k as f64 / N as f64 * std::f64::consts::TAU;
+        let (nx, ny) = (ang.cos(), ang.sin());
+        let dist = |p: (f64, f64)| (p.0 - cx) * nx + (p.1 - cy) * ny - rr;
+        let mut clipped: Vec<(f64, f64)> = Vec::with_capacity(out.len() + 1);
         for i in 0..out.len() {
             let cur = out[i];
             let nxt = out[(i + 1) % out.len()];
@@ -2670,12 +2695,90 @@ fn clip_convex_to_disc(poly: &[egui::Pos2], center: egui::Pos2, r: f32) -> Vec<e
             }
             if (dc <= 0.0) != (dn <= 0.0) {
                 let t = dc / (dc - dn);
-                clipped.push(cur + (nxt - cur) * t);
+                clipped.push((cur.0 + (nxt.0 - cur.0) * t, cur.1 + (nxt.1 - cur.1) * t));
             }
         }
         out = clipped;
     }
-    out
+    let out: Vec<egui::Pos2> = out
+        .into_iter()
+        .map(|(x, y)| egui::pos2(x as f32, y as f32))
+        .collect();
+    // #1950: forty successive half-plane cuts leave near-coincident vertices behind, and a
+    // 0°-corner has no defined miter — egui's outline for one shoots off as a spike hundreds
+    // of pixels long. A crowded loupe drew dozens of those, which is the "lines going places"
+    // in the report (and the tessellation behind them is what made the frame crawl). Welding
+    // the duplicates away, and dropping what is left if it has no area, keeps every corner a
+    // real one.
+    const WELD: f32 = 0.25; // px
+    let mut welded: Vec<egui::Pos2> = Vec::with_capacity(out.len());
+    for p in out {
+        if welded.last().is_none_or(|q: &egui::Pos2| (*q - p).length() > WELD) {
+            welded.push(p);
+        }
+    }
+    while welded.len() > 1
+        && (welded[0] - welded[welded.len() - 1]).length() <= WELD
+    {
+        welded.pop();
+    }
+    if welded.len() < 3 {
+        return Vec::new();
+    }
+    // A polygon thinner than a fraction of a pixel is invisible as a fill — and it is exactly
+    // what makes egui's outline feathering blow up: averaging the two edge normals at a corner
+    // that doubles back on itself gives a near-zero vector, and the feathered vertex it
+    // normalises to lands hundreds of pixels away. That is the "lines going places" of #1950
+    // (and tessellating a few hundred of them per frame is the lag). Mean thickness =
+    // 2·area / perimeter.
+    let area = polygon_area(&welded);
+    let perimeter: f32 = (0..welded.len())
+        .map(|i| (welded[(i + 1) % welded.len()] - welded[i]).length())
+        .sum();
+    if perimeter <= 0.0 || 2.0 * area / perimeter < 0.6 {
+        return Vec::new();
+    }
+    welded
+}
+
+/// Fill a clipped loupe polygon and cover the seam its antialiasing leaves (#981/#1950).
+///
+/// The seam cover used to be the polygon's own outline stroke, but egui **miters** a closed
+/// path's corners: a sliver left by disc-clipping has a corner near 0°, whose miter runs off
+/// hundreds of pixels — the stray lines all over #1950's screenshot, and the tessellation
+/// work behind the lag. Stroking each edge as its own segment covers the same seam with
+/// capped ends and no miter to run away with.
+fn paint_loupe_polygon(painter: &egui::Painter, poly: &[egui::Pos2], fill: egui::Color32) {
+    if poly.len() < 3 {
+        return;
+    }
+    // The hairline stroke covers the antialiasing seam two triangles leave along a shared
+    // edge (#981) — but egui miters a closed path's corners, and a corner sharper than a few
+    // degrees miters out to a spike hundreds of pixels long (#1950). Disc-clipping makes such
+    // corners routinely, so a polygon that has one is filled without the outline: it is a
+    // sliver either way, and there is no visible seam to cover on one.
+    let sharp = (0..poly.len()).any(|i| {
+        let prev = poly[(i + poly.len() - 1) % poly.len()];
+        let next = poly[(i + 1) % poly.len()];
+        let (a, b) = ((prev - poly[i]).normalized(), (next - poly[i]).normalized());
+        !a.x.is_finite() || !b.x.is_finite() || a.dot(b) > 0.97
+    });
+    painter.add(egui::Shape::convex_polygon(
+        poly.to_vec(),
+        fill,
+        if sharp { egui::Stroke::NONE } else { egui::Stroke::new(1.0, fill) },
+    ));
+}
+
+/// A screen polygon's unsigned area, px² (#1950): what tells a real face from the slivers
+/// disc-clipping leaves behind.
+fn polygon_area(poly: &[egui::Pos2]) -> f32 {
+    let mut twice = 0.0;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        twice += a.x * b.y - b.x * a.y;
+    }
+    (twice * 0.5).abs()
 }
 
 /// A whole body's mesh triangles ready for a Selection Exploder loupe (#972), each paired with
@@ -2734,13 +2837,32 @@ fn body_loupe_faces(
     doc: &model::Document,
     body: crate::model::BodyKey,
     eye: Vec3,
-) -> Option<Vec<([Vec3; 3], u8)>> {
+) -> Option<std::rc::Rc<Vec<([Vec3; 3], u8)>>> {
+    // #1950: memoized per body, camera and document pose. The fan redraws every whole-body
+    // loupe on every frame, and sorting a thousand triangles per loupe per frame was the
+    // single most expensive thing on screen while it was open — for a result that only
+    // changes when the model or the camera does.
+    thread_local! {
+        static CACHE: std::cell::RefCell<(
+            u64,
+            [u32; 3],
+            std::collections::HashMap<crate::model::BodyKey, std::rc::Rc<Vec<([Vec3; 3], u8)>>>,
+        )> = std::cell::RefCell::new((0, [0; 3], std::collections::HashMap::new()));
+    }
+    let fingerprint = extrude::document_pose_fingerprint(doc);
+    let eye_key = [eye.x.to_bits(), eye.y.to_bits(), eye.z.to_bits()];
+    if let Some(hit) = CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint || cache.1 != eye_key {
+            cache.0 = fingerprint;
+            cache.1 = eye_key;
+            cache.2.clear();
+        }
+        cache.2.get(&body).cloned()
+    }) {
+        return Some(hit);
+    }
     let solid = extrude::body_solid_mesh(doc, body)?;
-    let mut faces: Vec<([Vec3; 3], u8)> = solid
-        .triangles
-        .iter()
-        .map(|tri| (*tri, (loupe_face_shade(tri) * 255.0) as u8))
-        .collect();
     // Far-to-near, keyed on each triangle's **farthest** vertex rather than its centroid
     // (#981). There's no depth buffer here — a loupe is painted — so the order is the whole
     // correctness argument, and a centroid gets it wrong wherever triangles differ in size: a
@@ -2748,16 +2870,26 @@ fn body_loupe_faces(
     // the cap in front of it, and would paint over it. The farthest point is the exact key for
     // a convex solid and much closer to right for everything else.
     //
-    // `sort_by` is stable, so coplanar triangles keep mesh order and the result is
+    // The key is computed once per triangle, not inside the comparator (#1950): the fan draws
+    // this for every whole-body loupe on every frame, and three square roots per operand per
+    // comparison made it the single most expensive thing on screen while the fan was open.
+    // The sort is stable, so coplanar triangles keep mesh order and the result is
     // deterministic.
-    faces.sort_by(|(a, _), (b, _)| {
-        let d = |t: &[Vec3; 3]| {
-            t.iter()
-                .map(|p| (*p - eye).length())
-                .fold(f32::NEG_INFINITY, f32::max)
-        };
-        d(b).total_cmp(&d(a))
-    });
+    let mut keyed: Vec<(f32, [Vec3; 3], u8)> = solid
+        .triangles
+        .iter()
+        .map(|tri| {
+            let depth = tri
+                .iter()
+                .map(|p| (*p - eye).length_squared())
+                .fold(f32::NEG_INFINITY, f32::max);
+            (depth, *tri, (loupe_face_shade(tri) * 255.0) as u8)
+        })
+        .collect();
+    keyed.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let faces: std::rc::Rc<Vec<([Vec3; 3], u8)>> =
+        std::rc::Rc::new(keyed.into_iter().map(|(_, tri, shade)| (tri, shade)).collect());
+    CACHE.with(|cache| cache.borrow_mut().2.insert(body, faces.clone()));
     Some(faces)
 }
 
@@ -3107,15 +3239,7 @@ fn draw_pick_target_loupe(
                     let fill = loupe_solid_fill(doc, *body, loupe_face_shade(tri), state);
                     if let (Some(a), Some(b), Some(c)) = (lp(tri[0]), lp(tri[1]), lp(tri[2])) {
                         let poly = clip_convex_to_disc(&[a, b, c], center, radius);
-                        if poly.len() >= 3 {
-                            // Stroked in its own fill, to cover the antialiasing seam two
-                            // triangles leave along a shared edge (#981).
-                            painter.add(egui::Shape::convex_polygon(
-                                poly,
-                                fill,
-                                egui::Stroke::new(1.0, fill),
-                            ));
-                        }
+                        paint_loupe_polygon(painter, &poly, fill);
                     }
                 }
             } else {
@@ -3203,30 +3327,27 @@ fn draw_pick_target_loupe(
         // grey and bury the loupe's own subject.
         PK::Body(bi) => {
             if !is_highlight {
-                for (a, b) in construction::body_feature_edges(doc, *bi) {
-                    seg(a, b);
+                // #1950: the cached edge list, not a fresh copy of it. Every loupe draws the
+                // whole crowd as context, so cloning a few hundred edges per body per loupe
+                // per frame was thousands of allocations a frame while the fan was open.
+                for (a, b) in crate::extrude::body_feature_edges(doc, *bi).iter() {
+                    seg(*a, *b);
                 }
                 return;
             }
             let Some(faces) = body_loupe_faces(doc, *bi, eye) else {
                 return;
             };
-            for (tri, shade) in faces {
-                let fill = loupe_solid_fill(doc, *bi, shade as f32 / 255.0, state);
+            for (tri, shade) in faces.iter() {
+                let fill = loupe_solid_fill(doc, *bi, *shade as f32 / 255.0, state);
                 if let (Some(a), Some(b), Some(c)) = (lp(tri[0]), lp(tri[1]), lp(tri[2])) {
                     let poly = clip_convex_to_disc(&[a, b, c], center, radius);
-                    if poly.len() >= 3 {
-                        // Stroked in its own fill (#981). egui feathers a polygon's edge for
-                        // antialiasing, so two triangles sharing an edge each fade out along
-                        // it and leave a hairline of background between them — across a whole
-                        // mesh that reads as a web of cracks over the solid. A hairline stroke
-                        // of the same color covers the seam.
-                        painter.add(egui::Shape::convex_polygon(
-                            poly,
-                            fill,
-                            egui::Stroke::new(1.0, fill),
-                        ));
-                    }
+                    // egui feathers a polygon's edge for antialiasing, so two triangles
+                    // sharing an edge each fade out along it and leave a hairline of
+                    // background between them — across a whole mesh that reads as a web of
+                    // cracks over the solid. A hairline stroke of the same color covers the
+                    // seam (#981), edge by edge so no corner miters away (#1950).
+                    paint_loupe_polygon(painter, &poly, fill);
                 }
             }
         }
@@ -38059,6 +38180,139 @@ mod tests {
     use crate::model::extrusion_key_for_slot as xkey;
     use crate::model::body_key_for_slot as bkey;
     use super::*;
+
+    /// #1950: a Selection Exploder loupe's clip never lets a line escape its disc. A point
+    /// just in front of the near plane projects to a screen coordinate in the millions,
+    /// magnified again by the loupe; squaring that overflowed `f32`, `inf - inf` gave NaN,
+    /// and the "clipped" segment came back as NaNs the painter drew right across the
+    /// viewport. A crowded model at close range filled the screen with those lines, and
+    /// tessellating them is what made the frame crawl.
+    #[test]
+    fn a_loupe_clip_never_escapes_its_disc() {
+        let c = egui::pos2(500.0, 400.0);
+        let r = 44.0;
+        let inside = |p: egui::Pos2| {
+            p.x.is_finite() && p.y.is_finite() && (p - c).length() <= r + 0.5
+        };
+
+        // Ordinary cases still work: a chord through the disc, and a miss.
+        let (a, b) = clip_segment_to_disc(
+            egui::pos2(0.0, 400.0),
+            egui::pos2(1000.0, 400.0),
+            c,
+            r,
+        )
+        .expect("a segment across the disc clips to a chord");
+        assert!(inside(a) && inside(b), "chord {a:?} {b:?}");
+        assert!(
+            clip_segment_to_disc(egui::pos2(0.0, 0.0), egui::pos2(1000.0, 0.0), c, r).is_none(),
+            "a segment nowhere near the disc is dropped"
+        );
+
+        // Near-plane blow-up: huge coordinates must not produce NaN or a screen-spanning line.
+        for far in [1.0e7_f32, 1.0e15, 1.0e30, f32::MAX] {
+            for near in [egui::pos2(500.0, 400.0), egui::pos2(0.0, 0.0)] {
+                for other in [
+                    egui::pos2(far, far),
+                    egui::pos2(-far, far),
+                    egui::pos2(far, -far),
+                ] {
+                    for (p, q) in [(near, other), (other, near), (other, other)] {
+                        if let Some((ca, cb)) = clip_segment_to_disc(p, q, c, r) {
+                            assert!(
+                                inside(ca) && inside(cb),
+                                "clip of {p:?}..{q:?} escaped the disc: {ca:?} {cb:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // A non-finite endpoint is never drawn at all.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(
+                clip_segment_to_disc(egui::pos2(bad, 400.0), egui::pos2(500.0, 400.0), c, r)
+                    .is_none(),
+                "a {bad} endpoint must be dropped"
+            );
+        }
+    }
+
+    /// #1950: a loupe's *filled* geometry stays in its disc too, and the slivers that
+    /// disc-clipping leaves are dropped rather than handed to egui — feathering a polygon
+    /// whose corner doubles back on itself throws a spike hundreds of pixels long, which is
+    /// what covered the viewport in stray lines when the Selection Exploder was open on a
+    /// crowded model.
+    #[test]
+    fn a_clipped_loupe_polygon_stays_in_its_disc() {
+        let c = egui::pos2(300.0, 220.0);
+        let r = 40.0;
+
+        // A triangle covering the disc clips to something inside it, with real area.
+        let poly = clip_convex_to_disc(
+            &[
+                egui::pos2(0.0, 0.0),
+                egui::pos2(900.0, 0.0),
+                egui::pos2(450.0, 700.0),
+            ],
+            c,
+            r,
+        );
+        assert!(poly.len() >= 3, "a covering triangle still fills the disc");
+        for p in &poly {
+            assert!(
+                (*p - c).length() <= r + 0.5,
+                "clipped vertex {p:?} escaped the disc"
+            );
+        }
+
+        // A sliver — 60 px long and a fifth of a pixel thick, with two corners of a
+        // fraction of a degree — is dropped outright: invisible as a fill, and exactly the
+        // shape whose outline spikes.
+        assert!(
+            clip_convex_to_disc(
+                &[
+                    egui::pos2(270.0, 220.0),
+                    egui::pos2(330.0, 220.0),
+                    egui::pos2(300.0, 220.4),
+                ],
+                c,
+                r,
+            )
+            .is_empty(),
+            "a sub-pixel-thick sliver is not worth drawing, and is what spikes"
+        );
+
+        // A near-plane blow-up vertex never produces geometry.
+        assert!(
+            clip_convex_to_disc(
+                &[
+                    egui::pos2(300.0, 220.0),
+                    egui::pos2(1.0e12, -4.0e11),
+                    egui::pos2(f32::NAN, 3.0),
+                ],
+                c,
+                r,
+            )
+            .is_empty(),
+            "a non-finite vertex is dropped"
+        );
+
+        // And a polygon nowhere near the disc yields nothing.
+        assert!(
+            clip_convex_to_disc(
+                &[
+                    egui::pos2(900.0, 900.0),
+                    egui::pos2(950.0, 900.0),
+                    egui::pos2(925.0, 950.0),
+                ],
+                c,
+                r,
+            )
+            .is_empty()
+        );
+    }
 
     /// #1828: the Remove ✕ on a view card is mounted only while the card's chrome is up, and
     /// whether a card is hovered can resolve differently between egui's two passes over one
