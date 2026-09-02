@@ -1713,14 +1713,12 @@ fn named_body_face_table(
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
     let doc = unsafe { &tick.state().doc };
     let index = doc.bodies.keys().position(|k| k == key).unwrap_or(0);
-    let Some(mesh) = crate::extrude::body_solid_mesh_unposed(doc, key) else {
+    if crate::extrude::body_solid_mesh_unposed(doc, key).is_none() {
         return Err(mlua::Error::external("body has no solid mesh"));
-    };
+    }
     let mut best: Option<(f32, Vec<[glam::Vec3; 3]>)> = None;
-    for tris in crate::gpu_viewport::solid_mesh_coplanar_faces(&mesh)
-        .iter()
-        .filter(|tris| crate::extrude::fit_cylinder(tris).is_none())
-    {
+    // The flats (#1951), the same grouping a face key resolves against.
+    for tris in crate::extrude::body_flat_face_groups(doc, key).iter() {
         let n = (tris[0][1] - tris[0][0])
             .cross(tris[0][2] - tris[0][0])
             .normalize_or_zero();

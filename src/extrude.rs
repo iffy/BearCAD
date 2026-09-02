@@ -6149,18 +6149,7 @@ fn body_face_key_groups(
     // matched no group and the sketch frame came back "Body face does not exist".
     let groups = std::rc::Rc::new(
         body_solid_mesh_for_face_key(doc, body)
-            .map(|m| {
-                crate::gpu_viewport::solid_mesh_coplanar_faces(&m)
-                    .into_iter()
-                    .flat_map(|tris| {
-                        if fit_cylinder(&tris).is_some() {
-                            vec![tris]
-                        } else {
-                            split_group_by_plane(&tris)
-                        }
-                    })
-                    .collect::<Vec<Vec<[Vec3; 3]>>>()
-            })
+            .map(|m| flat_split_groups(&m))
             .unwrap_or_default(),
     );
     FACE_KEY_GROUP_CACHE.with(|cache| {
@@ -6286,8 +6275,25 @@ pub fn face_group_matching(
     centroid: [i32; 3],
     normal: [i32; 3],
 ) -> Option<Vec<[Vec3; 3]>> {
-    let groups = crate::gpu_viewport::solid_mesh_coplanar_faces(solid);
+    let groups = flat_split_groups(solid);
     face_group_matching_in(&groups, centroid, normal)
+}
+
+/// A mesh's face groups with every non-cylinder one split by plane (#1951) — the grouping a
+/// *face key* is measured against, so a key made from a flat resolves back to that flat and
+/// not to the smooth chain a fillet drags it into. Cylinder walls stay whole: `fit_cylinder`
+/// needs the turn.
+pub fn flat_split_groups(solid: &SolidMesh) -> Vec<Vec<[Vec3; 3]>> {
+    crate::gpu_viewport::solid_mesh_coplanar_faces(solid)
+        .into_iter()
+        .flat_map(|tris| {
+            if fit_cylinder(&tris).is_some() {
+                vec![tris]
+            } else {
+                split_group_by_plane(&tris)
+            }
+        })
+        .collect()
 }
 
 fn face_group_matching_in(

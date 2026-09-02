@@ -1295,7 +1295,7 @@ fn mesh_group_area_at(
     normal: [i32; 3],
 ) -> Option<f32> {
     let q = crate::hierarchy::quantize_body_point;
-    crate::extrude::body_face_groups(doc, body)
+    crate::extrude::body_flat_face_groups(doc, body)
         .iter()
         .find(|tris| {
             if tris.is_empty() {
@@ -2106,14 +2106,31 @@ pub fn pick_body_face_where(
         }) {
             continue;
         }
-        let group_bounds = crate::extrude::body_face_group_bounds(doc, bi);
         // Walk groups by reference — a hole wall can be hundreds of triangles (#1141). Cloning
         // every group every hover frame (including misses that fail the bounds test) was the
         // dominant cost when the cursor sat over a body with circular cuts.
-        let groups = crate::extrude::body_face_groups(doc, bi);
-        for (gi, triangles) in groups.iter().enumerate() {
-            if !group_bounds.get(gi).is_some_and(|b| {
-                crate::construction::screen_bounds_hit(screen, project, *b, 0.0)
+        //
+        // Cylinders come from the smooth grouping (a wall is only a cylinder when the whole
+        // turn is one group); flats come from the planar split of it (#1951), so the key a
+        // picked face is later stored under resolves back to the same face.
+        let smooth = crate::extrude::body_face_groups(doc, bi);
+        let smooth_bounds = crate::extrude::body_face_group_bounds(doc, bi);
+        let flats = crate::extrude::body_flat_face_groups(doc, bi);
+        let flat_bounds = crate::extrude::body_flat_face_group_bounds(doc, bi);
+        let candidates = smooth
+            .iter()
+            .enumerate()
+            .filter(|(_, tris)| crate::extrude::fit_cylinder(tris).is_some())
+            .map(|(gi, tris)| (smooth_bounds.get(gi).copied(), tris))
+            .chain(
+                flats
+                    .iter()
+                    .enumerate()
+                    .map(|(gi, tris)| (flat_bounds.get(gi).copied(), tris)),
+            );
+        for (bounds, triangles) in candidates {
+            if !bounds.is_some_and(|b| {
+                crate::construction::screen_bounds_hit(screen, project, b, 0.0)
             }) {
                 continue;
             }
@@ -2183,8 +2200,9 @@ pub fn body_faces_near(
         if body.shadow {
             continue;
         }
-        // By reference until a group is near enough to keep (#1141).
-        for triangles in crate::extrude::body_face_groups(doc, bi).iter() {
+        // By reference until a group is near enough to keep (#1141). The flats (#1951):
+        // this only ever emits `BodyFace`, and a face key has to name a real flat.
+        for triangles in crate::extrude::body_flat_face_groups(doc, bi).iter() {
             let mut dist = f32::MAX;
             let mut hit: Option<Vec3> = None;
             for tri in triangles {
