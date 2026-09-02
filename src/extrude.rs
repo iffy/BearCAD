@@ -8241,14 +8241,19 @@ fn split_group_by_plane(tris: &[[Vec3; 3]]) -> Vec<Vec<[Vec3; 3]>> {
             continue;
         }
         // Coplanar triangles can be wound either way (two-sided shading), so key on the
-        // plane, not the side: flip to a canonical direction before comparing.
+        // plane, not the side: orient the normal by its own first non-zero component, which
+        // is well defined even for a plane through the origin (where the signed offset is
+        // zero either way and cannot break the tie).
         let (n, d) = {
-            let d = n.dot(tri[0]);
-            if d < 0.0 || (d == 0.0 && (n.x < 0.0 || (n.x == 0.0 && n.y < 0.0))) {
-                (-n, -d)
+            let flip = if n.x.abs() > 1e-6 {
+                n.x < 0.0
+            } else if n.y.abs() > 1e-6 {
+                n.y < 0.0
             } else {
-                (n, d)
-            }
+                n.z < 0.0
+            };
+            let n = if flip { -n } else { n };
+            (n, n.dot(tri[0]))
         };
         match planes
             .iter_mut()
