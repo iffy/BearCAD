@@ -1031,16 +1031,25 @@ pub enum Instruction {
     SetPlaneOffset { value: String },
     SetPlaneAngle { value: String },
     /// Declaratively add a new construction plane offset from plane `from` (#116).
-    CreatePlane { offset: f32, from: usize },
+    /// `offset_expression` is the parameter expression the offset was written as, kept so
+    /// the datum stays live when the parameter changes (#1932); empty for a bare number.
+    CreatePlane { offset: f32, offset_expression: String, from: usize },
     /// #465: a plane anchored on an arbitrary face (origin + normal), offset along the
     /// normal — the scripted equivalent of clicking a body face with the Plane tool.
-    CreateFacePlane { offset: f32, origin: Vec3, normal: Vec3 },
+    CreateFacePlane {
+        offset: f32,
+        offset_expression: String,
+        origin: Vec3,
+        normal: Vec3,
+    },
     /// #1876: a plane anchored on an axis (world X/Y/Z or a sketch line), with an
     /// angle around that axis — the scripted equivalent of clicking an axis with the
     /// Plane tool.
     CreateAxisPlane {
         offset: f32,
+        offset_expression: String,
         angle: f32,
+        angle_expression: String,
         axis: PlaneAxisRef,
     },
     FocusDim(RectAxis),
@@ -2614,20 +2623,30 @@ impl Instruction {
             Instruction::SetPlaneAngle { value } => {
                 format!("bearcad.ui.set_dim(\"angle\", {value:?})")
             }
-            Instruction::CreatePlane { offset, from } => {
+            Instruction::CreatePlane { offset, offset_expression, from } => {
+                let offset = plane_amount_lua(*offset, offset_expression);
                 format!("bearcad.plane{{ offset = {offset}, from = {from} }}")
             }
-            Instruction::CreateFacePlane { offset, origin, normal } => {
+            Instruction::CreateFacePlane { offset, offset_expression, origin, normal } => {
+                let offset = plane_amount_lua(*offset, offset_expression);
                 format!(
                     "bearcad.plane{{ offset = {offset}, origin = {{{}, {}, {}}}, normal = {{{}, {}, {}}} }}",
                     origin.x, origin.y, origin.z, normal.x, normal.y, normal.z
                 )
             }
-            Instruction::CreateAxisPlane { offset, angle, axis } => {
+            Instruction::CreateAxisPlane {
+                offset,
+                offset_expression,
+                angle,
+                angle_expression,
+                axis,
+            } => {
                 let axis_lua = match axis {
                     PlaneAxisRef::Global(g) => format!("{:?}", g.script_name()),
                     PlaneAxisRef::Line(i) => format!("{{ line = {i} }}"),
                 };
+                let offset = plane_amount_lua(*offset, offset_expression);
+                let angle = plane_amount_lua(*angle, angle_expression);
                 format!("bearcad.plane{{ offset = {offset}, axis = {axis_lua}, angle = {angle} }}")
             }
             Instruction::FocusDim(axis) => {
@@ -5486,6 +5505,26 @@ fn dim_label_axis_lua_name(axis: DimLabelAxis) -> &'static str {
         DimLabelAxis::Height => "height",
         DimLabelAxis::Length => "length",
         DimLabelAxis::Diameter => "diameter",
+    }
+}
+
+/// What the Plane tool's offset field should hold (#1932): the driving expression when
+/// there is one, so the committed plane keeps it and follows the parameter.
+fn plane_offset_text(offset: f32, expression: &str) -> String {
+    if expression.trim().is_empty() {
+        format!("{offset}mm")
+    } else {
+        expression.trim().to_string()
+    }
+}
+
+/// A plane offset/angle as it should read back in a recorded script (#1932): the
+/// expression when one drives it, so a replay keeps the datum live, else the number.
+fn plane_amount_lua(value: f32, expression: &str) -> String {
+    if expression.trim().is_empty() {
+        value.to_string()
+    } else {
+        format!("{expression:?}")
     }
 }
 
@@ -9388,16 +9427,20 @@ impl ScriptRunner {
                 let _ = state.apply(Action::SetPlaneAngle { value });
                 StepResult::Continue
             }
-            Instruction::CreatePlane { offset, from } => {
+            Instruction::CreatePlane { offset, offset_expression, from } => {
                 let Some(from) = plane_key(&state.doc, from) else {
                     self.last_action_error = Some(format!("Unknown construction plane {from}"));
                     return StepResult::Continue;
                 };
-                let result = state.apply(Action::AddConstructionPlane { from, offset_mm: offset });
+                let result = state.apply(Action::AddConstructionPlane {
+                    from,
+                    offset_mm: offset,
+                    offset_expression,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateFacePlane { offset, origin, normal } => {
+            Instruction::CreateFacePlane { offset, offset_expression, origin, normal } => {
                 // The same Begin → typed offset → Commit path the Plane tool takes when a
                 // face is clicked (#465).
                 let result = state.apply(Action::BeginConstructionPlane {
@@ -9410,13 +9453,19 @@ impl ScriptRunner {
                 });
                 self.record_action_error(result);
                 let _ = state.apply(Action::SetPlaneOffset {
-                    value: format!("{offset}mm"),
+                    value: plane_offset_text(offset, &offset_expression),
                 });
                 let result = state.apply(Action::CommitConstructionPlane);
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateAxisPlane { offset, angle, axis } => {
+            Instruction::CreateAxisPlane {
+                offset,
+                offset_expression,
+                angle,
+                angle_expression,
+                axis,
+            } => {
                 // Same Begin → typed offset/angle → Commit path as clicking an axis
                 // with the Plane tool (#1876).
                 let (reference, parent) = match axis {
@@ -9469,10 +9518,14 @@ impl ScriptRunner {
                 let result = state.apply(Action::BeginConstructionPlane { reference, parent });
                 self.record_action_error(result);
                 let _ = state.apply(Action::SetPlaneOffset {
-                    value: format!("{offset}mm"),
+                    value: plane_offset_text(offset, &offset_expression),
                 });
                 let _ = state.apply(Action::SetPlaneAngle {
-                    value: format!("{angle}deg"),
+                    value: if angle_expression.trim().is_empty() {
+                        format!("{angle}deg")
+                    } else {
+                        angle_expression.clone()
+                    },
                 });
                 let result = state.apply(Action::CommitConstructionPlane);
                 self.record_action_error(result);

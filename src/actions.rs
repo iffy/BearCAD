@@ -2901,6 +2901,9 @@ pub enum Action {
     AddConstructionPlane {
         from: crate::model::ConstructionPlaneKey,
         offset_mm: f32,
+        /// The parameter expression driving `offset_mm`, kept so the datum stays live
+        /// (#1932). Empty for a plain number.
+        offset_expression: String,
     },
     /// Resize a construction plane's drawn rectangle (#833) — what dragging one of its two
     /// corner grips under the Select tool commits.
@@ -12345,7 +12348,7 @@ impl AppState {
                     self.add_construction_plane(definition, cp.parent)
                 }
             }
-            Action::AddConstructionPlane { from, offset_mm } => {
+            Action::AddConstructionPlane { from, offset_mm, offset_expression } => {
                 let Some(reference_plane) = self.doc.construction_planes.get(from) else {
                     return ActionResult::Err(format!(
                         "Unknown construction plane {}",
@@ -12361,7 +12364,7 @@ impl AppState {
                     anchor,
                     offset_mm,
                     angle_deg: 0.0,
-                    offset_expression: String::new(),
+                    offset_expression,
                     angle_expression: String::new(),
                 };
                 self.add_construction_plane(definition, ConstructionPlaneParent::Root)
@@ -24351,13 +24354,13 @@ mod tests {
         assert!(state.scene_selection.is_selected(SceneElement::Component(ckey(0))));
 
         // A plane created now lands in the component.
-        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 20.0 });
+        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 20.0, offset_expression: String::new() });
         let plane = state.doc.construction_planes.keys().last().unwrap();
         assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane)), Some(ckey(0)));
 
         // Deactivating (the Document row) stops the filing.
         state.active_component = None;
-        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 40.0 });
+        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 40.0, offset_expression: String::new() });
         let plane2 = state.doc.construction_planes.keys().last().unwrap();
         assert_eq!(state.doc.component_of(CM::ConstructionPlane(plane2)), None);
     }
@@ -24371,7 +24374,7 @@ mod tests {
         assert!(!state.dirty, "a fresh empty document is clean");
 
         // A mutation dirties it.
-        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 20.0 });
+        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 20.0, offset_expression: String::new() });
         assert!(state.dirty, "adding geometry marks the document dirty");
 
         // Saving clears it.
@@ -24384,7 +24387,7 @@ mod tests {
         assert!(!state.dirty, "saving clears the dirty flag");
 
         // A further edit dirties it again; undoing back to the saved state clears it.
-        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 40.0 });
+        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 40.0, offset_expression: String::new() });
         assert!(state.dirty, "the new edit is unsaved");
         state.apply(Action::UndoLast);
         assert!(
@@ -24393,7 +24396,7 @@ mod tests {
         );
 
         // A new document is clean.
-        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 60.0 });
+        state.apply(Action::AddConstructionPlane { from: pkey(0), offset_mm: 60.0, offset_expression: String::new() });
         assert!(state.dirty);
         state.apply(Action::NewDocument);
         assert!(!state.dirty, "New document starts clean");

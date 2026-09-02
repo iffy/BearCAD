@@ -459,7 +459,15 @@ impl<'a> EmitCtx<'a> {
                 // by another `offset`. Emit what the definition actually says: the
                 // offset-from-parent form when the anchor is another construction plane,
                 // otherwise the anchor face's own origin and normal.
-                let offset = plane.definition.offset_mm;
+                // #1932: an offset/angle driven by a parameter is emitted as that
+                // expression, so the replayed script is as parametric as the document.
+                let offset = match symbolic_expr(
+                    Some(plane.definition.offset_expression.trim().to_string())
+                        .filter(|e| !e.is_empty()),
+                ) {
+                    Some(expr) => format!("{expr:?}"),
+                    None => script_f32(plane.definition.offset_mm).to_string(),
+                };
                 match &plane.definition.anchor {
                     crate::model::PlaneAnchor::Face {
                         origin,
@@ -489,7 +497,13 @@ impl<'a> EmitCtx<'a> {
                         direction,
                         ..
                     } => {
-                        let angle = script_f32(plane.definition.angle_deg);
+                        let angle = match symbolic_expr(
+                            Some(plane.definition.angle_expression.trim().to_string())
+                                .filter(|e| !e.is_empty()),
+                        ) {
+                            Some(expr) => format!("{expr:?}"),
+                            None => script_f32(plane.definition.angle_deg).to_string(),
+                        };
                         // A sketch line through the origin along X/Y/Z is still that
                         // line, not the world triad — match the line first (#1876).
                         if let Some(line) =

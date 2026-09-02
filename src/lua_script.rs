@@ -5964,6 +5964,32 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     extent.set("v_min", plane.extent.v_min)?;
                     extent.set("v_max", plane.extent.v_max)?;
                     t.set("extent", extent)?;
+                    // #1932: how the plane was *defined*, not just where it landed — the
+                    // offset/angle it was given, the expressions driving them, and which
+                    // kind of anchor it hangs off.
+                    let def = &plane.definition;
+                    t.set("offset", def.offset_mm)?;
+                    t.set("angle", def.angle_deg)?;
+                    if !def.offset_expression.trim().is_empty() {
+                        t.set("offset_expression", def.offset_expression.as_str())?;
+                    }
+                    if !def.angle_expression.trim().is_empty() {
+                        t.set("angle_expression", def.angle_expression.as_str())?;
+                    }
+                    match &def.anchor {
+                        crate::model::PlaneAnchor::Face { origin, normal, label } => {
+                            t.set("anchor", "face")?;
+                            t.set("anchor_origin", vec3_lua(lua, *origin)?)?;
+                            t.set("anchor_normal", vec3_lua(lua, *normal)?)?;
+                            t.set("anchor_label", label.as_str())?;
+                        }
+                        crate::model::PlaneAnchor::Axis { origin, direction, label } => {
+                            t.set("anchor", "axis")?;
+                            t.set("anchor_origin", vec3_lua(lua, *origin)?)?;
+                            t.set("anchor_direction", vec3_lua(lua, *direction)?)?;
+                            t.set("anchor_label", label.as_str())?;
+                        }
+                    }
                     if let Some(name) = &plane.name {
                         t.set("name", name.as_str())?;
                     }
@@ -9754,18 +9780,29 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             )?;
             let offset =
                 length_mm_or(lua, unsafe { &tick.state().doc }, &opts, "plane", "offset", 0.0)?;
+            // #1932: an offset (or angle) written as an expression drives the datum, the
+            // same way it drives an extrusion's distance. Evaluating it here and throwing
+            // the text away made a script that reads as parametric quietly static.
+            let offset_expression = scalar_arg(lua, &opts, "offset")?
+                .and_then(|(_, e)| e)
+                .unwrap_or_default();
             let from: usize = opts.ordinal_opt("from")?.unwrap_or(0);
             let origin: Option<Table> = opts.get("origin")?;
             let normal: Option<Table> = opts.get("normal")?;
             let axis_val: Option<Value> = opts.get("axis")?;
             let angle =
                 angle_deg_or(lua, unsafe { &tick.state().doc }, &opts, "plane", "angle", 0.0)?;
+            let angle_expression = scalar_arg(lua, &opts, "angle")?
+                .and_then(|(_, e)| e)
+                .unwrap_or_default();
             unsafe {
                 match (axis_val, origin, normal) {
                     (Some(axis), None, None) => {
                         tick.exec(Instruction::CreateAxisPlane {
                             offset,
+                            offset_expression,
                             angle,
+                            angle_expression,
                             axis: parse_plane_axis(lua, axis)?,
                         })?;
                     }
@@ -9775,12 +9812,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         };
                         tick.exec(Instruction::CreateFacePlane {
                             offset,
+                            offset_expression,
                             origin: v(&o)?,
                             normal: v(&n)?,
                         })?;
                     }
                     (None, None, None) => {
-                        tick.exec(Instruction::CreatePlane { offset, from })?;
+                        tick.exec(Instruction::CreatePlane { offset, offset_expression, from })?;
                     }
                     (Some(_), _, _) => {
                         return Err(mlua::Error::external(
@@ -21143,6 +21181,47 @@ pub mod tests {
                 }
             )],
             "the loupe is what the script selected"
+        );
+    }
+
+    /// #1932: a datum plane's offset is the most natural thing in a model to drive from a
+    /// parameter, and `plane{ offset = expr }` baked it to a number. `get` also never told
+    /// a script how the plane was defined, only where it landed.
+    #[test]
+    fn lua_plane_offset_stays_live_and_reads_back() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.add_parameter("u", "10")
+            local pl = bearcad.plane{ offset = "u*3", name = "Deck" }
+            assert(math.abs(pl:get().origin.z - 30) < 1e-3,
+                   "offset evaluates: " .. pl:get().origin.z)
+            assert(pl:get().offset ~= nil, "get must report the offset")
+            assert(math.abs(pl:get().offset - 30) < 1e-3, "offset in mm: " .. pl:get().offset)
+            assert(pl:get().offset_expression == "u*3",
+                   "get must report how it was defined: " .. tostring(pl:get().offset_expression))
+            bearcad.set_parameter("u", "20")
+            assert(math.abs(pl:get().origin.z - 60) < 1e-3,
+                   "the expression must stay live: " .. pl:get().origin.z)
+            assert(math.abs(pl:get().offset - 60) < 1e-3, "offset follows: " .. pl:get().offset)
+
+            -- An axis plane's angle is the same deal.
+            bearcad.add_parameter("tilt", "30")
+            local ax = bearcad.plane{ axis = "x", angle = "tilt" }
+            assert(ax:get().angle_expression == "tilt",
+                   "angle expression: " .. tostring(ax:get().angle_expression))
+            assert(math.abs(ax:get().angle - 30) < 1e-3, "angle in degrees: " .. ax:get().angle)
+            local n0 = ax:get().normal
+            bearcad.set_parameter("tilt", "60")
+            local n1 = ax:get().normal
+            assert(math.abs(n0.y - n1.y) > 1e-3 or math.abs(n0.z - n1.z) > 1e-3,
+                   "the axis plane must re-tilt when its parameter changes")
+
+            -- A plain numeric offset has no expression to report.
+            local fixed = bearcad.plane{ offset = 7 }
+            assert(math.abs(fixed:get().offset - 7) < 1e-3)
+            assert(fixed:get().offset_expression == nil, "no expression for a bare number")
+            "#,
         );
     }
 

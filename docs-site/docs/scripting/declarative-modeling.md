@@ -161,6 +161,7 @@ bearcad.plane{ offset = 5, from = 1 }                              -- offset fro
 bearcad.plane{ offset = 5, origin = {0, 0, 20}, normal = {0, 0, 1} } -- on a body face
 bearcad.plane{ axis = "x", angle = 45 }                            -- around the world X axis
 bearcad.plane{ axis = { line = 0 }, angle = 30, offset = 5 }        -- around a sketch line
+bearcad.plane{ offset = "deck * 3" }                               -- stays live; edit the parameter, the plane moves
 ```
 
 Project outside 3D geometry into the open sketch as associative reference lines
@@ -362,9 +363,12 @@ assert(bearcad.count("line") == 4)             -- non-deleted entities per kind
 local l = bearcad.get{ kind = "line", index = sides[1] }
 assert(l.x0 == 0 and math.abs(l.length - 40) < 1e-3)
 
--- A construction plane reports its drawn rectangle in its own u/v axes.
-local e = bearcad.get{ kind = "plane", index = 0 }.extent
-assert(e.u_min == 5 and e.u_max == 105)
+-- A construction plane reports its drawn rectangle in its own u/v axes, and how it was
+-- defined: offset/angle, the expressions driving them, and its anchor.
+local p = bearcad.get{ kind = "plane", index = 0 }
+assert(p.extent.u_min == 5 and p.extent.u_max == 105)
+-- p.offset, p.angle, p.offset_expression, p.angle_expression,
+-- p.anchor ("face" | "axis"), p.anchor_origin, p.anchor_normal / p.anchor_direction
 
 local s = bearcad.body_stats(box)              -- volume / triangles / bbox of a body's mesh
 assert(math.abs(s.volume - 40 * 30 * 10) < 120)

@@ -331,11 +331,33 @@ pub fn instruction_from_json(
             Ok(Instruction::BeginSketch { face })
         }
         "plane" => {
-            let offset = opt_f32(o, "offset")?.unwrap_or(0.0);
+            // #1932: an expression offset/angle drives the datum; keep the text so the
+            // plane follows its parameter instead of freezing at today's value.
+            let (offset, offset_expression) = match opt_scalar(o, "offset")? {
+                None => (0.0, String::new()),
+                Some((v, None)) => (v, String::new()),
+                Some((_, Some(expr))) => (
+                    crate::value::eval_length_mm_in_doc(&expr, doc)
+                        .ok_or_else(|| format!("plane: cannot evaluate offset '{expr}'"))?,
+                    expr,
+                ),
+            };
             if let Some(axis) = o.get("axis").filter(|v| !v.is_null()) {
+                let (angle, angle_expression) = match opt_scalar(o, "angle")? {
+                    None => (0.0, String::new()),
+                    Some((v, None)) => (v, String::new()),
+                    Some((_, Some(expr))) => (
+                        crate::value::eval_angle_rad_in_doc(&expr, doc)
+                            .map(|r| r.to_degrees())
+                            .ok_or_else(|| format!("plane: cannot evaluate angle '{expr}'"))?,
+                        expr,
+                    ),
+                };
                 return Ok(Instruction::CreateAxisPlane {
                     offset,
-                    angle: opt_f32(o, "angle")?.unwrap_or(0.0),
+                    offset_expression,
+                    angle,
+                    angle_expression,
                     axis: plane_axis_from_json(axis)?,
                 });
             }
@@ -344,11 +366,13 @@ pub fn instruction_from_json(
             match (origin, normal) {
                 (Some(ov), Some(nv)) => Ok(Instruction::CreateFacePlane {
                     offset,
+                    offset_expression,
                     origin: vec3_from_json(ov, "origin")?,
                     normal: vec3_from_json(nv, "normal")?,
                 }),
                 (None, None) => Ok(Instruction::CreatePlane {
                     offset,
+                    offset_expression,
                     from: opt_usize(o, "from")?.unwrap_or(0),
                 }),
                 _ => Err("plane: origin and normal must be given together".into()),
@@ -3381,11 +3405,19 @@ mod tests {
     fn plane_and_begin_sketch_and_open_sketch() {
         assert_eq!(
             instruction_from_json(&Document::default(), "plane", &json!({ "offset": 12, "from": 1 })),
-            Ok(Instruction::CreatePlane { offset: 12.0, from: 1 })
+            Ok(Instruction::CreatePlane {
+                offset: 12.0,
+                offset_expression: String::new(),
+                from: 1
+            })
         );
         assert_eq!(
             instruction_from_json(&Document::default(), "plane", &json!({})),
-            Ok(Instruction::CreatePlane { offset: 0.0, from: 0 })
+            Ok(Instruction::CreatePlane {
+                offset: 0.0,
+                offset_expression: String::new(),
+                from: 0
+            })
         );
         assert_eq!(
             instruction_from_json(
@@ -3395,7 +3427,9 @@ mod tests {
             ),
             Ok(Instruction::CreateAxisPlane {
                 offset: 0.0,
+                offset_expression: String::new(),
                 angle: 45.0,
+                angle_expression: String::new(),
                 axis: crate::script::PlaneAxisRef::Global(crate::construction::GlobalAxis::X),
             })
         );
@@ -3407,7 +3441,9 @@ mod tests {
             ),
             Ok(Instruction::CreateAxisPlane {
                 offset: 5.0,
+                offset_expression: String::new(),
                 angle: 30.0,
+                angle_expression: String::new(),
                 axis: crate::script::PlaneAxisRef::Line(0),
             })
         );
