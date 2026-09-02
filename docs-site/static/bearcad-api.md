@@ -361,6 +361,7 @@ bearcad.line{ x, y, x1, y1, length, angle, bezier, dimension, name }
 bearcad.line_endpoints(index)
 bearcad.loft{ … }
 bearcad.material{ name, color, bodies }
+bearcad.materials()
 bearcad.mirror_bodies{ plane, bodies, output, name }
 bearcad.mirror_sketch{ sketch, line, lines, circles }
 bearcad.move_bodies{ bodies, images, x, y, z, rotate, rx, ry, rz, roll, flip, spin, gap, from, to, name }

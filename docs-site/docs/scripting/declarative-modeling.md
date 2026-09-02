@@ -473,6 +473,16 @@ bearcad.set_material{ body = 1 }        -- back to the default material
 
 `set_material` names a material by its order in the document. Unobtainium is `0`.
 
+Read them back — `material{ name, color }` refuses a name the stock palette already has,
+so this is how you find out which those are:
+
+```lua
+bearcad.count("material")
+bearcad.get("material", 0)   -- { index, name, color = "#rrggbb", stock = true }
+bearcad.materials()          -- the whole table, in one call
+bearcad.get("material", bearcad.get("body", 0).material).name   -- what a body is made of
+```
+
 ## Visibility, construction, and shadow bodies
 
 ```lua

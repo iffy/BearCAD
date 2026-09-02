@@ -295,6 +295,28 @@ fn parse_ground_display(value: Value, call: &str) -> mlua::Result<GroundDisplay>
     }
 }
 
+/// One material as a script reads it (#1943): its name, its color as the `#rrggbb` the
+/// `material` verb takes, and whether it is one of the stock palette a fresh document
+/// starts with — the names `material{ name, color }` refuses to reuse.
+fn material_table(
+    lua: &Lua,
+    index: usize,
+    material: &crate::model::Material,
+) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    t.set("index", index)?;
+    t.set("name", material.name.as_str())?;
+    let [r, g, b] = material.color;
+    t.set("color", format!("#{r:02x}{g:02x}{b:02x}"))?;
+    t.set(
+        "stock",
+        crate::model::Material::DEFAULTS
+            .iter()
+            .any(|(name, color)| *name == material.name && *color == material.color),
+    )?;
+    Ok(t)
+}
+
 /// How a rejected argument reads back in an error (#1933): Lua's own type name, and the
 /// handle's id when the value *is* a BearCAD handle — never the raw `AnyUserData(Ref(0x…))`
 /// debug form, which tells a script author nothing.
@@ -5815,6 +5837,22 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // ----- Read-back / introspection getters (#107). Pure reads of the live state, like
     // `sketch_dof` above — not `Instruction`s, so they never appear in recorded scripts. -----
 
+    // #1943: the whole material table in one call — names, colors, and which are stock.
+    api.set(
+        "materials",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let doc = unsafe { &tick.state().doc };
+            let out = lua.create_table()?;
+            for (i, key) in doc.materials.keys().enumerate() {
+                out.set(i + 1, material_table(lua, i, &doc.materials[key])?)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+
     api.set(
         "count",
         lua.create_function(|lua, kind: String| {
@@ -6068,6 +6106,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                             .and_then(|mi| doc.materials.keys().position(|k| k == mi)),
                     )?;
                     t.set("shadow", body.shadow)?;
+                }
+                // #1943: a body reports its material as a bare ordinal; this is what
+                // resolves it, and what makes the stock palette discoverable.
+                "material" => {
+                    let Some(key) = doc.materials.keys().nth(index) else {
+                        return Ok(Value::Nil);
+                    };
+                    return Ok(Value::Table(material_table(lua, index, &doc.materials[key])?));
                 }
                 "parameter" => {
                     // The script's `index` is the parameter's ordinal (#1055).
@@ -19035,6 +19081,48 @@ pub mod tests {
             assert(not ok, "a bogus index still errors")
             assert(not tostring(err):find("AnyUserData"), "no raw userdata in the error: " .. tostring(err))
             "#,
+        );
+    }
+
+    /// #1943: materials are readable, not just writable. Without this a script could set a
+    /// body's material but never assert what it was made of — a body reports a bare ordinal
+    /// with nothing to resolve it against — and the stock palette's names, which
+    /// `material{ name, color }` refuses to reuse, were undiscoverable except by guessing.
+    #[test]
+    fn lua_materials_read_back() {
+        run_lua_expect_ok(
+            r##"
+            bearcad.new()
+            local stock = bearcad.count("material")
+            assert(stock > 0, "a document starts with a stock palette")
+            local names = {}
+            for i = 0, stock - 1 do
+              local m = bearcad.get("material", i)
+              assert(m.name and m.color, "a material reports its name and color")
+              assert(m.color:match("^#%x%x%x%x%x%x$"), "color as hex: " .. m.color)
+              assert(m.stock, m.name .. " is one of the stock materials")
+              names[m.name] = true
+            end
+            assert(names["Blue"], "the name `material` refuses is discoverable")
+            assert(not names["Brass"], "and one it does not have is not")
+
+            local b = bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.material{ name = "Tan", color = "#c8a06a", bodies = { b } }
+            assert(bearcad.count("material") == stock + 1)
+            local mine = bearcad.get("material", stock)
+            assert(mine.name == "Tan" and mine.color == "#c8a06a", mine.name .. " " .. mine.color)
+            assert(not mine.stock, "a material a script made is not stock")
+
+            -- The body's ordinal now resolves: "the block is tan" is assertable.
+            local m = bearcad.get("body", 0).material
+            assert(bearcad.get("material", m).name == "Tan",
+                   "a body's material ordinal resolves")
+
+            -- And the whole table in one call, so the palette is discoverable.
+            local all = bearcad.materials()
+            assert(#all == stock + 1, "materials() lists them all, got " .. #all)
+            assert(all[#all].name == "Tan" and all[#all].index == stock)
+            "##,
         );
     }
 

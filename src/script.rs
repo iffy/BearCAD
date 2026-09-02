@@ -11814,6 +11814,7 @@ pub const INSPECT_KINDS: &[&str] = &[
     "shape",
     "body",
     "live_body",
+    "material",
     "drawing",
     "cross_section",
     "section_plane",
@@ -11853,6 +11854,9 @@ pub fn count_kind(doc: &crate::model::Document, kind: &str) -> Option<usize> {
         "sketch_slice" => doc.sketch_slice_ops.len(),
         "sketch_chamfer" | "sketch_fillet" => doc.sketch_vertex_treatment_ops.len(),
         "body" => doc.bodies.len(),
+        // #1943: materials are countable, so the stock palette a script must not collide
+        // with is discoverable instead of guessed at.
+        "material" => doc.materials.len(),
         // #1934: bodies that are actually in the scene — an operation's consumed inputs
         // linger as shadow bodies, hidden and unexported, and inflate `count("body")`.
         "live_body" => doc.bodies.iter().filter(|(_, b)| !b.shadow).count(),
