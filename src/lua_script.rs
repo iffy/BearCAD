@@ -9321,6 +9321,31 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             unsafe { tick.exec(Instruction::DragGround { x0, y0, x1, y1 }) }
         })?,
     )?;
+    // #1949: press and hold, then let go — a drag a script can stop inside, so mid-drag
+    // state (what is highlighted, the status line, where the geometry has got to) is
+    // observable. `move`/`move_world` in between move with the button down.
+    api.set(
+        "press",
+        lua.create_function(|lua, (x, y): (f32, f32)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::Press { x, y }) }
+        })?,
+    )?;
+    api.set(
+        "press_world",
+        lua.create_function(|lua, (x, y, z): (f32, f32, f32)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::PressWorld { x, y, z }) }
+        })?,
+    )?;
+    api.set(
+        "release",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::Release) }
+        })?,
+    )?;
+
     api.set(
         "drag_world",
         lua.create_function(
@@ -12997,7 +13022,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "touch",
             "os_open",
             "move", "click", "double_click", "repeat_tool", "move_ground", "click_ground",
-            "move_world", "click_world",
+            "move_world", "click_world", "press", "press_world", "release",
             "drag", "drag_ground", "drag_world", "right_drag", "right_drag_pan",
             "right_click", "right_click_ground", "context_menu",
             "key", "keydown", "keyup", "type",
@@ -13068,6 +13093,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         end
         for _, name in ipairs({
             "move", "click", "double_click", "move_ground", "click_ground",
+            "press", "press_world", "release",
             "move_world", "click_world", "drag", "drag_ground", "drag_world",
             "right_click", "right_click_ground", "right_drag", "right_drag_shift",
             "type", "key", "keydown", "keyup",

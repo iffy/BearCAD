@@ -1201,6 +1201,11 @@ pub enum Instruction {
     /// Move/click at a point in world space (millimetres) — how a script reaches a face that
     /// isn't on the ground plane, such as a body's side wall (#1639).
     MoveWorld { x: f32, y: f32, z: f32 },
+    /// Press and hold the primary button (#1949) — a drag a script can stop inside.
+    /// `Press` is viewport pixels, `PressWorld` a world point; `Release` lets go.
+    Press { x: f32, y: f32 },
+    PressWorld { x: f32, y: f32, z: f32 },
+    Release,
     ClickWorld { x: f32, y: f32, z: f32, mods: ClickMods },
     /// Primary-drag between two ground-plane points (world mm), like [`Self::Drag`].
     DragGround { x0: f32, y0: f32, x1: f32, y1: f32 },
@@ -3003,6 +3008,11 @@ impl Instruction {
             Instruction::MoveWorld { x, y, z } => {
                 format!("bearcad.ui.move_world({x}, {y}, {z})")
             }
+            Instruction::Press { x, y } => format!("bearcad.ui.press({x}, {y})"),
+            Instruction::PressWorld { x, y, z } => {
+                format!("bearcad.ui.press_world({x}, {y}, {z})")
+            }
+            Instruction::Release => "bearcad.ui.release()".to_string(),
             Instruction::ClickWorld { x, y, z, mods } => {
                 format!("bearcad.ui.click_world({x}, {y}, {z}{})", mods.lua_opts())
             }
@@ -6068,6 +6078,33 @@ impl SyntheticInput {
                 });
             }
         }
+    }
+
+    /// Press the primary button at a spot and **hold** it (#1949): the other half of a
+    /// drag, so a script can stop part-way through one and read what the app is doing —
+    /// what is highlighted, what the status bar says, where the geometry has got to.
+    /// [`Self::release`] lets go. `move_to` in between moves with the button down.
+    pub fn press(&mut self, viewport: egui::Rect, x: f32, y: f32) {
+        let pos = Self::viewport_pos(viewport, x, y);
+        self.pointer_pos = Some(pos);
+        self.push_event(egui::Event::PointerMoved(pos));
+        self.push_event(egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+    }
+
+    /// Let go of a held press (#1949), wherever the pointer has got to.
+    pub fn release(&mut self) {
+        let pos = self.pointer_pos.unwrap_or(egui::Pos2::ZERO);
+        self.push_event(egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
     }
 
     pub fn drag(&mut self, viewport: egui::Rect, x0: f32, y0: f32, x1: f32, y1: f32) {
@@ -10043,6 +10080,31 @@ impl ScriptRunner {
                     return StepResult::Wait;
                 }
                 Self::world_pointer(synthetic, state, viewport, Vec3::new(x, y, z), None);
+                StepResult::Continue
+            }
+            Instruction::Press { x, y } => {
+                let Some(vp) = viewport else {
+                    return StepResult::Wait;
+                };
+                synthetic.press(vp, x, y);
+                StepResult::Continue
+            }
+            Instruction::PressWorld { x, y, z } => {
+                let Some(vp) = viewport else {
+                    return StepResult::Wait;
+                };
+                if state.cam.is_transitioning() {
+                    return StepResult::Wait;
+                }
+                let mat = state.cam.view_proj(vp);
+                let Some(screen) = state.cam.project(Vec3::new(x, y, z), vp, &mat) else {
+                    return StepResult::Continue;
+                };
+                synthetic.press(vp, screen.x - vp.min.x, screen.y - vp.min.y);
+                StepResult::Continue
+            }
+            Instruction::Release => {
+                synthetic.release();
                 StepResult::Continue
             }
             Instruction::ClickWorld { x, y, z, mods } => {

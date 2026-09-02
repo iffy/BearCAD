@@ -12090,12 +12090,15 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
     /// driven part moves it through its joint — a hinge swings, a slider slides — with
     /// the cursor's motion projected onto the joint's freedom and stopped at its limits.
     /// Returns true while it owns the pointer, so the selection click path stands down.
+    #[allow(clippy::too_many_arguments)]
     fn handle_joint_select_drag(
         &mut self,
         ui: &egui::Ui,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
         cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
     ) -> bool {
         if self.state.tool != Tool::Select || self.state.sketch_session.is_some() {
@@ -12106,7 +12109,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         if let Some(drag) = self.joint_select_drag.clone() {
             if ui.input(|i| i.pointer.primary_down()) {
                 if let Some(pp) = pointer_screen {
-                    self.update_joint_select_drag(&drag, pp, project, cam);
+                    self.update_joint_select_drag(&drag, pp, project, cam, viewport, vp);
                 }
                 return true;
             }
@@ -12222,12 +12225,15 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
 
     /// Project the cursor onto the dragged joint's freedom and write the values back to
     /// its position expressions (#897), clamped to the limits so the drag stops there.
+    #[allow(clippy::too_many_arguments)]
     fn update_joint_select_drag(
         &mut self,
         drag: &JointSelectDrag,
         pp: egui::Pos2,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
     ) {
         let Some(joint) = self.state.doc.joints.get(drag.joint).cloned() else {
             return;
@@ -12243,16 +12249,50 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 pp,
             ))
         };
-        // Screen rotation about the projected pivot, signed by which way the axis faces
-        // the camera — the same convention the text rotation ring uses.
-        let turn_about = |axis: Vec3, start_deg: f32| -> f32 {
-            let (Some(c), Some(start_angle)) = (project(drag.origin), drag.start_cursor_angle)
-            else {
-                return start_deg;
+        // Where the drag left the joint last frame — the reference the new angle is
+        // unwrapped against (#1948), so winding past ±180° keeps going instead of
+        // jumping a whole turn when `atan2` crosses its branch cut.
+        let previous = joints::evaluated_positions(&self.state.doc, &joint);
+        // #1948: the part follows the pointer *in the plane it turns in*. Cast the cursor
+        // ray onto the plane through the joint origin perpendicular to the axis and read
+        // the hit's angle about the axis; the same for the grab point, so the delta is
+        // what the pointer swept. Screen-angle-about-the-pivot (the old model, kept as
+        // the fallback) only matches the real motion when the axis points at the camera,
+        // so a vertical hinge pin seen from an angle went the wrong way and by the wrong
+        // amount. The fallback also serves when the plane is too edge-on to hit stably.
+        let plane_angle = |axis: Vec3, screen: egui::Pos2| -> Option<f32> {
+            let hit = cam.ray_plane_hit(screen, viewport, vp, drag.origin, axis)?;
+            let (e1, e2) = axis.any_orthonormal_pair();
+            let v = hit - drag.origin;
+            let v = v - axis * v.dot(axis);
+            (v.length() > 1e-4).then(|| v.dot(e2).atan2(v.dot(e1)))
+        };
+        let turn_about = |axis: Vec3, start_deg: f32, previous_deg: f32| -> f32 {
+            let axis = axis.normalize_or_zero();
+            let ray_ok = cam
+                .screen_ray(pp, viewport, vp)
+                .is_some_and(|(_, dir)| dir.dot(axis).abs() > 0.15);
+            let delta = match (
+                ray_ok.then(|| plane_angle(axis, pp)).flatten(),
+                ray_ok.then(|| plane_angle(axis, drag.start_screen)).flatten(),
+            ) {
+                (Some(now), Some(then)) => now - then,
+                _ => {
+                    let (Some(c), Some(start_angle)) =
+                        (project(drag.origin), drag.start_cursor_angle)
+                    else {
+                        return start_deg;
+                    };
+                    let angle = (pp.y - c.y).atan2(pp.x - c.x);
+                    let sign = if axis.dot(cam.eye() - drag.origin) > 0.0 { -1.0 } else { 1.0 };
+                    sign * (angle - start_angle)
+                }
             };
-            let angle = (pp.y - c.y).atan2(pp.x - c.x);
-            let sign = if axis.dot(cam.eye() - drag.origin) > 0.0 { -1.0 } else { 1.0 };
-            let deg = start_deg + (sign * (angle - start_angle)).to_degrees();
+            // Unwrap onto the turn nearest where the drag already was, so the part keeps
+            // following the pointer round and round — and a drag pushed past a limit parks
+            // at that limit instead of wrapping to the opposite one.
+            let raw = start_deg + delta.to_degrees();
+            let deg = raw + 360.0 * ((previous_deg - raw) / 360.0).round();
             limits.clamp_turn(deg.to_radians()).to_degrees()
         };
         let mut values = drag.start;
@@ -12260,22 +12300,22 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             model::JointKind::Rigid => return,
             model::JointKind::Slider => values.0 = slide_along(drag.axis, drag.start.0),
             model::JointKind::Revolute | model::JointKind::Screw { .. } => {
-                values.0 = turn_about(drag.axis, drag.start.0)
+                values.0 = turn_about(drag.axis, drag.start.0, previous.0)
             }
             // Both freedoms follow the one drag: the axial component slides, the swing
             // around the axis turns.
             model::JointKind::Cylindrical => {
                 values.0 = slide_along(drag.axis, drag.start.0);
-                values.1 = turn_about(drag.axis, drag.start.1);
+                values.1 = turn_about(drag.axis, drag.start.1, previous.1);
             }
             model::JointKind::Planar => {
                 values.0 = slide_along(drag.y_axis, drag.start.0);
                 values.1 = slide_along(drag.z_axis, drag.start.1);
             }
-            model::JointKind::Ball => values.0 = turn_about(drag.axis, drag.start.0),
+            model::JointKind::Ball => values.0 = turn_about(drag.axis, drag.start.0, previous.0),
             model::JointKind::PinSlot => {
                 values.0 = slide_along(drag.axis, drag.start.0);
-                values.1 = turn_about(drag.y_axis, drag.start.1);
+                values.1 = turn_about(drag.y_axis, drag.start.1, previous.1);
             }
         }
         let fmt = |v: f32| format!("{}", (v * 1000.0).round() / 1000.0);
@@ -21811,6 +21851,7 @@ fn suppress_viewport_pick_hover(
     plane_gizmo_drag_active: bool,
     bezier_handle_drag_active: bool,
     move_rotation_drag_active: bool,
+    joint_drag_active: bool,
 ) -> bool {
     // Camera navigation skips hover pick work: secondary/middle drag for orbit/pan,
     // active scroll/zoom for the wheel (#1122), and multi-touch pan/orbit/pinch (#1141).
@@ -21829,6 +21870,11 @@ fn suppress_viewport_pick_hover(
         || plane_gizmo_drag_active
         || bezier_handle_drag_active
         || move_rotation_drag_active
+        // #1949: while a jointed part is being dragged through its joint, nothing under
+        // the cursor is a selection candidate — the pointer is steering the part, not
+        // pointing at things — so highlighting whatever it sweeps over is just noise (and
+        // the pick work behind it is the expensive part of every frame of the drag).
+        || joint_drag_active
 }
 
 /// The body mesh corner under the cursor, if one is genuinely pickable: hidden/shadow bodies
@@ -32227,6 +32273,7 @@ impl App {
             self.face_spin_drag.is_some()
                 || self.free_move_rotation_drag.is_some()
                 || self.text_rotation_drag.is_some(),
+            self.joint_select_drag.is_some(),
         );
 
         // Selection Exploder (#551): Space fans the crowd of pickable things under the cursor out
@@ -32678,7 +32725,7 @@ impl App {
         // Dragging a jointed part with the Select tool (#897): grabbing an already-selected
         // driven part moves it through its joint, taking the pointer before picking does.
         let joint_dragging =
-            self.handle_joint_select_drag(ui, &project, grab_pointer, &cam, pick_occlusion);
+            self.handle_joint_select_drag(ui, &project, grab_pointer, &cam, viewport, &vp, pick_occlusion);
 
         // Dimension tool also selects in sketch mode (#486/#487): clicks accumulate edges for
         // an angle (or re-click / Enter for a length) instead of immediately locking length.
