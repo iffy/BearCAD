@@ -11409,7 +11409,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 {
                     shape.radius = old.radius.clone();
                 }
-                if !opts.contains_key("at")? { shape.origin = old.origin; }
+                if !opts.contains_key("at")? {
+                    shape.origin = old.origin;
+                    // …and the expressions driving it (#1929), or an edit that only
+                    // changed a size would freeze the placement it left alone.
+                    shape.origin_expression = old.origin_expression.clone();
+                }
                 if !opts.contains_key("normal")? { shape.normal = old.normal; }
                 if !opts.contains_key("u_axis")? { shape.u_axis = old.u_axis; }
             }
