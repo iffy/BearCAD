@@ -54,32 +54,48 @@ impl PreviewRgba {
     }
 }
 
-/// Render a Home-orientation, zoom-to-fit preview of `doc`. `None` when there is nothing to draw.
-pub fn render_document_preview(doc: &Document) -> Option<PreviewRgba> {
-    render_document_preview_sized(doc, PREVIEW_SIZE)
+/// The angle a preview is rendered from (#1944): yaw and pitch in radians, plus the roll a
+/// trackball orbit leaves behind. `None` anywhere here means the default isometric.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PreviewAngle {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub view_up: Option<Vec3>,
 }
 
-/// Like [`render_document_preview`] with an explicit square size (tests use smaller images).
-pub fn render_document_preview_sized(doc: &Document, size: u32) -> Option<PreviewRgba> {
+impl From<crate::camera::HomeView> for PreviewAngle {
+    fn from(home: crate::camera::HomeView) -> Self {
+        Self { yaw: home.yaw, pitch: home.pitch, view_up: home.view_up }
+    }
+}
+
+/// The preview at `size`, looked at from `angle` (#1944) — the Home view, or whatever a
+/// script asked for. The framing is always zoom-to-fit; only the direction changes.
+pub fn render_document_preview_from(
+    doc: &Document,
+    size: u32,
+    angle: Option<PreviewAngle>,
+) -> Option<PreviewRgba> {
     let size = size.max(32);
     let (min, max) = document_world_bounds(doc)?;
     let meshes = collect_preview_meshes(doc);
     if meshes.is_empty() {
         // Sketch-only: still frame, but paint construction geometry as lines.
-        return render_sketch_lines_preview(doc, size, min, max);
+        return render_sketch_lines_preview(doc, size, min, max, angle);
     }
-    Some(rasterize_meshes(&meshes, min, max, size))
+    Some(rasterize_meshes(&meshes, min, max, size, angle))
 }
 
 /// Encode a document preview as PNG bytes, or `None` when empty.
-pub fn document_preview_png(doc: &Document) -> Option<Vec<u8>> {
-    let preview = render_document_preview(doc)?;
+pub fn document_preview_png_from(doc: &Document, angle: Option<PreviewAngle>) -> Option<Vec<u8>> {
+    let preview = render_document_preview_from(doc, PREVIEW_SIZE, angle)?;
     preview.encode_png().ok()
 }
 
-/// Write a preview PNG of `doc` to `path` (scriptable via `bearcad.export_preview`).
-pub fn export_preview_png(doc: &Document, path: &str) -> Result<(), String> {
-    let png = document_preview_png(doc).ok_or_else(|| {
+/// Write a preview PNG of `doc` to `path` (scriptable via `bearcad.export_preview`),
+/// looked at from `angle` — the Home view unless the caller says otherwise (#1944).
+pub fn export_preview_png(doc: &Document, path: &str, angle: Option<PreviewAngle>) -> Result<(), String> {
+    let png = document_preview_png_from(doc, angle).ok_or_else(|| {
         "export_preview: document has no geometry to preview".to_string()
     })?;
     std::fs::write(path, png).map_err(|e| format!("export_preview: write {path}: {e}"))
@@ -87,11 +103,11 @@ pub fn export_preview_png(doc: &Document, path: &str) -> Result<(), String> {
 
 /// After a successful SQLite save: embed the preview in `meta` and publish it to the OS.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn attach_preview_after_save(path: &str, doc: &Document) {
+pub fn attach_preview_after_save(path: &str, doc: &Document, angle: Option<PreviewAngle>) {
     // A JSON document is a flat serialization with nowhere to keep a preview (#1817).
     // The OS thumbnail still applies — that lives beside the file, not in it.
     let embeddable = !crate::storage::saves_as_json(path);
-    let Some(png) = document_preview_png(doc) else {
+    let Some(png) = document_preview_png_from(doc, angle) else {
         // Empty model: clear any stale custom icon so Finder doesn't show an old thumbnail.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             clear_os_preview(path);
@@ -119,7 +135,7 @@ pub fn attach_preview_after_save(path: &str, doc: &Document) {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn attach_preview_after_save(_path: &str, _doc: &Document) {}
+pub fn attach_preview_after_save(_path: &str, _doc: &Document, _angle: Option<PreviewAngle>) {}
 
 /// Read the embedded preview PNG from a `.bearcad` SQLite file (tests / tooling).
 #[cfg(all(not(target_arch = "wasm32"), test))]
@@ -164,8 +180,15 @@ fn collect_preview_meshes(doc: &Document) -> Vec<ColoredMesh> {
 // ── camera ───────────────────────────────────────────────────────────────────
 
 /// Home orientation, zoom-to-fit, with a little extra pad so the outline has room.
-fn preview_camera(min: Vec3, max: Vec3, size: u32) -> (Camera, Rect) {
+fn preview_camera(min: Vec3, max: Vec3, size: u32, angle: Option<PreviewAngle>) -> (Camera, Rect) {
     let mut cam = Camera::default(); // default = Home isometric orientation
+    // #1944: aim it where the caller asked — the document's Home view, or an explicit
+    // angle. The framing below is still zoom-to-fit, so only the direction changes.
+    if let Some(angle) = angle {
+        cam.yaw = angle.yaw;
+        cam.pitch = angle.pitch;
+        cam.set_view_up(angle.view_up);
+    }
     let aspect = 1.0;
     cam.frame_bounds_instant(min, max, aspect);
     // frame_bounds_instant already multiplies by ZOOM_FIT_MARGIN; pad a bit more for outline.
@@ -176,8 +199,14 @@ fn preview_camera(min: Vec3, max: Vec3, size: u32) -> (Camera, Rect) {
 
 // ── software rasterizer ──────────────────────────────────────────────────────
 
-fn rasterize_meshes(meshes: &[ColoredMesh], min: Vec3, max: Vec3, size: u32) -> PreviewRgba {
-    let (cam, viewport) = preview_camera(min, max, size);
+fn rasterize_meshes(
+    meshes: &[ColoredMesh],
+    min: Vec3,
+    max: Vec3,
+    size: u32,
+    angle: Option<PreviewAngle>,
+) -> PreviewRgba {
+    let (cam, viewport) = preview_camera(min, max, size, angle);
     let vp = cam.view_proj(viewport);
     let eye = cam.eye();
     let light = Vec3::new(0.45, 0.35, 0.82).normalize();
@@ -351,10 +380,11 @@ fn render_sketch_lines_preview(
     size: u32,
     min: Vec3,
     max: Vec3,
+    angle: Option<PreviewAngle>,
 ) -> Option<PreviewRgba> {
     use crate::face::{local_to_world, sketch_geometry_frame};
 
-    let (cam, viewport) = preview_camera(min, max, size);
+    let (cam, viewport) = preview_camera(min, max, size, angle);
     let vp = cam.view_proj(viewport);
     let n = (size as usize) * (size as usize);
     let mut pixels = vec![0u8; n * 4];
@@ -978,8 +1008,8 @@ mod tests {
     #[test]
     fn empty_document_has_no_preview() {
         let doc = Document::default();
-        assert!(render_document_preview(&doc).is_none());
-        assert!(document_preview_png(&doc).is_none());
+        assert!(render_document_preview_from(&doc, PREVIEW_SIZE, None).is_none());
+        assert!(document_preview_png_from(&doc, None).is_none());
     }
 
     #[test]
@@ -989,7 +1019,7 @@ mod tests {
             color: [150, 168, 196],
         }];
         let bounds = meshes[0].mesh.bounds().unwrap();
-        let img = rasterize_meshes(&meshes, bounds.0, bounds.1, 128);
+        let img = rasterize_meshes(&meshes, bounds.0, bounds.1, 128, None);
 
         let opaque: Vec<(usize, usize)> = (0..128)
             .flat_map(|y| (0..128).map(move |x| (x, y)))
@@ -1049,7 +1079,7 @@ mod tests {
             color: [200, 100, 50],
         }];
         let bounds = meshes[0].mesh.bounds().unwrap();
-        let img = rasterize_meshes(&meshes, bounds.0, bounds.1, 64);
+        let img = rasterize_meshes(&meshes, bounds.0, bounds.1, 64, None);
         // Under isometric Home, more than one face is visible → color variance.
         let mut colors = std::collections::HashSet::new();
         for y in 0..64 {
@@ -1077,7 +1107,7 @@ mod tests {
     #[test]
     fn document_preview_png_from_imported_mesh() {
         let doc = cube_document();
-        let png = document_preview_png(&doc).expect("imported cube must preview");
+        let png = document_preview_png_from(&doc, None).expect("imported cube must preview");
         assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
         assert!(png.len() > 200);
     }
@@ -1096,7 +1126,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         crate::storage::save(&path_s, &doc).expect("save");
-        attach_preview_after_save(&path_s, &doc);
+        attach_preview_after_save(&path_s, &doc, None);
 
         let png = load_embedded_preview_png(&path_s).expect("save should embed preview_png blob");
         assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
@@ -1123,7 +1153,7 @@ mod tests {
         let _ = crate::storage::upsert_preview_blob(&path_s, PREVIEW_STL_BLOB_KIND, &[0u8; 84]);
         assert!(load_embedded_preview_stl(&path_s).is_some(), "fixture");
 
-        attach_preview_after_save(&path_s, &doc);
+        attach_preview_after_save(&path_s, &doc, None);
 
         assert!(
             load_embedded_preview_stl(&path_s).is_none(),
@@ -1148,14 +1178,14 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         crate::storage::save(&path_s, &doc).expect("save");
-        attach_preview_after_save(&path_s, &doc);
+        attach_preview_after_save(&path_s, &doc, None);
         assert!(
             !crate::diag::session_log().contains(&format!("preview embed failed for {path_s}")),
             "a JSON save must not warn about the preview it cannot embed"
         );
 
         // An empty document takes the clear-the-preview path, which must be as quiet.
-        attach_preview_after_save(&path_s, &Document::default());
+        attach_preview_after_save(&path_s, &Document::default(), None);
         assert!(
             !crate::diag::session_log().contains(&format!("preview embed failed for {path_s}")),
             "clearing a JSON document's preview must not warn either"
@@ -1170,7 +1200,7 @@ mod tests {
         let path = std::env::temp_dir().join("bearcad_export_preview_test.png");
         let path_s = path.to_string_lossy().to_string();
         let _ = std::fs::remove_file(&path);
-        export_preview_png(&doc, &path_s).expect("export_preview");
+        export_preview_png(&doc, &path_s, None).expect("export_preview");
         let read = std::fs::read(&path).expect("read png");
         assert!(read.starts_with(&[0x89, b'P', b'N', b'G']));
         let _ = std::fs::remove_file(&path);

@@ -19847,7 +19847,12 @@ op,
                 self.mark_saved();
                 // Finder / free-desktop thumbnail: Home zoom-to-fit preview with a black
                 // silhouette outline (#1223). Soft-fails into the diagnostics log.
-                crate::file_preview::attach_preview_after_save(path, &self.doc);
+                // #1944: the thumbnail is the Home view, the same as `export_preview` writes.
+                crate::file_preview::attach_preview_after_save(
+                    path,
+                    &self.doc,
+                    Some(self.cam.home_view().into()),
+                );
                 // Announce the completed save (#733): another BearCAD instance with this
                 // file imported as a dynamic unit picks the change up on its next tick.
                 #[cfg(not(target_arch = "wasm32"))]
@@ -19883,7 +19888,12 @@ op,
         }
         self.path = Some(path.to_string());
         self.mark_saved();
-        crate::file_preview::attach_preview_after_save(path, &self.doc);
+        // #1944: the thumbnail is the Home view, the same as `export_preview` writes.
+                crate::file_preview::attach_preview_after_save(
+                    path,
+                    &self.doc,
+                    Some(self.cam.home_view().into()),
+                );
         crate::units::write_save_ping();
         if let Err(e) = session.borrow_mut().begin() {
             crate::diag::warn(format!("could not reopen document transaction: {e}"));

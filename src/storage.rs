@@ -2783,7 +2783,7 @@ mod tests {
         });
 
         save(&path, &doc).unwrap();
-        crate::file_preview::attach_preview_after_save(&path, &doc);
+        crate::file_preview::attach_preview_after_save(&path, &doc, None);
 
         let conn = Connection::open(&path).unwrap();
         let png: Vec<u8> = conn

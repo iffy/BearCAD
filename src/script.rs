@@ -154,7 +154,9 @@ pub enum Instruction {
     /// Export bodies to a STEP file at `path`; `body` names a single body (`None` = all).
     ExportStep { path: String, body: Option<String> },
     /// Write a Home zoom-to-fit PNG preview of the document (#1223).
-    ExportPreview { path: String },
+    /// #1944: `yaw`/`pitch` in degrees aim the render; omitted, it follows the document's
+    /// **Home** view, as the docs have always said it did.
+    ExportPreview { path: String, yaw: Option<f32>, pitch: Option<f32> },
     /// #1937: write the deterministic script that recreates the document (no `bearcad.ui`),
     /// the export side of `import_lua`. Every other format was symmetric; this one lived
     /// only behind a GUI file dialog, so a headless run could never produce one.
@@ -1281,7 +1283,19 @@ impl Instruction {
             Instruction::Save(None) => "bearcad.save()".to_string(),
             Instruction::Save(Some(path)) => format!("bearcad.save({path:?})"),
             Instruction::RebuildGeometry => "bearcad.rebuild_geometry()".to_string(),
-            Instruction::ExportPreview { path } => format!("bearcad.export_preview({path:?})"),
+            Instruction::ExportPreview { path, yaw, pitch } => match (yaw, pitch) {
+                (None, None) => format!("bearcad.export_preview({path:?})"),
+                (yaw, pitch) => {
+                    let mut keys = Vec::new();
+                    if let Some(y) = yaw {
+                        keys.push(format!("yaw = {y}"));
+                    }
+                    if let Some(p) = pitch {
+                        keys.push(format!("pitch = {p}"));
+                    }
+                    format!("bearcad.export_preview({path:?}, {{ {} }})", keys.join(", "))
+                }
+            },
             Instruction::ExportLua { path } => format!("bearcad.export_lua({path:?})"),
             Instruction::ExportStl { path, body: None } => format!("bearcad.export_stl({path:?})"),
             Instruction::ExportStl {
@@ -7187,8 +7201,15 @@ impl ScriptRunner {
                 self.record_action_error(r);
                 StepResult::Continue
             }
-            Instruction::ExportPreview { path } => {
-                match crate::file_preview::export_preview_png(&state.doc, &path) {
+            Instruction::ExportPreview { path, yaw, pitch } => {
+                // #1944: the Home view the docs promise, or the angle the script named.
+                let home = state.cam.home_view();
+                let angle = crate::file_preview::PreviewAngle {
+                    yaw: yaw.map_or(home.yaw, f32::to_radians),
+                    pitch: pitch.map_or(home.pitch, f32::to_radians),
+                    view_up: if yaw.is_some() || pitch.is_some() { None } else { home.view_up },
+                };
+                match crate::file_preview::export_preview_png(&state.doc, &path, Some(angle)) {
                     Ok(()) => {}
                     Err(e) => self.record_action_error(crate::actions::ActionResult::Err(e)),
                 }

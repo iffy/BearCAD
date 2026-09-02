@@ -32,7 +32,9 @@ bearcad.quit()
 `bearcad.export_stl(path, [body])` and `bearcad.export_3mf(path, [body])` work the same way
 for mesh export. Whole-document `export_3mf` keeps each body as its own colored object
 (material → 3MF `m:colorgroup`, one filament slot per color in Bambu Studio).
-`bearcad.export_preview(path)` writes a Home zoom-to-fit PNG (same image embedded on save).
+`bearcad.export_preview(path)` writes a Home zoom-to-fit PNG (same image embedded on
+save); `bearcad.export_preview(path, { yaw = 225, pitch = 30 })` aims it instead. It is the
+only call that renders clean — white background, no grid, no world axes.
 
 ## Handles: what a call hands back
 
@@ -570,5 +572,6 @@ bearcad.clear()
 bearcad.undo()
 bearcad.rebuild_geometry()     -- File → Rebuild Geometry: drop tessellation cache
 bearcad.export_preview("preview.png")  -- Home zoom-to-fit PNG (also embedded on save)
+bearcad.export_preview("hero.png", { yaw = 225, pitch = 30 })   -- degrees
 bearcad.quit()                 -- close the app when the script ends
 ```

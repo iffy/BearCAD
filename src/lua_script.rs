@@ -4823,9 +4823,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // #1223: Home zoom-to-fit PNG preview (same image saved into .bearcad for Finder).
     api.set(
         "export_preview",
-        lua.create_function(|lua, path: String| {
+        lua.create_function(|lua, (path, opts): (String, Option<Table>)| {
+            // #1944: aim it. With no angle it follows the document's Home view.
+            let (yaw, pitch) = match &opts {
+                None => (None, None),
+                Some(t) => {
+                    check_keys(t, "export_preview", &["yaw", "pitch"])?;
+                    (t.get::<Option<f32>>("yaw")?, t.get::<Option<f32>>("pitch")?)
+                }
+            };
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::ExportPreview { path }) }
+            unsafe { tick.exec(Instruction::ExportPreview { path, yaw, pitch }) }
         })?,
     )?;
 
@@ -19082,6 +19090,49 @@ pub mod tests {
             assert(not tostring(err):find("AnyUserData"), "no raw userdata in the error: " .. tostring(err))
             "#,
         );
+    }
+
+    /// #1944: `export_preview` renders the **Home** view the docs promise, and takes an
+    /// explicit angle. It used to render one fixed isometric no matter where Home was set,
+    /// and it is the only call that produces a clean image (no grid, no world axes) — so a
+    /// presentation render could not be aimed at the side of the model you wanted to show.
+    #[test]
+    fn lua_export_preview_follows_the_home_view() {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let (a, b, c) = (
+            dir.join(format!("bearcad_preview_a_{pid}.png")),
+            dir.join(format!("bearcad_preview_b_{pid}.png")),
+            dir.join(format!("bearcad_preview_c_{pid}.png")),
+        );
+        for p in [&a, &b, &c] {
+            let _ = std::fs::remove_file(p);
+        }
+        let esc = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            -- Tall and thin, so which way the camera looks makes a visible difference.
+            bearcad.cuboid{{ width = 60, depth = 8, height = 8 }}
+            bearcad.export_preview("{a}")
+            bearcad.ui.view("top")
+            bearcad.ui.set_home_view()
+            bearcad.export_preview("{b}")
+            bearcad.export_preview("{c}", {{ yaw = 200, pitch = 10 }})
+            "#,
+            a = esc(&a),
+            b = esc(&b),
+            c = esc(&c),
+        ));
+        let read = |p: &std::path::Path| {
+            let bytes = std::fs::read(p).unwrap_or_else(|_| panic!("wrote {}", p.display()));
+            let _ = std::fs::remove_file(p);
+            bytes
+        };
+        let (pa, pb, pc) = (read(&a), read(&b), read(&c));
+        assert!(pa.len() > 200 && pb.len() > 200 && pc.len() > 200);
+        assert_ne!(pa, pb, "moving Home must move the preview camera");
+        assert_ne!(pb, pc, "an explicit angle overrides Home");
     }
 
     /// #1943: materials are readable, not just writable. Without this a script could set a

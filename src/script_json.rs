@@ -470,6 +470,8 @@ pub fn instruction_from_json(
         }),
         "export_preview" => Ok(Instruction::ExportPreview {
             path: req_str(o, "path", "export_preview")?,
+            yaw: opt_f32(o, "yaw")?,
+            pitch: opt_f32(o, "pitch")?,
         }),
         "import_stl" => Ok(Instruction::ImportStl { path: req_str(o, "path", "import_stl")? }),
         "import_step" => Ok(Instruction::ImportStep { path: req_str(o, "path", "import_step")? }),

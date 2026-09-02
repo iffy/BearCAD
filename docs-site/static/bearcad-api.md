@@ -336,7 +336,7 @@ bearcad.export_3mf(path, body?)
 bearcad.export_drawing_pdf{ drawing, path }
 bearcad.export_drawing_svg{ … }
 bearcad.export_lua(path)
-bearcad.export_preview(path)
+bearcad.export_preview(path, opts? | { yaw, pitch })
 bearcad.export_step(path, body?)
 bearcad.export_stl(path, body?)
 bearcad.extrude{ distance, to, profiles, circle, circles, polygon, polygons, text, boolean, body, name, symmetric, taper, taper_mode }
