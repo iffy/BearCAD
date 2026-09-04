@@ -26,8 +26,11 @@ fn default_true() -> bool {
     true
 }
 
-/// Bump when the on-disk schema changes. v1 was the `dag_nodes` dump; this is the typed
-/// one-table-per-arena format. Pre-alpha: no reader for the old dump.
+/// Bump when the on-disk schema changes structurally — a rename, a retype, data moving
+/// between tables. Adding a column needs no bump ([`init_schema`] adds it to old files on
+/// its own); a bump does need a migration that upgrades an older file rather than the
+/// refusal in [`open`], because a file must never stop opening. v1 was the `dag_nodes`
+/// dump, broken before that rule; this is the typed one-table-per-arena format.
 const SCHEMA_VERSION: i64 = 2;
 const SCHEMA_MIGRATION_NAME: &str = "typed_entity_tables";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -414,10 +417,11 @@ fn create_missing_tables(conn: &Connection) -> rusqlite::Result<()> {
 ///
 /// `CREATE TABLE IF NOT EXISTS` adds whole tables a file predates, but it leaves an
 /// existing table exactly as it was — so a file written before a column joined the schema
-/// opens with that column missing, and every statement naming it fails (#1954). Pre-alpha
-/// has no migration ladder, so instead of a list of hand-written steps: build the current
-/// schema in memory, diff each table against the file's, and `ALTER TABLE ... ADD COLUMN`
-/// whatever is absent. A column added this way holds its default on the old rows.
+/// opens with that column missing, and every statement naming it fails (#1954). Rather
+/// than a hand-written step per column, this is the whole upgrade for adding one: build
+/// the current schema in memory, diff each table against the file's, and `ALTER TABLE ...
+/// ADD COLUMN` whatever is absent. A column added this way holds its default on the old
+/// rows, so give every new column a `DEFAULT` that reads as "unset".
 fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     create_missing_tables(conn)?;
     let current = Connection::open_in_memory()?;

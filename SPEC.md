@@ -3688,7 +3688,13 @@ health reports it.
   );
   ```
 - Current version: **2** (`typed_entity_tables`). A newer file than the running binary
-  is refused. Pre-alpha: no reader for the v1 `dag_nodes` dump.
+  is refused.
+- An **older** file is upgraded on open, never refused — a schema change ships its
+  upgrade with it. A column the file is missing is added automatically: `init_schema`
+  diffs every table against the current schema and fills the old rows from the column's
+  `DEFAULT`. Anything structural (rename, retype, moving data, changing a value's
+  meaning) needs a numbered migration. The v1 `dag_nodes` dump predates this rule and
+  has no reader.
 - `meta` holds scalars only: `app_version`, `occt_version`, `schema_version`,
   `default_length_unit`, `default_angle_unit`.
 

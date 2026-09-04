@@ -6,7 +6,7 @@ Use the app's scriptability to test issues. As you do this and find deficiencies
 
 Run `cargo test` to make sure tests pass. Fix warnings from `cargo build` as they come up. Also sometimes run `cargo run --exit` to make sure it launches.
 
-We're in pre-alpha right now, so don't worry about defining schema migrations at this point -- just alter the initial schema. And don't mind backward compatibility. Feel free to make breaking compatibility changes.
+No backward-incompatible file-format changes. A file written by any earlier version must still open, so every schema change ships its upgrade in the same commit, and every one gets a test that opens a file written the old way. Adding a column is already handled — `init_schema` diffs each table against the current schema and adds what a file is missing, filling old rows from the column's default — so give a new column a `DEFAULT`. Anything else (renaming, retyping, moving data between tables, changing what a value means) needs a real migration: bump `SCHEMA_VERSION`, record it in `schema_migrations`, and upgrade the file on open instead of refusing it. Files older than the current `SCHEMA_VERSION` are refused today; the first version bump under this rule has to replace that refusal with the upgrade.
 
 For every completed task/feature/fix to the app, record the change with a single, complete sentence via `changer add ...` (see `changer add --help` for more info). Do not record changer snippets for docs changes, website changes or CI changes. The changelog is for users to know how the app has changed.
 
