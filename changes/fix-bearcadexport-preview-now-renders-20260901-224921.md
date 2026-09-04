@@ -1,1 +1,0 @@
-`bearcad.export_preview` now renders the document's Home view as documented — and takes an explicit `{ yaw, pitch }` to aim it — so a presentation render can be pointed at the side of the model you want; the thumbnail embedded on save follows Home too.

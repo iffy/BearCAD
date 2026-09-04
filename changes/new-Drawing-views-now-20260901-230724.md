@@ -1,1 +1,0 @@
-Drawing views now land in their standard projection positions — Top above Front, Left and Right beside it, Back and Iso in the free corners — and the cards shrink to fit as the sheet fills up, instead of cascading onto one another; moving or resizing a card takes it out of that arrangement.

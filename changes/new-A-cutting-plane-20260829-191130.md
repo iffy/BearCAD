@@ -1,1 +1,0 @@
-A cutting plane now takes a Cut depth: left blank it cuts all the way through as before, and given a length it hides only that deep a slab — a chunk out of the middle of the model instead of a whole half.

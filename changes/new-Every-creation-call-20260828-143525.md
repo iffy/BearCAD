@@ -1,1 +1,0 @@
-Every creation call returns a stable handle for what it made (`local box = bearcad.extrude{...}`), with a document-unique, never-reused `el:id()`, and anywhere a script takes an element index it now takes a handle, an id, or a name instead.

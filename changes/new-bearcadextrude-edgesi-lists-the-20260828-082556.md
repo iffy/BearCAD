@@ -1,1 +1,0 @@
-bearcad.extrude_edges(i) lists the edge references fillet_edge/chamfer_edge accept, and the edge kinds 'top'/'bottom' are accepted as documented (fixing circular rim fillets on discs, which the old kind names silently refused).

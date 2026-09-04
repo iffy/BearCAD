@@ -1,1 +1,0 @@
-`material`, `set_material`, `set_units`, `set_body_shadow`, `export_drawing_pdf` and the drawing layout, label and dimension verbs now reject unknown option keys with the accepted-key list, so a misspelled option is no longer a silent no-op.

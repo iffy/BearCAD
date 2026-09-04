@@ -1,1 +1,0 @@
-Deleting a sketch, line, circle, or construction plane that solid features still depend on is now refused with the dependents named, instead of silently reverting those features (which also left body_stats returning nil).

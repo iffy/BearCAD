@@ -1,1 +1,0 @@
-Scripts fillet and chamfer a body in one call (fillet{ body, edges, radius } / chamfer{ body, edges, distance }), and body_faces entries, body:face("top"), and hovered faces share an identity begin_sketch and extrude_face accept.

@@ -1,1 +1,0 @@
-Scripted geometric-constraint calls (bearcad.add_geometric_constraint / constraint_shortcut) now raise an error when refused instead of silently doing nothing, refused constraints say what the selection is missing, and add_geometric_constraint accepts explicit entity references.
