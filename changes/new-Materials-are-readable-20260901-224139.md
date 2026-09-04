@@ -1,1 +1,0 @@
-Materials are readable from Lua: `count("material")`, `get("material", i)` and `bearcad.materials()` report each one's name, colour and whether it is stock, so a body's material ordinal resolves and the stock palette is discoverable.

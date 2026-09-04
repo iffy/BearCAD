@@ -1,1 +1,0 @@
-`bearcad.edit_joint` is now a partial edit: it changes only the keys you pass and leaves parts, kind, frame, limits and name alone, and `get` on a joint reports its rest pose, travel limits and screw lead.

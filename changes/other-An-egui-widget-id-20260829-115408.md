@@ -1,1 +1,0 @@
-An egui widget-id warning now names the pane row it happened in, what was selected, and any popup or window layer covering the spot, and scripts can find a Context pane row by label with bearcad.ui.context_row_rect.

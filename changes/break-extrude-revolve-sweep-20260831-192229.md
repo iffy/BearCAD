@@ -1,1 +1,0 @@
-extrude, revolve, sweep, and loft take profiles for one face or a list of faces (a circle handle, a rect return, or a mix); circle/circles/polygon remain aliases, while body stays the add/cut/join mode and bodies stays the target list.

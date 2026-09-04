@@ -1,1 +1,0 @@
-`bearcad.drawing_view_section` and the cutting-plane verbs now take a handle, id or name for their operands like the rest of the API, and `drawing_views` reports a projection's cross section as an ordinal.

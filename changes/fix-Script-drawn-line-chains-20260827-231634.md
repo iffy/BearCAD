@@ -1,1 +1,0 @@
-Script-drawn line chains whose endpoints coincide exactly are now recognized as closed profiles by extrude/revolve, without needing Coincident constraints; revolve failures now name whether the axis or the profile is at fault.

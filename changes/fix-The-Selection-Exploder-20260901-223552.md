@@ -1,1 +1,0 @@
-The Selection Exploder is quicker with the fan open: a body's loupe shading is sorted once and memoized instead of re-sorted per loupe per frame, and context edges are no longer copied for every loupe.

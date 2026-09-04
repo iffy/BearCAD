@@ -1,3 +1,160 @@
+# v0.8.0 - 2026-09-04
+
+- **BREAKING CHANGE:** First-person scripting uses bearcad.ui.first_person* instead of fps* (#1892).
+- **BREAKING CHANGE:** bearcad.drawing_views() now reports a view's style by the name you set it with (e.g. 'shaded'); the menu wording moved to a new style_label field.
+- **BREAKING CHANGE:** body_stats bbox corners are named x, y, z fields (array indices remain aliases).
+- **BREAKING CHANGE:** sqlite_scalar, mesh_cache, tool_table, and related probes live under bearcad.debug (#1886).
+- **BREAKING CHANGE:** `name` on a solid verb now names the body the call hands back as well as the operation, so the returned handle carries the name and `find` gives that handle back; `shape_name` and `body_name` name the two apart.
+- **BREAKING CHANGE:** Live-tool arm verbs and tool-state calls (gizmos, pickers, dimensions) live under bearcad.ui (#1873, #1874).
+- **BREAKING CHANGE:** Scripts copy modeling functions into the global namespace with bearcad.globals() instead of bearcad.import() (#1870).
+- **BREAKING CHANGE:** Line point tables use endpoint = "start" or "end" instead of the reserved-word end key, and a line handle names those points as start() and endpoint().
+- **BREAKING CHANGE:** Combine ops are union, cut, intersect, and xor (difference means cut, the same as in 2D); leftovers are keep_b only; the mode labels are Union and Xor.
+- **BREAKING CHANGE:** get takes a handle or { kind, index }, palette(query) runs a command, and palette{ open = true } is the window.
+- **BREAKING CHANGE:** Scripts create and edit parameters with name-first functions (add_parameter, set_parameter, parameter_value, and friends) instead of bearcad.parameter(verb, …).
+- **BREAKING CHANGE:** Geometric constraints and dimensions are scripted as bearcad.constrain(kind, a, b, ...) and bearcad.dimension{ kind, ..., value }, taking explicit handles instead of mutating the selection.
+- **BREAKING CHANGE:** Script and UI names use the American spelling of color throughout: the shading mode and drawing style are now 'color_pencil' and 'watercolor' (the British spellings still work).
+- **BREAKING CHANGE:** Scripts override a unit parameter with set_unit_parameter, space repeats with spacing, and wind a helix with pitch; unit_override and gap aliases are gone.
+- **BREAKING CHANGE:** Scripts create equal-sided cuboids with cube{ size }, accept r/radius/diameter on every radial size, and use plane, shape, and revolution as the canonical kind names.
+- **BREAKING CHANGE:** Move from and to are lists of mate points, rotation is rotate = { x, y, z }, and from_b/to_b/from_c/to_c are gone.
+- **BREAKING CHANGE:** Scripts fillet and chamfer a body in one call (fillet{ body, edges, radius } / chamfer{ body, edges, distance }), and body_faces entries, body:face("top"), and hovered faces share an identity begin_sketch and extrude_face accept.
+- **BREAKING CHANGE:** extrude, revolve, sweep, and loft take profiles for one face or a list of faces (a circle handle, a rect return, or a mix); circle/circles/polygon remain aliases, while body stays the add/cut/join mode and bodies stays the target list.
+- **BREAKING CHANGE:** Scripted solid output is body/output = new, add, cut, or join on write and get; unknown values error instead of silently making a new body.
+- **BREAKING CHANGE:** Scripts can edit a committed revolve, sweep, loft, fillet, chamfer, and circle in place; edit_extrusion accepts index; the combine editor is edit_combine (was edit_boolean).
+- **BREAKING CHANGE:** set_visible and set_construction take a boolean plus a handle, list, or kind; selection and live-tool forms moved to bearcad.ui.
+- **BREAKING CHANGE:** get (and handle:get) returns the keys create/edit accept, selection tables keep identity so they work as handles, and missing find-style identities are nil (a body with no mesh errors).
+- **NEW:** A Dark pencil shading mode draws the scene in white pencil on the app's dark background — the pencil view with the lights out.
+- **NEW:** Scripts can read back the lines a drawing projection actually draws with bearcad.drawing_view_lines{ drawing, view }.
+- **NEW:** Technical drawings gained the Zoom loupe tool: ring a detail on a projection and place a second, larger circle that redraws it magnified, joined rim to rim by a thin line, with either circle movable and resizable afterwards.
+- **NEW:** Scripts can delete elements by handle without replacing the scene selection, and look up a picker or gizmo by name.
+- **NEW:** Right-clicking a drawing in the Elements pane now offers White paper, showing the editor's sheet as the printed version looks.
+- **NEW:** The Dimension tool can now dimension an edge inside a zoom loupe, drawing the dimension on the magnified detail and labelling it with the edge's real length.
+- **NEW:** Scripts can wait for a picker or gizmo, and click, tool, and select now settle until pointer events and hover are current, so interaction scripts do not need wait(N) after every UI action (#1881).
+- **NEW:** Scripts can create a construction plane on an axis with bearcad.plane{ axis, angle }, matching the Plane tool.
+- **NEW:** bearcad.material{} with an existing name and no color now applies that material to the listed bodies instead of refusing, so a script can pick from the built-in palette by name.
+- **NEW:** Drawing projections gain two style options: 'Colorful', which shades faces in each body's material color, and 'Loose pencil', which draws the visible edges by hand.
+- **NEW:** Zoom loupes appear in the Elements pane and a selected loupe can use a different drawing style than its view.
+- **NEW:** A selected zoom loupe now shows where to grab it: a shaded rim band resizes the circle and a dot at its centre moves it.
+- **NEW:** Scripts run headless by default: offscreen rendering, no window, works on display-less machines and in CI. --no-headless opens a real window; --headless forces it for windowed launches. bearcad.ui.screenshot renders offscreen headlessly.
+- **NEW:** New Watercolor style for the modeling view and for drawing projections: the pencil drawing with each body's color washed on, pooling unevenly and drying darker at the edges.
+- **NEW:** Elements-pane Graph view rows now drag onto an open drawing page to place a projection, just like the List view's rows.
+- **NEW:** bearcad.sketch_faces(sketch?) lists closed sketch loops, circles, text glyphs, and plane regions that extrude{ profiles = face } can consume.
+- **NEW:** Scripts can read the open context menu's items and where each one is drawn, and right-clicking an Elements row's type icon now opens the row's menu like right-clicking its name does.
+- **NEW:** bearcad.ui.camera{} now sets projection, shading and ground alongside the pose, and rejects keys it does not understand instead of silently ignoring them.
+- **NEW:** Every creation call returns a stable handle for what it made (`local box = bearcad.extrude{...}`), with a document-unique, never-reused `el:id()`, and anywhere a script takes an element index it now takes a handle, an id, or a name instead.
+- **NEW:** New 'Loose pencil' shading mode draws the scene as a pencil drawing: white paper, graphite strokes that overshoot their corners and are gone over twice, faint ruled guides for the grid, and hatched contact shadows.
+- **NEW:** The Repeat tool's Path picker now takes a circle's own normal — hover the circle's centre and click — which sets up a circular repeat turning about it.
+- **NEW:** combine accepts bake = true, and bearcad.bake(index) bakes any boolean result: the result becomes a standalone body, the operation is dropped, and the consumed inputs are deleted.
+- **NEW:** Drawings get a 'Colored pencil' projection style: the modeling view's hand-drawn look on the page, with each body's color, strokes shading every face, and the solids' shadows falling on each other.
+- **NEW:** Pencil and colored pencil drawing views now letter their captions and dimensions in the bundled hand-lettered Klee One font.
+- **NEW:** Scripts can hold a drag open with `bearcad.ui.press`, `bearcad.ui.press_world` and `bearcad.ui.release`, so mid-drag state can be inspected.
+- **NEW:** New 'Colored pencil' shading mode draws the pencil view in each body's own material color, and the view popup gives the two pencil modes a row of their own.
+- **NEW:** `bearcad.export_lua(path)` writes the deterministic script that recreates the current document, so the Lua round trip is reachable from a headless script run.
+- **NEW:** Dragging a drawing dimension line snaps it to the measured edge's perpendicular or to either face that makes that edge.
+- **NEW:** A cutting plane now takes a Cut depth: left blank it cuts all the way through as before, and given a length it hides only that deep a slab — a chunk out of the middle of the model instead of a whole half.
+- **NEW:** Drawing views now land in their standard projection positions — Top above Front, Left and Right beside it, Back and Iso in the free corners — and the cards shrink to fit as the sheet fills up, instead of cascading onto one another; moving or resizing a card takes it out of that arrangement.
+- **NEW:** The Elements graph view files a dragged row into a component, with the same component menu and drawing double-click the list already had.
+- **NEW:** A Tangent constraint (key 8) makes two circles hug at their rims, or a line graze a circle.
+- **NEW:** The colored pencil view now shades each face by how it faces the light — light and dark sides, strokes laid across the surface instead of a flat fill — and solids cast hatched shadows on each other, not just on the ground.
+- **NEW:** Materials are readable from Lua: `count("material")`, `get("material", i)` and `bearcad.materials()` report each one's name, colour and whether it is stock, so a body's material ordinal resolves and the stock palette is discoverable.
+- **NEW:** A zoom loupe can draw its detail in a style of its own — right-click it and pick, so a wireframe view's loupe can be shaded.
+- **NEW:** The drawing you are viewing is marked in the Elements pane list and graph.
+- **NEW:** The Elements pane Graph view has a leftmost column of visibility eyeballs, to the left of the graph lanes.
+- **NEW:** A drawing sets the style its new projections start in, from the Context pane with nothing selected or with bearcad.drawing_style{}.
+- **NEW:** bearcad.extrude_edges(i) lists the edge references fillet_edge/chamfer_edge accept, and the edge kinds 'top'/'bottom' are accepted as documented (fixing circular rim fillets on discs, which the old kind names silently refused).
+- **FIX:** Dragging a jointed part whose position is driven by a parameter now writes the new value into that parameter instead of replacing the expression with a number.
+- **FIX:** A construction plane's `offset` and `angle` now stay live when written as a parameter expression, and `get` on a plane reports its offset, angle, driving expressions and anchor.
+- **FIX:** macOS no longer crashes when Homebrew image libraries are on DYLD_LIBRARY_PATH and the pointer hits a window-resize edge.
+- **FIX:** Fix a web-app crash (failed to spawn thread) when running a Combine operation: booleans compute inline on the web instead of spawning a background thread.
+- **FIX:** Edge dimensions now render on back, right and top drawing views: a dimension named against a world edge that shares its page line with another now lands on the line the sheet draws.
+- **FIX:** The window-cycling interaction test now skips itself when run headless instead of failing, so running the whole interaction suite locally works.
+- **FIX:** A zoom loupe dimension whose measured edge is not fully inside the ring ends in dashes instead of an arrow.
+- **FIX:** Space over a drawing zoom loupe now fans the projected vertex under the cursor, including when two bodies share that corner.
+- **FIX:** Keep Elements-pane row ids and drawing-view card ids stable across egui multipass frames.
+- **FIX:** Script-drawn line chains whose endpoints coincide exactly are now recognized as closed profiles by extrude/revolve, without needing Coincident constraints; revolve failures now name whether the axis or the profile is at fault.
+- **FIX:** begin_sketch and open_sketch now fail scripts loudly when the sketch face does not resolve (instead of silently falling back to the ground sketch); sketching on revolve bodies is documented via revolve_cap/revolve_side, and a misdirected extrude_cap names those spellings.
+- **FIX:** The Install CLI menu action on macOS now asks for the user's password with the standard macOS authorization prompt when /usr/local/bin is not writable, instead of failing with a permission-denied message suggesting sudo.
+- **FIX:** A hole or cylinder centre line used as a joint's `frame_axis` now puts the joint origin on that line, so a pin hinge turns about the pin rather than the world origin.
+- **FIX:** `bearcad.clear_selection()` now clears a drawing page-item selection too, so a script can deselect a projection before screenshotting a sheet.
+- **FIX:** `bearcad.edit_joint` is now a partial edit: it changes only the keys you pass and leaves parts, kind, frame, limits and name alone, and `get` on a joint reports its rest pose, travel limits and screw lead.
+- **FIX:** The Selection Exploder is quicker with the fan open: a body's loupe shading is sorted once and memoized instead of re-sorted per loupe per frame, and context edges are no longer copied for every loupe.
+- **FIX:** Sketching on a round face now snaps to the rim as a true circle and to its centre, instead of to the 48 chord midpoints its mesh boundary used to offer.
+- **FIX:** export_stl, export_step, and export_3mf accept a body handle, id, name, or ordinal, not only a name string.
+- **FIX:** An Elements-pane row rect now starts past its indent, so a script clicking or dragging a nested row (a cross-section view, say) lands on the row rather than the empty space beside it.
+- **FIX:** Deleting a body that boolean, move, mirror, repeat, slice, shell, or edge-treatment results are built from is now refused with the dependent bodies named, instead of silently gutting those results.
+- **FIX:** Dragging a jointed part no longer highlights whatever the pointer sweeps over for selection.
+- **FIX:** `bearcad.export_preview` now renders the document's Home view as documented — and takes an explicit `{ yaw, pitch }` to aim it — so a presentation render can be pointed at the side of the model you want; the thumbnail embedded on save follows Home too.
+- **FIX:** Selecting in the Elements pane now deselects drawing-page items that aren't the thing you picked.
+- **FIX:** Colorful drawings no longer show a section's hatch or cut-face color through a body that straddles the cut.
+- **FIX:** A technical drawing's projection now follows the body that replaced its own when a feature is added, instead of showing the part as it was before.
+- **FIX:** Extruding or revolving concentric/nested profiles now punches the inner profile through as a hole (a ring), instead of fusing a solid disc that swallows the inner circle.
+- **FIX:** Single-body STL/STEP/3MF export now resolves a shape's name the same way every other call does, instead of only matching a body's own name.
+- **FIX:** `bearcad.ui.viewport()` now reports the rect the frame actually laid out — with its `x`/`y` origin, in whole pixels — and waits for the layout to settle instead of handing back a pre-layout default.
+- **FIX:** drawing, component, cross_section, fillet/chamfer, geometric constraints, and parameter("add") return a handle for what they made.
+- **FIX:** A drawing dimension too short for its label now letters the value on the dimension line, and the label can be dragged to either end.
+- **FIX:** Scripted click, drag, move, and right-click accept a window-space rect or orb table, so scripts no longer subtract viewport pixels to hit a row, menu item, or tutorial orb (#1880).
+- **FIX:** A sketch started on a body face now puts its origin at the face's geometric centre, and bearcad.get reports that origin.
+- **FIX:** File → Export → Lua now writes every extrude profile, including extra polygons, text, and sketch regions, instead of dropping them.
+- **FIX:** move_bodies, begin_move and edit_move now reject unknown option keys (a typo like dy for y) with an error naming the accepted keys instead of silently moving nothing.
+- **FIX:** `material`, `set_material`, `set_units`, `set_body_shadow`, `export_drawing_pdf` and the drawing layout, label and dimension verbs now reject unknown option keys with the accepted-key list, so a misspelled option is no longer a silent no-op.
+- **FIX:** The CLI answers `bearcad --version` instead of launching, `bearcad.ui.view("iso")` and `bearcad.ui.wait()` work as documented, `bearcad.section_planes` takes a cross-section index or name, `bearcad.set_visible({ kind = "plane" }, false)` hides every element of a kind, and the new `bearcad.visible(el)` reads visibility back.
+- **FIX:** Delete in a context menu opened on one of several selected elements now removes the whole selection, and says how many it will take.
+- **FIX:** `bearcad.drawing_view_section` and the cutting-plane verbs now take a handle, id or name for their operands like the rest of the API, and `drawing_views` reports a projection's cross section as an ordinal.
+- **FIX:** Scripted pointer clicks and drags aimed at world points now wait for a camera transition to finish instead of being silently dropped.
+- **FIX:** Finder and QuickLook for .bearcad files show the colorful Home-view screenshot only again: the gray STL mesh preview is retired, and legacy embedded STL snapshots are deleted on save.
+- **FIX:** Viewport strokes stay on their geometric pixels when zoomed in, instead of sliding along the face.
+- **FIX:** A body sitting on the ground casts the hexagon contact shadow of its walls, even when the mesh base is a hair below z = 0.
+- **FIX:** Analytic faces are no longer offered where the built solid has taken them away or shrunk them below the surface that is actually there.
+- **FIX:** The positional `bearcad.get(kind, index)` form now accepts a handle, id, or name for the index, and names the offending handle instead of printing a raw Lua userdata pointer.
+- **FIX:** A face left behind by a cut or a fillet is no longer mistaken for the analytic face it was cut from when the two happen to share a centre — the areas have to match too, so a pocketed cap sketches on the face that is actually there.
+- **FIX:** Escape cancels a drawing projection still riding the cursor, and scripted key presses wait for the app to handle them.
+- **FIX:** `bearcad.visible()` now reports false for a consumed (shadow) body, and the new `live_body` kind counts, indexes and gets only the bodies that are really in the scene.
+- **FIX:** A flat left by a fillet or a cut is now a face of its own — hoverable, sketchable and pickable by the Extrude tool — instead of being swallowed by the curve running off it.
+- **FIX:** Installing the command-line tool from the menu no longer fails to build on Linux, and reports plainly there that the link target needs root.
+- **FIX:** A hole's far rim is hidden by the material in front of it in every drawing style but Wireframe, instead of being drawn straight through the solid.
+- **FIX:** `bearcad.ui.hovered()` reports a body mesh face's body, centroid and normal when it is hovered as a sketchable surface, not just a display label.
+- **FIX:** Scripts can count and get unit instances and sketch slices; chamfer and fillet are no longer inspect-kind aliases.
+- **FIX:** A projected edge now stops exactly where the solid in front of it starts, instead of overrunning it slightly.
+- **FIX:** Drawing dimension arrows stay a constant page size when a projection is scaled, and dimension lines keep the same thickness.
+- **FIX:** Deleting a sketch, line, circle, or construction plane that solid features still depend on is now refused with the dependents named, instead of silently reverting those features (which also left body_stats returning nil).
+- **FIX:** Drawn rectangles, lines and circles now commit down to a hundredth of a millimetre instead of being refused below half a millimetre.
+- **FIX:** A projection's colored-pencil scribble and watercolor marks are painted with the face they were laid on, so they no longer land on top of the body standing in front of it.
+- **FIX:** repeat_cut and repeat_sketches take cuts/sketches (handles or ordinals), reject bodies, and error when that list is empty.
+- **FIX:** A drawing dimension whose line is too short for its label still letters the value along the line instead of horizontally.
+- **FIX:** `bearcad.find("name")` and the app's name lookup now search every kind that can carry a name — a named body, shape, drawing, image, component or operation was nameable but not findable.
+- **FIX:** Double-clicking a cuboid and clicking a dimension no longer blanks the inputs or discards the edit.
+- **FIX:** In pencil shading, bodies standing near each other now cast one evenly-hatched shadow instead of overlapping hatches that doubled up and went too dark, and body outlines are drawn a little heavier.
+- **FIX:** The context pane no longer shows Drawing New views while the Dimension tool is active.
+- **FIX:** Saving a .bearcad.json document no longer warns that the preview could not be embedded.
+- **FIX:** The Extrude tool now takes a sketch drawn inside a pocket instead of the opening the cut left in the wall in front of it.
+- **FIX:** Shaded and Colorful drawing views no longer let a small face leak through the larger one in front of it: overlapping flats are now ordered by which is really nearer where they meet.
+- **FIX:** Scripted face specs, drawing views, and Move snap points accept the same handles they already took as indices.
+- **FIX:** Clicking a cutting plane's Cut bodies picker now takes exclusive focus so Offset no longer stays ringed at the same time.
+- **FIX:** Short dimension lines put their arrows outside the ticks, pointing in, when the span is too small for both heads.
+- **FIX:** A shape's `at` now keeps the expression it was written with, so a model is parametrically placed as well as sized, and `get` reports the driving expressions.
+- **FIX:** The Selection Exploder's loupes no longer paint stray lines across the viewport at close range: the magnified geometry is clipped soundly and sub-pixel slivers are dropped.
+- **FIX:** Exporting a document as Lua now clears the selection before each geometric constraint, so two constraints sharing a piece of geometry replay correctly.
+- **FIX:** Dragging a hinge now follows the pointer in the plane the joint turns in and unwraps across full turns, so it no longer swings the wrong way or snaps to the opposite limit when pushed too far.
+- **FIX:** Outside-in dimension arrows get a small reverse head behind them.
+- **FIX:** Scripted geometric-constraint calls (bearcad.add_geometric_constraint / constraint_shortcut) now raise an error when refused instead of silently doing nothing, refused constraints say what the selection is missing, and add_geometric_constraint accepts explicit entity references.
+- **FIX:** The Every function Lua API list is generated from live registration so it cannot drift from the accepted keys and positional args.
+- **FIX:** Exporting a drawing to SVG or PDF twice now produces identical bytes, so an export can be diffed, cached or checksummed.
+- **FIX:** A multi-body STEP export now writes one real BREP solid per body — curved surfaces intact — instead of merging every body's triangles into a single faceted shell, and importing such a file gives one body per solid.
+- **FIX:** The remove button on a drawing view card no longer logs an egui widget-id warning when the card's chrome appears or disappears.
+- **FIX:** bearcad.hovered() now reports the elements behind a multi-edge highlight — hovering a closed sketch profile during Mirror returns its boundary edges with a count instead of nil.
+- **FIX:** Dimension labels on a pencil-style drawing view are now lettered in the same hand-lettered font as the view's caption.
+- **FIX:** `bearcad.ui.ground` and `bearcad.ui.camera{ ground = … }` now accept a boolean (false hides the ground plane) and name the accepted values when given a bad one.
+- **FIX:** Colorful drawing views no longer let a cross-section's hatch or cut-face color show through a body standing in front of the cut.
+- **FIX:** Sketching on a face where a cut broke through now offers the wall behind the opening instead of the surface the cut removed.
+- **FIX:** Cross-section hatching and cut outlines are now drawn by hand in the pencil, colored pencil and watercolor views, and on pencil-style drawing projections, instead of staying perfectly ruled.
+- **FIX:** The Projection tool starts placing a view of bodies already selected in the Elements pane.
+- **FIX:** Clicking a zoom loupe's resize band now selects it instead of snapping its size; the circle only resizes when you drag the band.
+- Documentation screenshots generate in headless mode; the CI website workflow no longer needs xvfb.
+- A colored-pencil projection fills at the same density whatever size the part is, and keeps its own color for the outline on white paper.
+- The colored pencil view now lays one tone on every side of a body and scribbles the color in — sloppily, past the outline, with gaps of bare paper — instead of shading light and dark sides; the drawings-page Colored pencil style matches.
+- An egui widget-id warning now names the pane row it happened in, what was selected, and any popup or window layer covering the spot, and scripts can find a Context pane row by label with bearcad.ui.context_row_rect.
+- Log warnings about unstable widget ids now name the frame, workbench, tool, and pane they came from, so a warning in the log can be turned into a bug report.
+- Colored pencil now lays its color in with the side of the lead — broad overlapping passes at varying pressure — instead of hatching it on with the point.
+
 # v0.7.0 - 2026-08-27
 
 - **BREAKING CHANGE:** Re-entering a drawing from the Elements pane takes a double-click, the same as reopening a sketch.

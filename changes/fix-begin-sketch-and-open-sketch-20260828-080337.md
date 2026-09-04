@@ -1,1 +1,0 @@
-begin_sketch and open_sketch now fail scripts loudly when the sketch face does not resolve (instead of silently falling back to the ground sketch); sketching on revolve bodies is documented via revolve_cap/revolve_side, and a misdirected extrude_cap names those spellings.

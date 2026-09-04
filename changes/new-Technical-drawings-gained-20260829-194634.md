@@ -1,1 +1,0 @@
-Technical drawings gained the Zoom loupe tool: ring a detail on a projection and place a second, larger circle that redraws it magnified, joined rim to rim by a thin line, with either circle movable and resizable afterwards.
