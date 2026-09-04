@@ -1612,6 +1612,49 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
+    /// #1954: a file saved before a column joined the schema still opens. `CREATE TABLE IF
+    /// NOT EXISTS` leaves an existing table untouched, so the missing column has to be added
+    /// back before any SELECT names it.
+    #[test]
+    fn opens_a_file_missing_a_newer_column() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_missing_column_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        let mut shape = crate::model::Primitive::new(crate::model::PrimitiveKind::Cylinder);
+        shape.radius = "5".to_string();
+        shape.name = Some("Boss".to_string());
+        doc.primitives.insert(shape);
+        doc.shape_order.push(crate::model::ShapeKind::Primitive);
+        save(&path, &doc).unwrap();
+
+        // Age the file: drop columns that older BearCADs never wrote (#1929's placement
+        // expressions, and the whole geometry_cache table for good measure).
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE primitives DROP COLUMN ox_expr;
+                 ALTER TABLE primitives DROP COLUMN oy_expr;
+                 ALTER TABLE primitives DROP COLUMN oz_expr;
+                 DROP TABLE geometry_cache;",
+            )
+            .unwrap();
+        }
+
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.primitives.len(), 1);
+        let restored = loaded.primitives.values().next().unwrap();
+        assert_eq!(restored.name, Some("Boss".to_string()));
+        assert_eq!(restored.origin_expression, [String::new(), String::new(), String::new()]);
+
+        // And the reopened file saves again through the live session path.
+        save(&path, &loaded).unwrap();
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
     /// #909: a primitive shape round-trips — kind, frame, and its dimension expressions —
     /// with the body that points back at it.
     #[test]

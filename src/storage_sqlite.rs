@@ -42,7 +42,9 @@ const BLOB_TRACING_IMAGE: &str = "tracing_image";
 const BLOB_MESH_TRIANGLES: &str = "mesh_triangles";
 const BLOB_STEP: &str = "step";
 
-fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
+/// The current schema's DDL. Every statement is `IF NOT EXISTS`, so this only ever adds
+/// what a file is missing — see [`init_schema`] for the columns it cannot add.
+fn create_missing_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -406,6 +408,87 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         ",
     )?;
     Ok(())
+}
+
+/// Bring a file's schema up to the current one.
+///
+/// `CREATE TABLE IF NOT EXISTS` adds whole tables a file predates, but it leaves an
+/// existing table exactly as it was — so a file written before a column joined the schema
+/// opens with that column missing, and every statement naming it fails (#1954). Pre-alpha
+/// has no migration ladder, so instead of a list of hand-written steps: build the current
+/// schema in memory, diff each table against the file's, and `ALTER TABLE ... ADD COLUMN`
+/// whatever is absent. A column added this way holds its default on the old rows.
+fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
+    create_missing_tables(conn)?;
+    let current = Connection::open_in_memory()?;
+    create_missing_tables(&current)?;
+    for table in table_names(&current)? {
+        let have: Vec<String> = table_columns(conn, &table)?
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        for column in table_columns(&current, &table)? {
+            if have.iter().any(|n| n.eq_ignore_ascii_case(&column.name)) {
+                continue;
+            }
+            conn.execute_batch(&format!(
+                "ALTER TABLE \"{table}\" ADD COLUMN {}",
+                column.declaration()
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+fn table_names(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// One column of `PRAGMA table_info`, enough to re-declare it on another table.
+struct ColumnInfo {
+    name: String,
+    sql_type: String,
+    not_null: bool,
+    default: Option<String>,
+}
+
+impl ColumnInfo {
+    /// The column's declaration for `ALTER TABLE ... ADD COLUMN`. SQLite refuses a `NOT
+    /// NULL` addition without a default — there would be nothing to put in the existing
+    /// rows — so a bare `NOT NULL` column gets its type's empty value.
+    fn declaration(&self) -> String {
+        let mut out = format!("\"{}\" {}", self.name, self.sql_type);
+        if let Some(default) = &self.default {
+            out.push_str(&format!(" DEFAULT {default}"));
+        } else if self.not_null {
+            out.push_str(match self.sql_type.to_ascii_uppercase().as_str() {
+                "TEXT" => " DEFAULT ''",
+                "BLOB" => " DEFAULT x''",
+                _ => " DEFAULT 0",
+            });
+        }
+        if self.not_null {
+            out.push_str(" NOT NULL");
+        }
+        out
+    }
+}
+
+fn table_columns(conn: &Connection, table: &str) -> rusqlite::Result<Vec<ColumnInfo>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ColumnInfo {
+            name: row.get(1)?,
+            sql_type: row.get(2)?,
+            not_null: row.get::<_, i64>(3)? != 0,
+            default: row.get(4)?,
+        })
+    })?;
+    rows.collect()
 }
 
 fn key_bits<T>(k: Key<T>) -> i64 {
