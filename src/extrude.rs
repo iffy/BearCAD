@@ -8234,6 +8234,23 @@ pub fn body_flat_face_groups(doc: &Document, body_index: crate::model::BodyKey) 
 /// curved steps dropped once they no longer make a face of their own.
 fn split_group_by_plane(tris: &[[Vec3; 3]]) -> Vec<Vec<[Vec3; 3]>> {
     const PLANE_TOL: f32 = 0.02; // mm
+    // A group that is already one plane — every flat face on a plain solid — needs none of
+    // the work below, and this is the overwhelmingly common case.
+    if let Some(first) = tris.first() {
+        let n = (first[1] - first[0]).cross(first[2] - first[0]).normalize_or_zero();
+        if n.length_squared() > 0.5
+            && tris.iter().all(|t| {
+                t.iter().all(|p| (*p - first[0]).dot(n).abs() <= PLANE_TOL)
+            })
+        {
+            return vec![tris.to_vec()];
+        }
+    }
+    // A curve's tessellation is one plane per facet, and matching each against every plane
+    // seen so far is quadratic — a sphere is a couple of thousand facets. No real solid has
+    // this many distinct flats in one smooth chain, so past the cap it is a curve: stop and
+    // hand the group back whole.
+    const MAX_PLANES: usize = 64;
     let mut planes: Vec<(Vec3, f32, Vec<[Vec3; 3]>)> = Vec::new();
     for tri in tris {
         let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
@@ -8260,7 +8277,12 @@ fn split_group_by_plane(tris: &[[Vec3; 3]]) -> Vec<Vec<[Vec3; 3]>> {
             .find(|(pn, pd, _)| pn.dot(n) > 0.999_8 && (pd - d).abs() <= PLANE_TOL)
         {
             Some((_, _, group)) => group.push(*tri),
-            None => planes.push((n, d, vec![*tri])),
+            None => {
+                if planes.len() >= MAX_PLANES {
+                    return vec![tris.to_vec()];
+                }
+                planes.push((n, d, vec![*tri]));
+            }
         }
     }
     // One plane means the group was flat all along — keep it as it is.
