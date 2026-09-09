@@ -46,7 +46,10 @@ else
     (( days < 0 )) && days=0
   fi
   stale=false
-  if (( days > MAX_DAYS )); then
+  # Age of HEAD is not drift: the nightly skips recapture when the marker already
+  # is HEAD, so a quiet repo would otherwise alarm every morning after MAX_DAYS
+  # (GitHub issue #8 — "captured N days ago" with behind=0).
+  if (( behind > 0 && days > MAX_DAYS )); then
     stale=true
     reason="screenshots were captured $days days ago (limit $MAX_DAYS)"
   elif (( behind > MAX_BEHIND )); then

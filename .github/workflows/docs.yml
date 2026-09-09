@@ -365,17 +365,19 @@ jobs:
   # #1836: a red scheduled run used to sit unread in the Actions tab while the published
   # screenshots froze. Say it in the one place that reaches a person: an issue.
   alert:
-    # Stale screenshots are only an alarm if this run did not fix them: a nightly that
-    # regenerates and deploys them has already dealt with the drift the plan job measured
+    # Always run on the nightly: file/update the alarm when something is actually wrong,
+    # and close it when this run is healthy (GitHub issue #8 was a false alarm from a
+    # quiet repo). Stale is only an alarm if this run did not recapture: a nightly that
+    # regenerates and deploys has already dealt with the drift the plan job measured
     # (#1951 — it fired on every nightly that had any new commits).
-    if: always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || (needs.plan.outputs.stale == 'true' && needs.plan.outputs.generate != 'true'))
+    if: always() && github.event_name == 'schedule'
     needs: [plan, webapp, build, deploy]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
     steps:
-      - name: File or update the nightly screenshot alarm
+      - name: File, update, or close the nightly screenshot alarm
         env:
           GH_TOKEN: ${{ github.token }}
           # This job checks nothing out, so `gh` has no git remote to infer the repo from
@@ -384,23 +386,34 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           FAILED: ${{ contains(needs.*.result, 'failure') }}
           STALE: ${{ needs.plan.outputs.stale }}
+          GENERATE: ${{ needs.plan.outputs.generate }}
           BEHIND: ${{ needs.plan.outputs.behind }}
           DAYS: ${{ needs.plan.outputs.days }}
           REASON: ${{ needs.plan.outputs.reason }}
         run: |
           set -euo pipefail
           title="Nightly doc screenshots are not being published"
-          body="$(
-            printf 'The scheduled **Website** run needs attention.\n\n'
-            printf -- '- failed jobs: %s\n' "$FAILED"
-            printf -- '- screenshots stale: %s %s\n' "$STALE" "$REASON"
-            printf -- '- behind master: %s commit(s), %s day(s)\n' "$BEHIND" "$DAYS"
-            printf -- '- run: %s\n' "$RUN_URL"
-          )"
           existing="$(gh issue list --state open --search "$title in:title" \
             --json number,title --jq "[.[] | select(.title == \"$title\")][0].number")"
-          if [[ -n "$existing" && "$existing" != "null" ]]; then
-            gh issue comment "$existing" --body "$body"
-          else
-            gh issue create --title "$title" --body "$body"
+          alarm=false
+          if [[ "$FAILED" == "true" ]]; then
+            alarm=true
+          elif [[ "$STALE" == "true" && "$GENERATE" != "true" ]]; then
+            alarm=true
+          fi
+          if [[ "$alarm" == "true" ]]; then
+            body="$(
+              printf 'The scheduled **Website** run needs attention.\n\n'
+              printf -- '- failed jobs: %s\n' "$FAILED"
+              printf -- '- screenshots stale: %s %s\n' "$STALE" "$REASON"
+              printf -- '- behind master: %s commit(s), %s day(s)\n' "$BEHIND" "$DAYS"
+              printf -- '- run: %s\n' "$RUN_URL"
+            )"
+            if [[ -n "$existing" && "$existing" != "null" ]]; then
+              gh issue comment "$existing" --body "$body"
+            else
+              gh issue create --title "$title" --body "$body"
+            fi
+          elif [[ -n "$existing" && "$existing" != "null" ]]; then
+            gh issue close "$existing" --comment "Nightly is healthy again ($RUN_URL)."
           fi

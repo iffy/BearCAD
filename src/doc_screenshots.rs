@@ -147,6 +147,10 @@ mod tests {
             alert.contains("always()") && alert.contains("failure"),
             "the alert job must run even when an earlier job failed:\n{alert}"
         );
+        assert!(
+            alert.contains("gh issue close"),
+            "a healthy nightly must close the screenshot alarm issue:\n{alert}"
+        );
     }
 
     /// The staleness threshold is shared with the script that measures it.
@@ -160,13 +164,21 @@ mod tests {
         if cfg!(not(unix)) {
             return;
         }
-        // A marker older than the threshold is stale; today's is not.
+        // A marker older than the threshold is stale *when it is not HEAD*; today's is
+        // not. Age of HEAD itself is not drift — a quiet repo must not raise the nightly
+        // alarm just because the last commit is a few days old (GitHub issue #8).
         let day = 24 * 60 * 60;
         let now = crate::time::SystemTime::now()
             .duration_since(crate::time::UNIX_EPOCH)
             .expect("clock")
             .as_secs();
-        for (age_days, behind, want_stale) in [(0u64, 0u64, false), (0, 3, false), (3, 9, true)] {
+        for (age_days, behind, want_stale) in [
+            (0u64, 0u64, false),
+            (0, 3, false),
+            (4, 0, false),
+            (3, 1, true),
+            (3, 9, true),
+        ] {
             let out = Command::new("bash")
                 .arg(&script)
                 .current_dir(repo())
