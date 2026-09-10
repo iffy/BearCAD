@@ -155,6 +155,10 @@ bearcad.set_construction(el, true) -- same targets; selection forms are bearcad.
 bearcad.sketch_dof()
 bearcad.sketch_conflicts()
 bearcad.sketch_faces()
+bearcad.sketch_frame(sketch?)      -- origin + u/v/normal axes the sketch measures from
+bearcad.sketch_uv(x, y, z)         -- world point -> the open sketch's u, v
+bearcad.sketch_world(u, v)         -- and back. A sketch on a body face is anchored on
+                                   -- that face, so aim at world points with these.
 
 bearcad.status()
 ```
@@ -281,7 +285,7 @@ bearcad.drag_vertex(first, u?, v?)
 bearcad.drawing{ … }?
 bearcad.drawing_align_view{ drawing, parent, dir, pos }
 bearcad.drawing_angle{ … }
-bearcad.drawing_circle_dim_offset{ … }
+bearcad.drawing_circle_dim_offset{ drawing, view, center, offset, angle }
 bearcad.drawing_circle_dimension{ drawing, view, center }
 bearcad.drawing_curve_dimension{ drawing, view, points }
 bearcad.drawing_dim_offset{ drawing, view, a, b, offset, angle, side }
@@ -339,7 +343,7 @@ bearcad.export_lua(path)
 bearcad.export_preview(path, opts? | { yaw, pitch })
 bearcad.export_step(path, body?)
 bearcad.export_stl(path, body?)
-bearcad.extrude{ distance, to, profiles, circle, circles, polygon, polygons, text, boolean, body, name, shape_name, body_name, symmetric, taper, taper_mode }
+bearcad.extrude{ distance, to, profiles, circle, circles, polygon, polygons, text, boolean, body, bodies, name, shape_name, body_name, symmetric, taper, taper_mode }
 bearcad.extrude_edges(index)
 bearcad.extrude_face{ … }
 bearcad.fillet{ body, edges, edge, extrusion, shape, primitive, r, radius, diameter }
@@ -411,6 +415,9 @@ bearcad.shell{ bodies, faces, thickness, name, shape_name, body_name }
 bearcad.sketch_conflicts(sketch?)
 bearcad.sketch_dof(sketch?)
 bearcad.sketch_faces(sketch?)
+bearcad.sketch_frame(sketch?)
+bearcad.sketch_uv(x, y?, z?)
+bearcad.sketch_world(u, v?)
 bearcad.slice{ bodies, cutters, extend, name, shape_name, body_name }
 bearcad.slice_sketch{ sketch, lines, circles, faces, cutters }
 bearcad.sphere{ index, shape, at, normal, u_axis, width, depth, height, size, r, radius, diameter, name, shape_name, body_name }

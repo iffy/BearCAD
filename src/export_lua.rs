@@ -473,6 +473,7 @@ impl<'a> EmitCtx<'a> {
                         origin,
                         normal,
                         label,
+                        ..
                     } => {
                         let parent = (label == "Construction plane")
                             .then(|| {
@@ -2090,6 +2091,7 @@ fn instruction_for_extrusion(
         faces: extrusion.faces.clone(),
         distance: extrusion.distance,
         body,
+        bodies: Vec::new(),
         target: extrusion.target.clone(),
         expression: (!extrusion.expression.trim().is_empty()).then(|| extrusion.expression.clone()),
         symmetric: extrusion.symmetric,

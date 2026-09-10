@@ -30678,12 +30678,15 @@ impl App {
                          side: Option<i8>| {
                 match d.kind {
                     DimLabelKind::Circle(center) => {
+                        // #1963: a circle label leads off in a direction too, so a drag
+                        // aims it instead of only sliding it along one fixed line.
                         let _ = actions::set_drawing_circle_dim_offset(
                             &mut state.doc,
                             d.drawing,
                             d.view,
                             center,
                             offset,
+                            angle,
                         );
                     }
                     DimLabelKind::Edge((a, b)) => {
@@ -30738,6 +30741,7 @@ impl App {
                                 view: d.view,
                                 center,
                                 offset: live_offset,
+                                angle: live_angle,
                             });
                         }
                         DimLabelKind::Edge((a, b)) => {
@@ -40237,6 +40241,8 @@ mod tests {
                     origin: glam::Vec3::ZERO,
                     normal: glam::Vec3::Z,
                     label: "Ground".to_string(),
+                    u_axis: None,
+                    v_axis: None,
                 },
                 10.0,
                 0.0,

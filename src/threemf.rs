@@ -88,6 +88,27 @@ fn model_xml_parts(parts: &[ThreeMfPart<'_>]) -> String {
         r#"<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="{MATERIALS_NS}">"#
     );
     out.push('\n');
+    // #1955: 3MF's own metadata names, so a reader can tell what produced the file and what
+    // it is. The package carried none at all, which leaves a slicer nothing to identify.
+    // These are the core spec's reserved names, not any one slicer's private config.
+    let _ = write!(
+        out,
+        "  <metadata name=\"Application\">BearCAD {}</metadata>\n",
+        xml_escape(env!("CARGO_PKG_VERSION"))
+    );
+    // Only a single-part export has one honest title; naming a multi-part file after
+    // whichever part came first would misdescribe it.
+    let title = match parts {
+        [only] => only.name,
+        _ => "",
+    };
+    if !title.trim().is_empty() {
+        let _ = write!(
+            out,
+            "  <metadata name=\"Title\">{}</metadata>\n",
+            xml_escape(title)
+        );
+    }
     out.push_str("  <resources>\n");
 
     // id=1: basematerials (standard 3MF viewers). id=2: m:colorgroup (Bambu Studio).
@@ -144,7 +165,9 @@ fn model_xml_parts(parts: &[ThreeMfPart<'_>]) -> String {
             let _ = write!(
                 out,
                 "          <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>\n",
-                v.x, v.y, v.z
+                coord(v.x),
+                coord(v.y),
+                coord(v.z)
             );
         }
         out.push_str("        </vertices>\n");
@@ -168,6 +191,35 @@ fn model_xml_parts(parts: &[ThreeMfPart<'_>]) -> String {
     out.push_str("  </build>\n");
     out.push_str("</model>\n");
     out
+}
+
+/// One mesh coordinate, as 3MF wants it (#1955).
+///
+/// `f32`'s `Display` prints every digit it takes to round-trip, so a rounding-error zero came
+/// out as `0.0000000000000003061617` — valid but absurd, and it bloated the model part. Six
+/// decimals is a nanometre at mm scale, far finer than anything printable, and trailing
+/// zeros are trimmed so exact values stay short.
+///
+/// A non-finite coordinate becomes `0`: `NaN`/`inf` are not 3MF numbers
+/// (`ST_Number` admits no such spelling) and would fail the parse outright, which is a worse
+/// outcome than one collapsed vertex in an already-broken mesh.
+fn coord(v: f32) -> String {
+    if !v.is_finite() {
+        return "0".to_string();
+    }
+    let mut s = format!("{v:.6}");
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    if s == "-0" {
+        s = "0".to_string();
+    }
+    s
 }
 
 /// 3MF color: `#RRGGBBAA` (opaque). Used for both basematerials displaycolor and m:color.
@@ -211,6 +263,14 @@ fn xml_escape(s: &str) -> String {
 }
 
 /// Build a ZIP archive with store (method 0) entries.
+/// A fixed, valid MS-DOS date/time for ZIP entries: 1980-01-01 00:00 (#1955).
+///
+/// The fields were left at 0, which decodes to day 0 of month 0 — not a date. A constant
+/// keeps the package byte-for-byte reproducible (the same document exports to the same
+/// bytes), which a wall-clock stamp would break.
+const DOS_DATE: u16 = (1 << 5) | 1; // year 1980, month 1, day 1
+const DOS_TIME: u16 = 0; // midnight
+
 fn zip_store(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut central = Vec::new();
@@ -225,8 +285,8 @@ fn zip_store(files: &[(&str, &[u8])]) -> Vec<u8> {
         out.extend_from_slice(&20u16.to_le_bytes()); // version needed
         out.extend_from_slice(&0u16.to_le_bytes()); // flags
         out.extend_from_slice(&0u16.to_le_bytes()); // method: store
-        out.extend_from_slice(&0u16.to_le_bytes()); // mod time
-        out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+        out.extend_from_slice(&DOS_TIME.to_le_bytes()); // mod time
+        out.extend_from_slice(&DOS_DATE.to_le_bytes()); // mod date
         out.extend_from_slice(&crc.to_le_bytes());
         out.extend_from_slice(&size.to_le_bytes()); // compressed
         out.extend_from_slice(&size.to_le_bytes()); // uncompressed
@@ -241,8 +301,8 @@ fn zip_store(files: &[(&str, &[u8])]) -> Vec<u8> {
         central.extend_from_slice(&20u16.to_le_bytes()); // version needed
         central.extend_from_slice(&0u16.to_le_bytes()); // flags
         central.extend_from_slice(&0u16.to_le_bytes()); // method
-        central.extend_from_slice(&0u16.to_le_bytes()); // mod time
-        central.extend_from_slice(&0u16.to_le_bytes()); // mod date
+        central.extend_from_slice(&DOS_TIME.to_le_bytes()); // mod time
+        central.extend_from_slice(&DOS_DATE.to_le_bytes()); // mod date
         central.extend_from_slice(&crc.to_le_bytes());
         central.extend_from_slice(&size.to_le_bytes());
         central.extend_from_slice(&size.to_le_bytes());
@@ -410,6 +470,72 @@ mod tests {
         assert!(model.contains("objectid=\"3\""));
         assert!(model.contains("pid=\"2\""));
         assert!(model.contains("pindex=\"0\""));
+    }
+
+    /// #1955: the package a slicer actually parses. Three things were wrong on their own
+    /// terms, whatever a given slicer makes of them: the ZIP carried an impossible DOS
+    /// timestamp, the model named no producer at all, and vertex coordinates were written at
+    /// full `f32` Display precision (`0.0000000000000003061617` for a rounding-error zero).
+    #[test]
+    fn write_3mf_package_is_well_formed_for_slicers() {
+        let bytes = one_part("Block", &box_mesh());
+
+        // A DOS date of 0 is month 0, day 0 — not a date. Stamp a real one.
+        // Local header: sig(4) ver(2) flags(2) method(2) time(2) date(2).
+        let date = u16::from_le_bytes([bytes[12], bytes[13]]);
+        let day = date & 0x1f;
+        let month = (date >> 5) & 0xf;
+        let year = 1980 + (date >> 9);
+        assert!(
+            (1..=31).contains(&day) && (1..=12).contains(&month) && year >= 1980,
+            "ZIP date must be a real date, got {year}-{month:02}-{day:02} (raw {date:#06x})"
+        );
+
+        let model = String::from_utf8(zip_entry(&bytes, "3D/3dmodel.model").unwrap()).unwrap();
+
+        // 3MF's own metadata names, so a reader can tell what produced the file.
+        assert!(
+            model.contains("<metadata name=\"Application\">"),
+            "names the application:\n{}",
+            &model[..model.len().min(600)]
+        );
+        assert!(model.contains("BearCAD"), "and says it is BearCAD");
+        assert!(model.contains("<metadata name=\"Title\">"), "carries a title");
+
+        // Coordinates stay compact and finite.
+        for v in model.split("<vertex ").skip(1) {
+            let v = &v[..v.find("/>").unwrap()];
+            for axis in ["x", "y", "z"] {
+                let raw = v
+                    .split(&format!("{axis}=\""))
+                    .nth(1)
+                    .and_then(|r| r.split('"').next())
+                    .expect("an axis value");
+                assert!(
+                    raw.parse::<f64>().is_ok_and(|n| n.is_finite()),
+                    "{axis} must be a finite plain number, got {raw:?}"
+                );
+                assert!(
+                    raw.len() <= 12,
+                    "{axis} is written far longer than a printable mm needs: {raw:?}"
+                );
+            }
+        }
+    }
+
+    /// #1955: a mesh carrying a non-finite coordinate would otherwise write `NaN` / `inf`
+    /// into the file, which is not a 3MF number at all and fails the parse outright.
+    #[test]
+    fn write_3mf_never_writes_a_non_finite_coordinate() {
+        let mut mesh = box_mesh();
+        mesh.triangles[0][0].x = f32::NAN;
+        mesh.triangles[0][1].y = f32::INFINITY;
+        mesh.triangles[0][2].z = f32::NEG_INFINITY;
+        let bytes = one_part("broken", &mesh);
+        let model = String::from_utf8(zip_entry(&bytes, "3D/3dmodel.model").unwrap()).unwrap();
+        assert!(!model.contains("NaN"), "no NaN in the file");
+        assert!(!model.contains("nan"), "no nan in the file");
+        assert!(!model.contains("inf"), "no inf in the file");
     }
 
     #[test]

@@ -4058,6 +4058,97 @@ fn vec3_lua(lua: &Lua, v: glam::Vec3) -> mlua::Result<Table> {
     Ok(t)
 }
 
+/// Refuse body ordinals that name a consumed (shadow) body (#1961).
+///
+/// `bodies` ordinals index the whole body arena, shadows included, so the natural-looking
+/// "my three parts" — `{0, 1, 2}` — can easily be the pre-cut inputs and a cutter solid. A
+/// shadow body is hidden from the viewport and left out of export, so putting one on a
+/// drawing sheet depicts a part that does not exist. The GUI's `LiveBody` picker rule
+/// already refuses these; say so loudly rather than silently dropping them, since dropping
+/// a body the caller asked for is its own surprise.
+fn reject_consumed_bodies(
+    doc: &crate::model::Document,
+    bodies: &[usize],
+    who: &str,
+) -> mlua::Result<()> {
+    for &ordinal in bodies {
+        let Some(key) = doc.bodies.keys().nth(ordinal) else {
+            continue;
+        };
+        if doc.bodies.get(key).is_some_and(|b| b.shadow) {
+            let live = doc.bodies.iter().filter(|(_, b)| !b.shadow).count();
+            let named = crate::names::element_name(doc, SceneElement::Body(key))
+                .map(|n| format!(" (\"{n}\")"))
+                .unwrap_or_default();
+            return Err(mlua::Error::external(format!(
+                "{who}: body {ordinal}{named} was consumed by another operation, so it is not \
+                 in the scene and cannot be drawn. `body`/`bodies` ordinals count consumed \
+                 bodies too — there {} {live} live {} \
+                 (use bearcad.element(\"live_body\", n), or count(\"live_body\"))",
+                if live == 1 { "is" } else { "are" },
+                if live == 1 { "body" } else { "bodies" },
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A world point given either as three numbers or as one `{x, y, z}` / `{1, 2, 3}` table.
+fn point3_arg(
+    first: &Value,
+    y: Option<f32>,
+    z: Option<f32>,
+    who: &str,
+) -> mlua::Result<glam::Vec3> {
+    match first {
+        Value::Table(t) => {
+            let (x, y, z) = vec3_from_lua(t)?;
+            Ok(glam::Vec3::new(x, y, z))
+        }
+        Value::Integer(_) | Value::Number(_) => {
+            let x = match first {
+                Value::Integer(i) => *i as f32,
+                Value::Number(n) => *n as f32,
+                _ => unreachable!(),
+            };
+            match (y, z) {
+                (Some(y), Some(z)) => Ok(glam::Vec3::new(x, y, z)),
+                _ => Err(mlua::Error::external(format!(
+                    "{who} needs three numbers or one {{x, y, z}} point"
+                ))),
+            }
+        }
+        _ => Err(mlua::Error::external(format!(
+            "{who} needs three numbers or one {{x, y, z}} point"
+        ))),
+    }
+}
+
+/// The frame of `sketch` (an ordinal) or of the open sketch (#1958).
+fn script_sketch_frame(
+    state: &AppState,
+    sketch: Option<usize>,
+) -> mlua::Result<crate::face::SketchFrame> {
+    let key = match sketch {
+        Some(ordinal) => state
+            .doc
+            .sketches
+            .keys()
+            .nth(ordinal)
+            .ok_or_else(|| mlua::Error::external(format!("no sketch {ordinal}")))?,
+        None => state
+            .sketch_session
+            .map(|session| session.sketch)
+            .ok_or_else(|| mlua::Error::external("no active sketch"))?,
+    };
+    let face = state
+        .doc
+        .sketch_face(key)
+        .ok_or_else(|| mlua::Error::external("that sketch has no host face"))?;
+    crate::face::sketch_frame(&state.doc, face)
+        .ok_or_else(|| mlua::Error::external("that sketch's host face no longer exists"))
+}
+
 fn vec3_from_lua(t: &Table) -> mlua::Result<(f32, f32, f32)> {
     Ok((
         t.get("x").or_else(|_| t.get(1))?,
@@ -5856,6 +5947,72 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "sketch_frame",
+        lua.create_function(|lua, sketch: Option<Ordinal>| {
+            // #1958: a sketch's frame is not always the parent sketch's. A sketch opened on
+            // a body face is anchored on that face — for a polygon face, on the profile
+            // loop's first vertex — so typed coordinates are face coordinates, not world or
+            // parent-sketch ones. Report the frame so a caller can see where it is, and use
+            // `sketch_uv` / `sketch_world` to convert.
+            let sketch = sketch.map(|o| o.0);
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let frame = script_sketch_frame(state, sketch)?;
+            let t = lua.create_table()?;
+            t.set("origin", vec3_lua(lua, frame.origin)?)?;
+            t.set("u_axis", vec3_lua(lua, frame.u_axis)?)?;
+            t.set("v_axis", vec3_lua(lua, frame.v_axis)?)?;
+            t.set("normal", vec3_lua(lua, frame.normal)?)?;
+            Ok(t)
+        })?,
+    )?;
+
+    api.set(
+        "sketch_uv",
+        lua.create_function(|lua, (x, y, z): (Value, Option<f32>, Option<f32>)| {
+            // World point -> the open sketch's own (u, v). `sketch_uv(x, y, z)` or
+            // `sketch_uv{ x, y, z }` / `sketch_uv{ x = , y = , z = }`.
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let p = point3_arg(&x, y, z, "sketch_uv")?;
+            let frame = script_sketch_frame(state, None)?;
+            let (u, v) = crate::face::world_to_local(&frame, p);
+            Ok((u, v))
+        })?,
+    )?;
+
+    api.set(
+        "sketch_world",
+        lua.create_function(|lua, (u, v): (Value, Option<f32>)| {
+            // The open sketch's (u, v) -> a world point. The inverse of `sketch_uv`.
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let (u, v) = match (&u, v) {
+                (Value::Table(t), _) => {
+                    let a: f32 = t.get::<Option<f32>>("u")?.or(t.get::<Option<f32>>(1)?)
+                        .ok_or_else(|| mlua::Error::external("sketch_world needs u and v"))?;
+                    let b: f32 = t.get::<Option<f32>>("v")?.or(t.get::<Option<f32>>(2)?)
+                        .ok_or_else(|| mlua::Error::external("sketch_world needs u and v"))?;
+                    (a, b)
+                }
+                (Value::Integer(_) | Value::Number(_), Some(b)) => {
+                    (f32::from_lua(u.clone(), lua)?, b)
+                }
+                _ => return Err(mlua::Error::external("sketch_world needs u and v")),
+            };
+            let frame = script_sketch_frame(state, None)?;
+            let p = crate::face::local_to_world(&frame, u, v);
+            vec3_lua(lua, p)
+        })?,
+    )?;
+
+    api.set(
         "sketch_dof",
         lua.create_function(|lua, sketch: Option<Ordinal>| {
             let sketch = sketch.map(|o| o.0);
@@ -6051,6 +6208,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     };
                     t.set("origin", vec3_lua(lua, plane.origin)?)?;
                     t.set("normal", vec3_lua(lua, plane.normal)?)?;
+                    // #1959: the in-plane axes, so a script can tell where its sketch
+                    // coordinates will land without extruding a probe body to find out.
+                    t.set("u_axis", vec3_lua(lua, plane.u_axis)?)?;
+                    t.set("v_axis", vec3_lua(lua, plane.v_axis)?)?;
                     // The drawn rectangle's size in the plane's own u/v axes (#833).
                     let extent = lua.create_table()?;
                     extent.set("u_min", plane.extent.u_min)?;
@@ -6071,7 +6232,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         t.set("angle_expression", def.angle_expression.as_str())?;
                     }
                     match &def.anchor {
-                        crate::model::PlaneAnchor::Face { origin, normal, label } => {
+                        crate::model::PlaneAnchor::Face { origin, normal, label, .. } => {
                             t.set("anchor", "face")?;
                             t.set("anchor_origin", vec3_lua(lua, *origin)?)?;
                             t.set("anchor_normal", vec3_lua(lua, *normal)?)?;
@@ -6386,6 +6547,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         })
                         .unwrap_or(0.0);
                     t.set("offset", offset)?;
+                    // #1963: and which way the label leads off the circle.
+                    let angle = doc
+                        .drawings
+                        .values()
+                        .nth(drawing)
+                        .and_then(|d| d.views.get(view))
+                        .and_then(|v| {
+                            let center = v.dimensioned_circles.get(index)?;
+                            v.circle_dim_offset_angles
+                                .iter()
+                                .find(|(k, _)| k == center)
+                                .map(|(_, a)| *a)
+                        })
+                        .unwrap_or(0.0);
+                    t.set("angle", angle)?;
                 }
                 "point_dimension" => {
                     // A drawing view's free point-to-point dimension (#1774): what it measures
@@ -10039,6 +10215,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "text",
                     "boolean",
                     "body",
+                    "bodies",
                     "name", "shape_name", "body_name",
                     "symmetric",
                     "taper",
@@ -10075,6 +10252,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 opts.get::<Option<String>>("body")?.as_deref(),
             )
             .map_err(mlua::Error::external)?;
+            // #1957: which body a cut/add acts on. Omitted, the target is worked out from
+            // the face being extruded from, or from the one body the tool runs through — so
+            // a pocket can be sketched on a construction plane.
+            let bodies: Vec<usize> = opts.ordinal_list_opt("bodies")?.unwrap_or_default();
             // Sketch from the first face's geometry (all faces should be coplanar).
             let sketch = unsafe {
                 let doc = &tick.state().doc;
@@ -10116,6 +10297,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     faces,
                     distance,
                     body,
+                    bodies,
                     target,
                     expression,
                     symmetric,
@@ -11944,6 +12126,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                     bodies
                 };
+                reject_consumed_bodies(&tick.state().doc, &bodies, "drawing_view")?;
                 tick.exec(Instruction::AddDrawingView {
                     drawing,
                     bodies,
@@ -12019,6 +12202,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     }
                     bodies
                 };
+                reject_consumed_bodies(&tick.state().doc, &bodies, "drawing_view_add")?;
                 tick.exec(Instruction::AddBodiesToDrawingView {
                     drawing,
                     view,
@@ -12644,6 +12828,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "drawing_circle_dim_offset",
         lua.create_function(|lua, opts: Table| {
+            // #1963: this was the one options-table verb with no key check, so a misspelled
+            // `offset` reported success and did nothing.
+            check_keys(
+                &opts,
+                "drawing_circle_dim_offset",
+                &["drawing", "view", "center", "offset", "angle"],
+            )?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let drawing: usize = opts.ordinal_req("drawing")?;
             let view: usize = opts.ordinal_req("view")?;
@@ -12654,12 +12845,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 ));
             }
             let offset: Option<f32> = opts.get("offset")?;
+            // Which way the label leads off the circle (radians). Omitted keeps the
+            // historical straight-out direction, so existing sheets are unchanged.
+            let angle: Option<f32> = opts.get("angle")?;
             unsafe {
                 tick.exec(Instruction::SetDrawingCircleDimOffset {
                     drawing,
                     view,
                     center: (c[0], c[1], c[2]),
                     offset,
+                    angle,
                 })
             }
         })?,
@@ -21838,6 +22033,158 @@ pub mod tests {
     /// #1932: a datum plane's offset is the most natural thing in a model to drive from a
     /// parameter, and `plane{ offset = expr }` baked it to a number. `get` also never told
     /// a script how the plane was defined, only where it landed.
+    /// #1958: a sketch opened on a body face gets a frame whose origin is that face's own
+    /// anchor, not the parent sketch's, so typed coordinates are not parent-sketch
+    /// coordinates. For a polygon face the anchor is the loop's first vertex, which is
+    /// invisible from a script — every hole lands off the part with only
+    /// "the cut removed no material" to show for it. `sketch_frame` reports the frame and
+    /// `sketch_uv` / `sketch_world` convert, so a caller can aim at a world point.
+    /// #1960: an operation that consumes a body leaves the input behind as a shadow, and
+    /// the name has to follow the *live* result. It used to be dropped (the moved body came
+    /// out unnamed) while `find` went on answering with the invisible consumed body — so a
+    /// lookup by name silently started operating on geometry that is not in the scene.
+    /// #1961: `bodies` indexes the whole body arena, shadows included, and a drawing view
+    /// used to project whatever it was handed — so a sheet could show the cutter solids that
+    /// were consumed making the part. The GUI's `LiveBody` picker rule already refuses a
+    /// consumed body; the script path has to as well.
+    #[test]
+    fn lua_a_drawing_view_refuses_a_consumed_body() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 10, name = "Plate" }
+            bearcad.cuboid{ width = 8, depth = 8, height = 30, name = "Punch" }
+            bearcad.combine{ op = "cut",
+                             a = { bearcad.element("live_body", 0) },
+                             b = { bearcad.element("live_body", 1) } }
+            assert(bearcad.count("body") > bearcad.count("live_body"),
+                   "the combine left shadow bodies behind")
+            assert(bearcad.get{ kind = "body", index = 0 }.shadow, "body 0 is consumed")
+
+            local d = bearcad.drawing{ name = "Sheet" }
+
+            -- The tempting spelling: "my two parts" by ordinal. Both are consumed.
+            local ok, err = pcall(function()
+              bearcad.drawing_view{ drawing = d, bodies = {0, 1}, orientation = "front" }
+            end)
+            assert(not ok, "a consumed body must not land on the sheet")
+            assert(tostring(err):find("consumed"),
+                   "the refusal should say the body was consumed: " .. tostring(err))
+            assert(tostring(err):find("0"), "and name which ordinal: " .. tostring(err))
+
+            -- Singular `body` is refused the same way.
+            local ok2 = pcall(function()
+              bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
+            end)
+            assert(not ok2, "`body` is checked too")
+
+            -- And the live result projects fine.
+            bearcad.drawing_view{ drawing = d, body = bearcad.element("live_body", 0),
+                                  orientation = "front" }
+            assert(#bearcad.drawing_views(d) == 1, "the live body made a view")
+
+            -- drawing_view_add is checked as well.
+            local ok3 = pcall(function()
+              bearcad.drawing_view_add{ drawing = d, view = 0, body = 0 }
+            end)
+            assert(not ok3, "drawing_view_add is checked too")
+            "#,
+        );
+    }
+
+    #[test]
+    fn lua_a_consumed_body_hands_its_name_to_the_live_one() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 10, name = "Widget" }
+            local before = bearcad.element("live_body", 0):id()
+
+            -- Move consumes the body and makes a new one; the name comes along.
+            bearcad.move_bodies{ bodies = { bearcad.element("live_body", 0) }, x = 30 }
+            local live = bearcad.element("live_body", 0)
+            assert(live:id() ~= before, "the move really did replace the body")
+            assert(live:name() == "Widget",
+                   "the moved body keeps its name, got " .. tostring(live:name()))
+
+            -- And the name resolves to that live body, not the shadow it left behind.
+            local found = bearcad.find("Widget")
+            assert(found ~= nil, "find must still resolve the name")
+            assert(found:id() == live:id(),
+                   "find must answer with the live body " .. live:id() .. ", got " .. found:id())
+            assert(bearcad.visible(found), "and it must be a body that is actually in the scene")
+            assert(bearcad.get{ kind = "body", index = found }.shadow == false,
+                   "never a shadow body")
+
+            -- Combine is the same deal.
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 10, name = "Plate" }
+            bearcad.cuboid{ width = 8, depth = 8, height = 30, name = "Punch" }
+            bearcad.combine{ op = "cut",
+                             a = { bearcad.element("live_body", 0) },
+                             b = { bearcad.element("live_body", 1) } }
+            local cut = bearcad.element("live_body", 0)
+            assert(cut:name() == "Plate",
+                   "a cut keeps the name of what it cut, got " .. tostring(cut:name()))
+            assert(bearcad.find("Plate"):id() == cut:id(), "and find agrees")
+            "#,
+        );
+    }
+
+    #[test]
+    fn lua_sketch_frame_converts_world_points_to_face_coordinates() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            -- A profile whose first vertex is nowhere near the origin.
+            bearcad.begin_sketch{ kind = "plane", index = 1 }
+            local P = { {140, 34}, {44, 34}, {44, 14}, {140, 14} }
+            local outline = {}
+            for i = 1, #P do
+              local a, b = P[i], P[(i % #P) + 1]
+              outline[i] = bearcad.line{ x = a[1], y = a[2], x1 = b[1], y1 = b[2] }
+            end
+            bearcad.exit_sketch()
+            bearcad.extrude{ profiles = outline, distance = 18 }
+
+            -- The ground sketch's own frame sits at the world origin.
+            bearcad.open_sketch(0)
+            local f = bearcad.sketch_frame()
+            assert(f ~= nil, "sketch_frame must report the open sketch's frame")
+            assert(math.abs(f.origin.x) < 1e-4 and math.abs(f.origin.z) < 1e-4,
+                   "the Front datum sketch is anchored at the origin: " .. f.origin.x)
+            bearcad.exit_sketch()
+
+            -- The cap sketch's frame is anchored on the face, offset from the parent.
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0,
+                                  profile = "polygon", profile_lines = outline, top = false }
+            local cap = bearcad.sketch_frame()
+            assert(cap ~= nil, "a cap sketch has a frame too")
+            assert(cap.origin ~= nil and cap.u_axis ~= nil and cap.v_axis ~= nil
+                   and cap.normal ~= nil, "frame reports origin and all three axes")
+
+            -- sketch_uv turns a world point into coordinates for the OPEN sketch, so a hole
+            -- can be aimed at the pivot without knowing where the face is anchored.
+            local u, v = bearcad.sketch_uv(48, 0, 24)
+            assert(u ~= nil and v ~= nil, "sketch_uv returns a u,v pair")
+            local back = bearcad.sketch_world(u, v)
+            assert(math.abs(back.x - 48) < 1e-3, "round trip x: " .. back.x)
+            assert(math.abs(back.y - 0) < 1e-3, "round trip y: " .. back.y)
+            assert(math.abs(back.z - 24) < 1e-3, "round trip z: " .. back.z)
+
+            -- And a circle placed at those coordinates really is at that world point.
+            bearcad.circle{ x = u, y = v, r = 2.5 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ profiles = bearcad.element("circle", 0), distance = 5 }
+            local s = bearcad.body_stats(bearcad.element("live_body", 1))
+            local cx = (s.bbox.min.x + s.bbox.max.x) / 2
+            local cz = (s.bbox.min.z + s.bbox.max.z) / 2
+            assert(math.abs(cx - 48) < 1e-2, "the circle landed at x=48, got " .. cx)
+            assert(math.abs(cz - 24) < 1e-2, "the circle landed at z=24, got " .. cz)
+            "#,
+        );
+    }
+
     #[test]
     fn lua_plane_offset_stays_live_and_reads_back() {
         run_lua_expect_ok(
@@ -26768,6 +27115,189 @@ pub mod tests {
             }
         }
         assert!(wrong <= 2, "{wrong} of {n} points along a half-hidden edge are drawn wrongly");
+    }
+
+    /// #1962: an exported sheet is what goes to a laser cutter or plotter, so a duplicate
+    /// path gets cut twice and a zero-length one leaves a stray dot. Roughly a third of the
+    /// elements used to be one or the other — one segment was emitted five times.
+    /// #1963: `drawing_circle_dim_offset` was the one options-table verb with no
+    /// `check_keys`, so a misspelled `offset` reported success and did nothing — bad for the
+    /// verb whose whole job is nudging a label. It also had no way to aim the leader, so a
+    /// hole in a crowded view could only slide its label along one fixed direction.
+    /// #1957/#1956: a pocket at an arbitrary depth is bread-and-butter CAD — put a
+    /// construction plane part-way into a plate, sketch on it, cut. `body = "cut"` found its
+    /// target only from the face being extruded from, so a datum/construction-plane sketch
+    /// had no candidate and the whole operation was refused ("Cannot cut: the sketch is not
+    /// on a body face"), even when the profile ran straight through a body. `bodies` names
+    /// the target, which is also what the docs already promised.
+    #[test]
+    fn lua_extrude_cut_takes_a_bodies_target_from_a_construction_plane() {
+        run_lua_expect_ok(
+            r#"
+            local function plate()
+              bearcad.new()
+              bearcad.begin_sketch{ kind = "plane", index = 1 }
+              local sides = bearcad.rect{ x = 0, y = 0, width = 40, height = 20 }
+              bearcad.exit_sketch()
+              bearcad.extrude{ profiles = sides, distance = 10, name = "Block" }
+              return bearcad.element("live_body", 0)
+            end
+            local function hole_on_a_plane()
+              local cp = bearcad.plane{ offset = -2, from = 1 }
+              bearcad.begin_sketch{ kind = "plane", index = cp }
+              local h = bearcad.circle{ x = 20, y = 10, r = 5 }
+              bearcad.exit_sketch()
+              return h
+            end
+
+            -- `bodies` is an accepted key, and names what to cut.
+            local b = plate()
+            local before = bearcad.body_stats(b).volume
+            local h = hole_on_a_plane()
+            bearcad.extrude{ profiles = h, distance = 14, body = "cut", bodies = { b } }
+            local after = bearcad.body_stats(bearcad.element("live_body", 0)).volume
+            assert(after < before - 700,
+                   "the cut removed the hole: " .. before .. " -> " .. after)
+
+            -- With one body in reach, `bodies` can be left out: the cut finds it.
+            b = plate()
+            before = bearcad.body_stats(b).volume
+            h = hole_on_a_plane()
+            bearcad.extrude{ profiles = h, distance = 14, body = "cut" }
+            after = bearcad.body_stats(bearcad.element("live_body", 0)).volume
+            assert(after < before - 700,
+                   "a lone body is found without naming it: " .. before .. " -> " .. after)
+
+            -- Naming two bodies for one cut is refused, and says what to do instead.
+            plate()
+            bearcad.cuboid{ at = {80, 0, 0}, width = 20, depth = 20, height = 20, name = "Other" }
+            h = hole_on_a_plane()
+            local ok, err = pcall(function()
+              bearcad.extrude{ profiles = h, distance = 14, body = "cut",
+                               bodies = { bearcad.element("live_body", 0),
+                                          bearcad.element("live_body", 1) } }
+            end)
+            assert(not ok, "one extrude cuts one body")
+            assert(tostring(err):find("combine"),
+                   "the error should point at combine: " .. tostring(err))
+            "#,
+        );
+    }
+
+    #[test]
+    fn lua_circle_dim_offset_checks_its_keys_and_aims_the_leader() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 40 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0,
+                                  profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true }
+            local u, v = bearcad.sketch_uv(20, 20, 10)
+            bearcad.circle{ x = u, y = v, r = 5 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ profiles = bearcad.element("circle", 0), distance = 10, body = "cut" }
+
+            local d = bearcad.drawing{ name = "Plate" }
+            bearcad.drawing_view{ drawing = d, body = bearcad.element("live_body", 0),
+                                  orientation = "top" }
+            local c = { 20, 20, 10 }
+            bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = c }
+
+            -- A typo must be refused, the way every other verb refuses one.
+            local ok, err = pcall(function()
+              bearcad.drawing_circle_dim_offset{ drawing = d, view = 0, center = c, offst = 5 }
+            end)
+            assert(not ok, "a bogus key must be refused")
+            assert(tostring(err):find("offst"), "and named: " .. tostring(err))
+            assert(tostring(err):find("angle"), "with the accepted keys: " .. tostring(err))
+
+            -- offset alone still works, and reads back with no angle.
+            bearcad.drawing_circle_dim_offset{ drawing = d, view = 0, center = c, offset = 6 }
+            local got = bearcad.get{ kind = "circle_dimension", drawing = d, view = 0, index = 0 }
+            assert(got ~= nil, "a circle dimension reads back")
+            assert(math.abs(got.offset - 6) < 1e-4, "offset: " .. tostring(got.offset))
+            assert(math.abs(got.angle) < 1e-4, "no angle by default: " .. tostring(got.angle))
+
+            -- And the leader can be aimed.
+            bearcad.drawing_circle_dim_offset{ drawing = d, view = 0, center = c,
+                                               offset = 6, angle = 1.5708 }
+            got = bearcad.get{ kind = "circle_dimension", drawing = d, view = 0, index = 0 }
+            assert(math.abs(got.angle - 1.5708) < 1e-3, "angle stuck: " .. tostring(got.angle))
+
+            -- Clearing the offset clears the angle with it.
+            bearcad.drawing_circle_dim_offset{ drawing = d, view = 0, center = c }
+            got = bearcad.get{ kind = "circle_dimension", drawing = d, view = 0, index = 0 }
+            assert(math.abs(got.offset) < 1e-4, "offset cleared: " .. tostring(got.offset))
+            assert(math.abs(got.angle) < 1e-4, "angle cleared too: " .. tostring(got.angle))
+            "#,
+        );
+    }
+
+    #[test]
+    fn drawing_svg_export_has_no_degenerate_or_duplicate_lines() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            bearcad.cylinder{ at = {60, 0, 0}, radius = 6, height = 12 }
+            local d = bearcad.drawing{ name = "Plate" }
+            bearcad.drawing_view{ drawing = d, bodies = {0, 1}, orientation = "front" }
+            bearcad.drawing_view{ drawing = d, bodies = {0, 1}, orientation = "iso" }
+            bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }
+        "#,
+        );
+        let svg = crate::drawing::drawing_to_svg(&state.doc, dkey(0)).expect("svg");
+
+        // Every <line …> in the document, with the attributes that decide whether two of
+        // them are the same stroke.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut lines = 0usize;
+        let mut degenerate = Vec::new();
+        let mut duplicate = Vec::new();
+        for tag in svg.split("<line ").skip(1) {
+            let tag = &tag[..tag.find("/>").expect("a closed tag")];
+            let attr = |name: &str| -> Option<f32> {
+                tag.split(&format!("{name}=\""))
+                    .nth(1)?
+                    .split('"')
+                    .next()?
+                    .parse()
+                    .ok()
+            };
+            let (x1, y1) = (attr("x1").unwrap(), attr("y1").unwrap());
+            let (x2, y2) = (attr("x2").unwrap(), attr("y2").unwrap());
+            lines += 1;
+            if (x1 - x2).abs() < 1e-6 && (y1 - y2).abs() < 1e-6 {
+                degenerate.push(format!("({x1},{y1})"));
+                continue;
+            }
+            // Direction-normalized, so A->B and B->A count as the same stroke.
+            let ends = if (x1, y1) <= (x2, y2) {
+                format!("{x1},{y1},{x2},{y2}")
+            } else {
+                format!("{x2},{y2},{x1},{y1}")
+            };
+            let style = tag.split("stroke=").nth(1).unwrap_or("").to_string();
+            if !seen.insert(format!("{ends}|{style}")) {
+                duplicate.push(ends);
+            }
+        }
+
+        assert!(lines > 20, "the sheet really does draw a lot of lines: {lines}");
+        assert!(
+            degenerate.is_empty(),
+            "{} of {lines} lines are zero-length: {:?}",
+            degenerate.len(),
+            &degenerate[..degenerate.len().min(5)]
+        );
+        assert!(
+            duplicate.is_empty(),
+            "{} of {lines} lines are exact duplicates: {:?}",
+            duplicate.len(),
+            &duplicate[..duplicate.len().min(5)]
+        );
     }
 
     #[test]

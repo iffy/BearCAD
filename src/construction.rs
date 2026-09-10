@@ -69,6 +69,10 @@ pub enum PlaneReference {
         origin: Vec3,
         normal: Vec3,
         label: String,
+        /// In-plane axes of the thing that was picked, when it had its own (a construction
+        /// plane does; a body face doesn't). A plane parallel to it inherits them (#1959).
+        u_axis: Option<Vec3>,
+        v_axis: Option<Vec3>,
     },
     /// A line or axis: offset is perpendicular distance; `angle_deg` spins the plane around the axis.
     Axis {
@@ -227,6 +231,8 @@ pub fn line_and_point_plane_reference(
             origin,
             normal,
             label: format!("{point_label} ⊥ {line_label}"),
+            u_axis: None,
+            v_axis: None,
         },
         labels,
     )
@@ -436,10 +442,14 @@ pub fn reference_from_definition(def: &PlaneDefinition) -> PlaneReference {
             origin,
             normal,
             label,
+            u_axis,
+            v_axis,
         } => PlaneReference::Face {
             origin: *origin,
             normal: *normal,
             label: label.clone(),
+            u_axis: *u_axis,
+            v_axis: *v_axis,
         },
         PlaneAnchor::Axis {
             origin,
@@ -463,10 +473,14 @@ pub fn definition_from_reference(
             origin,
             normal,
             label,
+            u_axis,
+            v_axis,
         } => PlaneAnchor::Face {
             origin: *origin,
             normal: *normal,
             label: label.clone(),
+            u_axis: *u_axis,
+            v_axis: *v_axis,
         },
         PlaneReference::Axis {
             origin,
@@ -715,8 +729,42 @@ pub fn plane_basis(normal: Vec3) -> (Vec3, Vec3) {
 
 /// Offset a face reference along its normal.
 pub fn plane_from_face(offset: f32, origin: Vec3, normal: Vec3) -> ConstructionPlane {
+    plane_from_face_axes(offset, origin, normal, None)
+}
+
+/// In-plane axes for a plane with unit normal `n`.
+///
+/// When the reference had its own axes and they still lie in the new plane — i.e. the two are
+/// parallel — they are inherited verbatim (#1959). That is what makes identical sketch
+/// coordinates land in the same place on a plane and on a plane offset from it. Re-deriving
+/// the basis instead is wrong for the **XZ datum**, which is stored left-handed
+/// (u = +X, v = +Z, n = +Y, so u x v = -n) while [`plane_basis`] always builds a right-handed
+/// frame: u came out mirrored and sketches on the offset plane were backwards.
+///
+/// Anything else — a body face, a non-parallel reference, a degenerate or skewed pair — falls
+/// back to [`plane_basis`].
+fn inherited_or_derived_axes(n: Vec3, inherit: Option<(Vec3, Vec3)>) -> (Vec3, Vec3) {
+    if let Some((u, v)) = inherit {
+        let (u, v) = (u.normalize_or_zero(), v.normalize_or_zero());
+        let in_plane = u.dot(n).abs() < 1e-4 && v.dot(n).abs() < 1e-4;
+        let orthonormal = u.length_squared() > 0.5 && v.length_squared() > 0.5 && u.dot(v).abs() < 1e-4;
+        if in_plane && orthonormal {
+            return (u, v);
+        }
+    }
+    plane_basis(n)
+}
+
+/// As [`plane_from_face`], but inheriting the reference's in-plane axes when the new plane is
+/// parallel to it (#1959). See [`inherited_or_derived_axes`].
+pub fn plane_from_face_axes(
+    offset: f32,
+    origin: Vec3,
+    normal: Vec3,
+    inherit: Option<(Vec3, Vec3)>,
+) -> ConstructionPlane {
     let n = normal.normalize_or_zero();
-    let (u, v) = plane_basis(n);
+    let (u, v) = inherited_or_derived_axes(n, inherit);
     ConstructionPlane {
         origin: origin + n * offset,
         normal: n,
@@ -728,6 +776,9 @@ pub fn plane_from_face(offset: f32, origin: Vec3, normal: Vec3) -> ConstructionP
                 origin,
                 normal: n,
                 label: String::new(),
+                // Keep what was inherited so a later rebuild or edit inherits it again.
+                u_axis: inherit.map(|(u, _)| u),
+                v_axis: inherit.map(|(_, v)| v),
             },
             offset,
             0.0,
@@ -849,9 +900,20 @@ pub fn resolve_plane(
     user_edited_angle: bool,
 ) -> ConstructionPlane {
     match reference {
-        PlaneReference::Face { origin, normal, .. } => {
+        PlaneReference::Face {
+            origin,
+            normal,
+            u_axis,
+            v_axis,
+            ..
+        } => {
             let offset = parse_or_live_signed(offset_text, live_offset, user_edited_offset);
-            plane_from_face(offset, *origin, *normal)
+            plane_from_face_axes(
+                offset,
+                *origin,
+                *normal,
+                u_axis.zip(*v_axis),
+            )
         }
         PlaneReference::Axis {
             origin,
@@ -1002,10 +1064,22 @@ pub fn plane_reference_from_element(
         }
         _ => {
             let (origin, normal) = plane_frame_from_element(doc, element)?;
+            // A construction plane carries its own in-plane axes; a parallel plane hung on
+            // it inherits them so sketch coordinates agree (#1959).
+            let (u_axis, v_axis) = match element {
+                SceneElement::ConstructionPlane(i) => doc
+                    .construction_planes
+                    .get(*i)
+                    .map(|p| (Some(p.u_axis), Some(p.v_axis)))
+                    .unwrap_or((None, None)),
+                _ => (None, None),
+            };
             Some(PlaneReference::Face {
                 origin,
                 normal,
                 label: crate::names::scene_element_label(doc, element),
+                u_axis,
+                v_axis,
             })
         }
     }
@@ -2071,6 +2145,8 @@ pub fn resolve_pick_target(
                     origin,
                     normal,
                     label,
+                    u_axis: None,
+                    v_axis: None,
                 },
                 distance_px: dist,
             });
@@ -2125,6 +2201,8 @@ pub fn resolve_pick_target(
                             origin,
                             normal,
                             label: "Cylinder".to_string(),
+                            u_axis: None,
+                            v_axis: None,
                         },
                         distance_px: 0.0,
                     });
@@ -2142,6 +2220,8 @@ pub fn resolve_pick_target(
                             origin: centroid,
                             normal,
                             label: "Face".to_string(),
+                            u_axis: None,
+                            v_axis: None,
                         },
                         distance_px: 0.0,
                     });
@@ -2207,6 +2287,8 @@ pub fn resolve_pick_target(
                             origin: projected,
                             normal: plane.normal,
                             label: "Construction plane".to_string(),
+                            u_axis: None,
+                            v_axis: None,
                         },
                         distance_px: dist,
                     });
@@ -2227,6 +2309,8 @@ pub fn resolve_pick_target(
                             origin: at,
                             normal,
                             label: "Image".to_string(),
+                            u_axis: None,
+                            v_axis: None,
                         },
                         distance_px: dist,
                     });
@@ -2243,6 +2327,8 @@ pub fn resolve_pick_target(
                 origin: p,
                 normal: Vec3::Z,
                 label: "Ground".to_string(),
+                u_axis: None,
+                v_axis: None,
             },
             distance_px: f32::MAX,
         });
@@ -2279,6 +2365,8 @@ pub fn body_face_pick_target(
             origin,
             normal,
             label: "Face".to_string(),
+            u_axis: None,
+            v_axis: None,
         },
         distance_px: 0.0,
         // Beats the construction-plane quads (2) and ground (3); loses to the sharp
@@ -4538,6 +4626,46 @@ mod tests {
     use super::*;
     use eframe::egui::Pos2;
 
+    /// #1959: a plane offset from a datum plane must place identical sketch coordinates in
+    /// the same spot as the datum itself. The XZ datum is stored **left-handed**
+    /// (u = +X, v = +Z, n = +Y, so u x v = -n) while `plane_basis` always derives a
+    /// right-handed frame, so re-deriving the axes mirrored u and sketches on a plane offset
+    /// from Front came out backwards. A parallel plane inherits its reference's axes verbatim.
+    #[test]
+    fn a_plane_offset_from_a_datum_inherits_its_axes() {
+        let planes = crate::face::default_datum_planes();
+        for (i, label) in [(0usize, "XY"), (1, "XZ"), (2, "YZ")] {
+            let datum = planes.values().nth(i).expect("datum plane").clone();
+            // Exactly what Action::AddConstructionPlane builds from a reference plane.
+            let def = PlaneDefinition {
+                anchor: PlaneAnchor::Face {
+                    origin: datum.origin,
+                    normal: datum.normal,
+                    label: "Construction plane".to_string(),
+                    u_axis: Some(datum.u_axis),
+                    v_axis: Some(datum.v_axis),
+                },
+                offset_mm: 30.0,
+                angle_deg: 0.0,
+                offset_expression: String::new(),
+                angle_expression: String::new(),
+            };
+            let offset = plane_from_definition(&def, ConstructionPlaneParent::Root);
+            assert!(
+                (offset.u_axis - datum.u_axis).length() < 1e-5,
+                "{label}: offset u = {:?}, datum u = {:?}",
+                offset.u_axis,
+                datum.u_axis
+            );
+            assert!(
+                (offset.v_axis - datum.v_axis).length() < 1e-5,
+                "{label}: offset v = {:?}, datum v = {:?}",
+                offset.v_axis,
+                datum.v_axis
+            );
+        }
+    }
+
     #[test]
     fn face_plane_axes_match_the_ground_and_point_up(){
         // #399: a plane offset from Ground must inherit Ground's axes exactly — the old
@@ -4553,6 +4681,18 @@ mod tests {
             wall.u_axis.cross(wall.v_axis).dot(wall.normal) > 0.99,
             "basis stays right-handed"
         );
+        // #1959: `+Y` is the sign this test used to skip, and it is the XZ datum's normal.
+        // A derived basis is right-handed here too, which is *why* it disagrees with that
+        // left-handed datum — see `a_plane_offset_from_a_datum_inherits_its_axes`.
+        for n in [Vec3::Y, -Vec3::Y, Vec3::X, -Vec3::X, Vec3::Z, -Vec3::Z] {
+            let p = plane_from_face(0.0, Vec3::ZERO, n);
+            assert!(
+                p.u_axis.cross(p.v_axis).dot(p.normal) > 0.99,
+                "derived basis for n = {n:?} stays right-handed, got u = {:?} v = {:?}",
+                p.u_axis,
+                p.v_axis
+            );
+        }
     }
 
     #[test]
@@ -4614,6 +4754,8 @@ mod tests {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
             label: "Ground".to_string(),
+            u_axis: None,
+            v_axis: None,
         };
         let plane = resolve_plane(&reference, "1in + 2mm", "", 3.0, 0.0, true, false);
         assert!((plane.origin.z - 27.4).abs() < 1e-3);
@@ -4625,6 +4767,8 @@ mod tests {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
             label: "Ground".to_string(),
+            u_axis: None,
+            v_axis: None,
         };
         let plane = resolve_plane(&reference, "12.5", "", 3.0, 0.0, true, false);
         assert!((plane.origin.z - 12.5).abs() < 1e-4);
@@ -4636,6 +4780,8 @@ mod tests {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
             label: "Ground".to_string(),
+            u_axis: None,
+            v_axis: None,
         };
         let plane = resolve_plane(&reference, "", "", 7.0, 0.0, false, false);
         assert!((plane.origin.z - 7.0).abs() < 1e-4);
@@ -4881,6 +5027,8 @@ mod tests {
             origin: Vec3::new(10.0, 20.0, 0.0),
             normal: Vec3::Z,
             label: "Point".to_string(),
+            u_axis: None,
+            v_axis: None,
         };
         let (upgraded, source, labels, _, _) = complement_plane_anchor(
             &doc,
@@ -4913,6 +5061,8 @@ mod tests {
             origin: Vec3::new(10.0, 20.0, 0.0),
             normal: Vec3::Z,
             label: "Vertex (line 0)".to_string(),
+            u_axis: None,
+            v_axis: None,
         };
         let line_ref = PlaneReference::Axis {
             origin: Vec3::new(0.0, 5.0, 0.0),
@@ -4969,6 +5119,8 @@ mod tests {
             origin: Vec3::new(6.0, 4.0, 0.0),
             normal: Vec3::Z,
             label: "Vertex".to_string(),
+            u_axis: None,
+            v_axis: None,
         };
         let (upgraded, source, _, _, _) = complement_plane_anchor(
             &doc,
@@ -5015,6 +5167,8 @@ mod tests {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
             label: "Ground".to_string(),
+            u_axis: None,
+            v_axis: None,
         };
         let line_ref = PlaneReference::Axis {
             origin: Vec3::ZERO,
@@ -6542,6 +6696,8 @@ mod tests {
                     origin: Vec3::ZERO,
                     normal: Vec3::Z,
                     label: "Ground".to_string(),
+                    u_axis: None,
+                    v_axis: None,
                 },
                 5.0,
                 0.0,
@@ -6557,6 +6713,8 @@ mod tests {
                 origin: Vec3::ZERO,
                 normal: Vec3::Z,
                 label: "Ground".to_string(),
+                u_axis: None,
+                v_axis: None,
             },
             15.0,
             0.0,

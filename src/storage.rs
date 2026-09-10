@@ -1655,6 +1655,159 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
+    /// #1959: a plane's anchor gained optional in-plane axes, stored inside `definition_json`.
+    /// A file written before they existed has no such keys, and must still open with the plane
+    /// exactly where it was — the axes live in their own columns, so nothing moves.
+    #[test]
+    fn opens_a_file_whose_plane_anchor_has_no_inherited_axes() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_plane_anchor_axes_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        // A plane offset from the left-handed XZ datum: the case the axes were added for.
+        let mut doc = Document::default();
+        doc.construction_planes = crate::face::default_datum_planes();
+        let front = doc.construction_planes.keys().nth(1).expect("XZ datum");
+        let front = doc.construction_planes[front].clone();
+        let offset = crate::construction::plane_from_face_axes(
+            30.0,
+            front.origin,
+            front.normal,
+            Some((front.u_axis, front.v_axis)),
+        );
+        assert!((offset.u_axis - front.u_axis).length() < 1e-5, "inherits u before saving");
+        let key = doc.construction_planes.insert(offset.clone());
+        doc.shape_order.push(crate::model::ShapeKind::ConstructionPlane);
+        save(&path, &doc).unwrap();
+
+        // Age the file: strip the anchor keys an older BearCAD never wrote — from every
+        // plane, since no plane had them.
+        {
+            let conn = Connection::open(&path).unwrap();
+            let rows: Vec<(i64, String)> = conn
+                .prepare("SELECT id, definition_json FROM construction_planes")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let mut stripped = 0;
+            for (id, json) in rows {
+                let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+                if let Some(face) = v
+                    .get_mut("anchor")
+                    .and_then(|a| a.get_mut("Face"))
+                    .and_then(|f| f.as_object_mut())
+                {
+                    if face.remove("u_axis").is_some() {
+                        stripped += 1;
+                    }
+                    face.remove("v_axis");
+                }
+                conn.execute(
+                    "UPDATE construction_planes SET definition_json = ?1 WHERE id = ?2",
+                    rusqlite::params![serde_json::to_string(&v).unwrap(), id],
+                )
+                .unwrap();
+            }
+            assert!(stripped > 0, "the new keys were being written in the first place");
+        }
+
+        let loaded = open(&path).unwrap();
+        let reopened = loaded.construction_planes.get(key).expect("the offset plane");
+        // The plane itself is untouched — axes come from their own columns, not the anchor.
+        assert!((reopened.u_axis - offset.u_axis).length() < 1e-5, "u survives the old file");
+        assert!((reopened.v_axis - offset.v_axis).length() < 1e-5, "v survives the old file");
+        assert!((reopened.origin - offset.origin).length() < 1e-4, "origin survives");
+        // And the anchor simply reports "no inheritance recorded".
+        match &reopened.definition.anchor {
+            crate::model::PlaneAnchor::Face { u_axis, v_axis, .. } => {
+                assert!(u_axis.is_none() && v_axis.is_none(), "old anchors carry no axes");
+            }
+            other => panic!("expected a face anchor, got {other:?}"),
+        }
+
+        // And it saves again through the live session path.
+        save(&path, &loaded).unwrap();
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #1963: a drawing view gained per-circle leader angles, stored in the drawing's
+    /// `payload_json`. A file written before they existed has no such key, and must still
+    /// open — with every label leading straight out, exactly as it was drawn.
+    #[test]
+    fn opens_a_file_whose_drawing_has_no_circle_leader_angles() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_circle_leader_angles_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        let mut drawing = crate::model::Drawing {
+            name: Some("Plate".to_string()),
+            ..Default::default()
+        };
+        let mut view = crate::model::DrawingView::from_bodies(
+            Vec::new(),
+            crate::model::DrawingOrientation::Front,
+        );
+        let centre = [2000, 2000, 1000];
+        view.dimensioned_circles.push(centre);
+        view.circle_dim_offsets.push((centre, 6.0));
+        view.circle_dim_offset_angles.push((centre, 1.5708));
+        drawing.views.push(view);
+        doc.drawings.insert(drawing);
+        save(&path, &doc).unwrap();
+
+        // Age the file: drop the key an older BearCAD never wrote.
+        {
+            let conn = Connection::open(&path).unwrap();
+            let rows: Vec<(i64, String)> = conn
+                .prepare("SELECT id, payload_json FROM drawings")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let mut stripped = 0;
+            for (id, json) in rows {
+                let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+                for view in v
+                    .get_mut("views")
+                    .and_then(|vs| vs.as_array_mut())
+                    .map(|vs| vs.iter_mut())
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(o) = view.as_object_mut() {
+                        if o.remove("circle_dim_offset_angles").is_some() {
+                            stripped += 1;
+                        }
+                    }
+                }
+                conn.execute(
+                    "UPDATE drawings SET payload_json = ?1 WHERE id = ?2",
+                    rusqlite::params![serde_json::to_string(&v).unwrap(), id],
+                )
+                .unwrap();
+            }
+            assert!(stripped > 0, "the new key was being written in the first place");
+        }
+
+        let loaded = open(&path).unwrap();
+        let view = &loaded.drawings.values().next().expect("the drawing").views[0];
+        assert_eq!(view.circle_dim_offsets, vec![(centre, 6.0)], "the offset survives");
+        assert!(
+            view.circle_dim_offset_angles.is_empty(),
+            "and an old file simply has no leader angles: {:?}",
+            view.circle_dim_offset_angles
+        );
+
+        save(&path, &loaded).unwrap();
+        std::fs::remove_file(&path).unwrap();
+    }
+
     /// #909: a primitive shape round-trips — kind, frame, and its dimension expressions —
     /// with the body that points back at it.
     #[test]
@@ -1819,6 +1972,8 @@ mod tests {
                     origin: glam::Vec3::ZERO,
                     normal: glam::Vec3::Z,
                     label: "Ground".to_string(),
+                    u_axis: None,
+                    v_axis: None,
                 },
                 25.0,
                 0.0,
@@ -1913,6 +2068,8 @@ mod tests {
                     origin: glam::Vec3::ZERO,
                     normal: glam::Vec3::Z,
                     label: "Ground".to_string(),
+                    u_axis: None,
+                    v_axis: None,
                 },
                 25.0,
                 0.0,

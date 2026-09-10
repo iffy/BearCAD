@@ -1266,6 +1266,7 @@ pub fn instruction_from_json(
             view: req_usize(o, "view", "drawing_circle_dim_offset")?,
             center: xyz(o, "center")?,
             offset: opt_f32(o, "offset")?,
+            angle: opt_f32(o, "angle")?,
         }),
         "drawing_point_dim_offset" => Ok(Instruction::SetDrawingPointDimOffset {
             drawing: req_usize(o, "drawing", "drawing_point_dim_offset")?,
@@ -1389,6 +1390,7 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
                 faces,
                 distance,
                 body,
+                bodies: Vec::new(),
                 target,
                 expression,
                 symmetric,
@@ -4690,6 +4692,7 @@ mod tests {
                 faces: vec![ExtrudeFace::Circle(rkey(0))],
                 distance: 10.0,
                 body: ExtrudeBodyChoice::New,
+                bodies: Vec::new(),
                 target: None,
                 symmetric: false,
             

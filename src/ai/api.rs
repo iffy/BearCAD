@@ -182,6 +182,10 @@ bearcad.set_construction(el, true) -- same targets; selection forms are bearcad.
 bearcad.sketch_dof()
 bearcad.sketch_conflicts()
 bearcad.sketch_faces()
+bearcad.sketch_frame(sketch?)      -- origin + u/v/normal axes the sketch measures from
+bearcad.sketch_uv(x, y, z)         -- world point -> the open sketch's u, v
+bearcad.sketch_world(u, v)         -- and back. A sketch on a body face is anchored on
+                                   -- that face, so aim at world points with these.
 
 bearcad.status()
 ```

@@ -3464,6 +3464,49 @@ struct Rgb(u8, u8, u8);
 const BLACK: Rgb = Rgb(0, 0, 0);
 const WHITE: Rgb = Rgb(255, 255, 255);
 
+/// Drops strokes that would draw nothing, or draw something already drawn (#1962).
+///
+/// An exported sheet is what goes to a laser cutter or a plotter, so a duplicated path gets
+/// cut or drawn twice — burning through on the second pass — and a zero-length one leaves a
+/// stray dot under a round cap. Stacked duplicates also make the line weight uneven, and
+/// they bloated the file: about a third of a four-view sheet's elements were one or the
+/// other, with a single segment emitted five times.
+///
+/// Keyed on direction-normalized endpoints plus the stroke style, quantized to the precision
+/// the backend actually writes — so two strokes the file cannot tell apart are one stroke.
+struct SegmentFilter {
+    scale: f32,
+    seen: std::collections::HashSet<(i32, i32, i32, i32, u8, u8, u8, i32, bool)>,
+}
+
+impl SegmentFilter {
+    /// `scale` is 1/precision of the backend's coordinate output (10 for `{:.1}`).
+    fn new(scale: f32) -> Self {
+        SegmentFilter { scale, seen: std::collections::HashSet::new() }
+    }
+
+    /// True when this stroke should be emitted.
+    fn accept(
+        &mut self,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        color: Rgb,
+        width: f32,
+        dashed: bool,
+    ) -> bool {
+        let q = |v: f32| (v * self.scale).round() as i32;
+        let (a, b) = ((q(x1), q(y1)), (q(x2), q(y2)));
+        if a == b {
+            return false;
+        }
+        let (a, b) = if a <= b { (a, b) } else { (b, a) };
+        self.seen
+            .insert((a.0, a.1, b.0, b.1, color.0, color.1, color.2, q(width), dashed))
+    }
+}
+
 /// Horizontal text alignment relative to the given `x`.
 #[derive(Clone, Copy)]
 enum Anchor {
@@ -4123,6 +4166,14 @@ fn render_view_geometry<C: Canvas>(
             .find(|(k, _)| *k == circle_key)
             .map(|(_, o)| *o)
             .unwrap_or(0.0);
+        // #1963: which way the label leads off the circle. `0` is straight out, which is
+        // what every sheet written before this did.
+        let lead = view
+            .circle_dim_offset_angles
+            .iter()
+            .find(|(k, _)| *k == circle_key)
+            .map(|(_, a)| *a)
+            .unwrap_or(0.0);
         match pc {
             // Face-on (#397): a horizontal diameter line, the label offset off it by the
             // per-circle override (dragged up/down in the editor).
@@ -4131,7 +4182,10 @@ fn render_view_geometry<C: Canvas>(
                 let (a, b) = (*center - dir * *radius, *center + dir * *radius);
                 let (sa, sb) = (to_screen(a), to_screen(b));
                 canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, DIM_STROKE);
-                let lp = to_screen(*center + glam::Vec2::new(0.0, extra));
+                // The leader runs down the +v perpendicular by default; `lead` turns it, so
+                // a hole in a crowded view can put its label where there is room.
+                let (sin, cos) = lead.sin_cos();
+                let lp = to_screen(*center + glam::Vec2::new(sin * extra, cos * extra));
                 canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, 0.0);
             }
             // Edge-on (looks like a line, #320): a normal linear dimension — extension lines,
@@ -4335,6 +4389,8 @@ struct SvgCanvas {
     /// (#1830). SVG names the family; the viewer needs it installed, and falls back to the
     /// sans otherwise — embedding the whole face would add megabytes to every export.
     hand_lettered: bool,
+    /// #1962: drops no-op and already-drawn strokes.
+    segments: SegmentFilter,
 }
 
 impl SvgCanvas {
@@ -4368,6 +4424,9 @@ impl Canvas for SvgCanvas {
     }
 
     fn line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32) {
+        if !self.segments.accept(x1, y1, x2, y2, color, width, false) {
+            return;
+        }
         self.body.push_str(&format!(
             "<line x1=\"{x1:.1}\" y1=\"{y1:.1}\" x2=\"{x2:.1}\" y2=\"{y2:.1}\" stroke=\"{}\" \
              stroke-width=\"{width}\"/>\n",
@@ -4376,6 +4435,9 @@ impl Canvas for SvgCanvas {
     }
 
     fn line_dashed(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32) {
+        if !self.segments.accept(x1, y1, x2, y2, color, width, true) {
+            return;
+        }
         self.body.push_str(&format!(
             "<line x1=\"{x1:.1}\" y1=\"{y1:.1}\" x2=\"{x2:.1}\" y2=\"{y2:.1}\" stroke=\"{}\" \
              stroke-width=\"{width}\" stroke-dasharray=\"4 3\"/>\n",
@@ -4443,7 +4505,7 @@ impl Canvas for SvgCanvas {
 /// index is missing or deleted.
 pub fn drawing_to_svg(doc: &Document, index: crate::model::DrawingKey) -> Option<String> {
     let (width, height) = page_dims(doc, index)?;
-    let mut canvas = SvgCanvas { body: String::new(), hand_lettered: false };
+    let mut canvas = SvgCanvas { body: String::new(), hand_lettered: false, segments: SegmentFilter::new(10.0) };
     render_drawing(doc, index, &mut canvas)?;
     let mut s = String::new();
     s.push_str(&format!(
@@ -4462,11 +4524,14 @@ pub fn drawing_to_svg(doc: &Document, index: crate::model::DrawingKey) -> Option
 struct PdfCanvas {
     ops: Vec<u8>,
     height: f32,
+    /// #1962: drops no-op and already-drawn strokes.
+    segments: SegmentFilter,
 }
 
 impl PdfCanvas {
     fn new(height: f32) -> Self {
-        PdfCanvas { ops: Vec::new(), height }
+        // PDF writes coordinates at `{:.2}`.
+        PdfCanvas { ops: Vec::new(), height, segments: SegmentFilter::new(100.0) }
     }
     fn push(&mut self, s: &str) {
         self.ops.extend_from_slice(s.as_bytes());
@@ -4564,12 +4629,18 @@ impl Canvas for PdfCanvas {
     }
 
     fn line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32) {
+        if !self.segments.accept(x1, y1, x2, y2, color, width, false) {
+            return;
+        }
         let (py1, py2) = (self.height - y1, self.height - y2);
         self.set_stroke(color);
         self.push(&format!("{width:.2} w\n{x1:.2} {py1:.2} m {x2:.2} {py2:.2} l S\n"));
     }
 
     fn line_dashed(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32) {
+        if !self.segments.accept(x1, y1, x2, y2, color, width, true) {
+            return;
+        }
         let (py1, py2) = (self.height - y1, self.height - y2);
         self.set_stroke(color);
         // `[4 3] 0 d` sets the dash pattern; `[] 0 d` restores solid strokes after.
@@ -5591,7 +5662,8 @@ mod tests {
             dimension_offset_angles: Vec::new(),
             dimension_label_sides: Vec::new(),
             dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
-circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(), aligned_parent: None, aligned_dir: None,
+circle_dim_offsets: Vec::new(), circle_dim_offset_angles: Vec::new(),
+            point_dims: Vec::new(), loupes: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
             size_x: CELL_FRAC, size_y: CELL_FRAC,
             align_lines: false,
@@ -5661,7 +5733,8 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             dimension_offset_angles: Vec::new(),
             dimension_label_sides: Vec::new(),
             dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
-circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(), aligned_parent: None, aligned_dir: None,
+circle_dim_offsets: Vec::new(), circle_dim_offset_angles: Vec::new(),
+            point_dims: Vec::new(), loupes: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
             size_x: CELL_FRAC, size_y: CELL_FRAC,
             align_lines: false,
@@ -6059,7 +6132,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
     /// labels land on the dimension line in the PDF/SVG while sitting beside it on screen.
     #[test]
     fn svg_text_rot_centers_on_the_layout_point() {
-        let mut c = SvgCanvas { body: String::new(), hand_lettered: false };
+        let mut c = SvgCanvas { body: String::new(), hand_lettered: false, segments: SegmentFilter::new(10.0) };
         c.text_rot(100.0, 50.0, 11.0, Anchor::Middle, "80.0 mm", 0.0);
         assert!(
             c.body.contains("dominant-baseline=\"central\""),
@@ -6348,7 +6421,8 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
                 dimension_offset_angles: Vec::new(),
             dimension_label_sides: Vec::new(),
                 dimensioned_circles: Vec::new(), dimensioned_curves: Vec::new(),
-circle_dim_offsets: Vec::new(), point_dims: Vec::new(), loupes: Vec::new(),
+circle_dim_offsets: Vec::new(), circle_dim_offset_angles: Vec::new(),
+                point_dims: Vec::new(), loupes: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                 scale: None,
@@ -7021,6 +7095,7 @@ label_hidden: false,
             faces: vec![crate::model::ExtrudeFace::Polygon(rect.to_vec())],
             distance: 10.0,
             body: crate::actions::ExtrudeBodyChoice::Merge,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
             taper: 0.0,
@@ -7103,6 +7178,7 @@ label_hidden: false,
                 faces: vec![crate::model::ExtrudeFace::Polygon(rect.to_vec())],
                 distance,
                 body,
+                bodies: Vec::new(),
                 target: None,
                 symmetric: false,
                 taper: 0.0,

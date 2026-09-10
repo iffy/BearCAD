@@ -2644,6 +2644,8 @@ impl Default for CreatingSectionPlane {
                 origin: glam::Vec3::ZERO,
                 normal: glam::Vec3::Z,
                 label: String::new(),
+                u_axis: None,
+                v_axis: None,
             },
             offset_live: 0.0,
             roll_deg: 0.0,
@@ -2684,6 +2686,8 @@ impl CreatingSectionPlane {
                 origin: cut.origin,
                 normal: cut.normal,
                 label: String::new(),
+                u_axis: None,
+                v_axis: None,
             },
             offset_live: cut.offset_mm,
             roll_deg: cut.roll.to_degrees(),
@@ -2825,6 +2829,8 @@ impl CreatingSectionPlane {
                     origin: *origin,
                     normal: plane.normal,
                     label: label.clone(),
+                    u_axis: None,
+                    v_axis: None,
                 }
             }
         }
@@ -3411,6 +3417,9 @@ pub enum Action {
         /// How the extrusion attaches to bodies (#32/#35) — mirrors the context pane's
         /// New / Add-to-body / Cut choice for the GUI flow.
         body: ExtrudeBodyChoice,
+        /// Explicit `cut`/`add` target (#1957). Empty resolves from the host face, then from
+        /// whichever single body the tool runs through.
+        bodies: Vec<crate::model::BodyKey>,
         /// Extrude up to this object's extended plane instead of a fixed distance —
         /// the scripted equivalent of pulling the gizmo and snapping to a surface
         /// (#114). `distance` becomes the cached/fallback value.
@@ -3641,6 +3650,9 @@ pub enum Action {
         view: usize,
         center: [i32; 3],
         offset: Option<f32>,
+        /// Which way the label leads off the circle, radians (#1963). `None`/`0` keeps the
+        /// historical straight-out direction.
+        angle: Option<f32>,
     },
     /// Move a free point-to-point dimension's label off its auto-placed gap (#1774) — the
     /// point-dim analogue of [`Self::SetDrawingDimensionOffset`]. `index` names the view's
@@ -4612,6 +4624,7 @@ pub fn set_drawing_circle_dim_offset(
     view: usize,
     center: [i32; 3],
     offset: Option<f32>,
+    angle: Option<f32>,
 ) -> Result<(), String> {
     let Some(v) = doc
         .drawings
@@ -4621,8 +4634,14 @@ pub fn set_drawing_circle_dim_offset(
         return Err(format!("No view {view} in drawing {}", drawing.index()));
     };
     v.circle_dim_offsets.retain(|(k, _)| *k != center);
+    // #1963: the angle only means anything alongside an offset, so clearing the offset
+    // clears the direction with it rather than leaving a stale aim behind.
+    v.circle_dim_offset_angles.retain(|(k, _)| *k != center);
     if let Some(o) = offset {
         v.circle_dim_offsets.push((center, o));
+        if let Some(a) = angle.filter(|a| a.abs() > 1e-6) {
+            v.circle_dim_offset_angles.push((center, a));
+        }
     }
     Ok(())
 }
@@ -5950,7 +5969,7 @@ impl AppState {
         &self,
         ext: &mut Extrusion,
         bi: crate::model::BodyKey,
-    ) -> Option<&'static str> {
+    ) -> Option<String> {
         match crate::extrude::cut_tool_bites(&self.doc, bi, ext) {
             Some(false) => {
                 // A target-driven depth has no free sign to flip. Expression-driven
@@ -5962,13 +5981,100 @@ impl AppState {
                     flipped.distance = -flipped.distance;
                     if crate::extrude::cut_tool_bites(&self.doc, bi, &flipped) == Some(true) {
                         *ext = flipped;
-                        return Some("Cut pointed out of the body — flipped it inward");
+                        return Some("Cut pointed out of the body — flipped it inward".to_string());
                     }
                 }
-                Some("Warning: the cut removed no material")
+                // #1958: say *why* nothing was removed. The usual cause is a profile that
+                // isn't over the body at all — easy to do from a script, because a sketch on
+                // a body face is anchored on that face (for a polygon face, on the profile
+                // loop's first vertex), so coordinates meant as world or parent-sketch ones
+                // land somewhere else entirely.
+                Some(match self.cut_tool_miss_detail(bi, ext) {
+                    Some(detail) => {
+                        format!("Warning: the cut removed no material — {detail}")
+                    }
+                    None => "Warning: the cut removed no material".to_string(),
+                })
             }
             _ => None,
         }
+    }
+
+    /// Live bodies a would-be cut actually runs through (#1957).
+    ///
+    /// `body = "cut"` normally finds its target from the face being extruded from, so a
+    /// sketch on a datum or construction plane had no candidate and the whole operation was
+    /// refused — even with the profile passing straight through a solid. Building the tool
+    /// once and asking the kernel which bodies it meets lets the common case (one body in
+    /// reach) just work, and lets the ambiguous case name the candidates.
+    fn bodies_the_cut_would_reach(
+        &self,
+        sketch: SketchId,
+        faces: &[ExtrudeFace],
+        distance: f32,
+        target: &Option<crate::model::ExtrudeTarget>,
+    ) -> Vec<crate::model::BodyKey> {
+        // A throwaway extrusion standing in for the tool; `cut_tool_bites` only reads it.
+        let probe = Extrusion {
+            sketch,
+            faces: faces.to_vec(),
+            distance,
+            target: target.clone(),
+            expression: String::new(),
+            symmetric: false,
+            taper: 0.0,
+            taper_mode: crate::model::ExtrudeTaperMode::Distance,
+            taper_expression: String::new(),
+            name: None,
+            edge_treatments: Vec::new(),
+        };
+        self.doc
+            .bodies
+            .iter()
+            .filter(|(_, b)| !b.shadow)
+            .map(|(k, _)| k)
+            .filter(|&bi| crate::extrude::cut_tool_bites(&self.doc, bi, &probe) == Some(true))
+            .collect()
+    }
+
+    /// Why a cut bit nothing, when we can say something useful (#1958).
+    ///
+    /// The usual cause is a profile that isn't over the body at all, and the usual cause of
+    /// *that* is the sketch's anchor: a sketch opened on a body face is anchored on the face
+    /// (for a polygon face, on the profile loop's first vertex), so coordinates meant as
+    /// world or parent-sketch ones land somewhere else. The anchor is invisible otherwise,
+    /// so name it.
+    fn cut_tool_miss_detail(
+        &self,
+        bi: crate::model::BodyKey,
+        ext: &Extrusion,
+    ) -> Option<String> {
+        let host = self.doc.sketch_face(ext.sketch)?;
+        // Only body faces surprise anyone; a datum/construction plane is anchored where the
+        // user put it.
+        if !matches!(
+            host,
+            FaceId::ExtrudeCap { .. }
+                | FaceId::ExtrudeSide { .. }
+                | FaceId::RevolveCap { .. }
+                | FaceId::RevolveSide { .. }
+                | FaceId::PrimitiveFace { .. }
+                | FaceId::BodyMeshFace { .. }
+        ) {
+            return None;
+        }
+        let frame = crate::face::sketch_frame(&self.doc, host)?;
+        let o = frame.origin;
+        let unit = self.doc.default_length_unit;
+        let n = |v: f32| crate::value::format_length_display_in(v, unit);
+        let _ = bi;
+        Some(format!(
+            "this sketch is anchored on the face at ({}, {}, {}), so its coordinates are \
+             measured from there, not from the world origin",
+            n(o.x),
+            n(o.y),
+            n(o.z)
+        ))
     }
 
     /// Tombstone a body-face sketch created by [`Action::ExtrudeBodyFace`] that was never
@@ -6362,6 +6468,8 @@ impl AppState {
                                 origin: *origin + offset,
                                 normal: *normal,
                                 label: String::new(),
+                                u_axis: Some(*u_axis),
+                                v_axis: Some(*v_axis),
                             },
                             offset_mm: 0.0,
                             angle_deg: 0.0,
@@ -12554,10 +12662,15 @@ impl AppState {
                         from.index()
                     ));
                 };
+                // #1959: carry the reference's in-plane axes so a parallel plane sketches
+                // the same coordinates in the same place. Re-deriving them from the normal
+                // mirrors u for the left-handed XZ datum.
                 let anchor = crate::model::PlaneAnchor::Face {
                     origin: reference_plane.origin,
                     normal: reference_plane.normal,
                     label: "Construction plane".to_string(),
+                    u_axis: Some(reference_plane.u_axis),
+                    v_axis: Some(reference_plane.v_axis),
                 };
                 let definition = crate::model::PlaneDefinition {
                     anchor,
@@ -14183,6 +14296,7 @@ impl AppState {
                 faces,
                 distance,
                 body,
+                bodies,
                 target,
                 expression,
                 symmetric,
@@ -14221,23 +14335,79 @@ impl AppState {
                     }
                 }
                 let candidate = extrude_merge_candidate(&self.doc, sketch);
-                // An explicit merge/cut must have a body to attach to (#178): the sketch has to
-                // sit on a body's face. Silently degrading to a standalone new body produced no
-                // holes and raised nothing, hiding the mistake — so it's a hard error instead.
-                let body_mode = match (body, candidate) {
+                // #1957: an explicit target. One extrusion attaches to one body, so a longer
+                // list is a mistake worth naming rather than half-honouring.
+                let wants_a_body = matches!(
+                    body,
+                    ExtrudeBodyChoice::Cut | ExtrudeBodyChoice::Merge
+                );
+                if !bodies.is_empty() && !wants_a_body {
+                    let e = format!(
+                        "`bodies` names what to cut or add into, so it needs body = \"cut\" \
+                         or \"add\" (got \"{}\")",
+                        body.script_name()
+                    );
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if bodies.len() > 1 {
+                    let e = format!(
+                        "one extrude attaches to one body, but `bodies` names {}; \
+                         use bearcad.combine for several",
+                        bodies.len()
+                    );
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // Named explicitly, then the face being extruded from. #1957: with neither,
+                // a cut falls back to the one body the tool actually runs through, so a
+                // pocket sketched on a construction plane works without naming a target.
+                let named = bodies.first().copied();
+                let target_body = named.or(candidate);
+                // An explicit merge/cut must have a body to attach to (#178). Silently
+                // degrading to a standalone new body produced no holes and raised nothing,
+                // hiding the mistake — so it's a hard error instead.
+                let body_mode = match (body, target_body) {
                     (ExtrudeBodyChoice::New, _) => ExtrudeBodyMode::NewBody,
                     (ExtrudeBodyChoice::JoinNew, _) => ExtrudeBodyMode::JoinNew,
                     (ExtrudeBodyChoice::Merge, Some(bi)) => ExtrudeBodyMode::MergeInto(bi),
                     (ExtrudeBodyChoice::Cut, Some(bi)) => ExtrudeBodyMode::Cut(bi),
                     (ExtrudeBodyChoice::Merge, None) => {
-                        let e = "Cannot merge: the sketch is not on a body face".to_string();
+                        let e = "Cannot merge: the sketch is not on a body face, and no \
+                                 `bodies` target was named"
+                            .to_string();
                         self.status = e.clone();
                         return ActionResult::Err(e);
                     }
                     (ExtrudeBodyChoice::Cut, None) => {
-                        let e = "Cannot cut: the sketch is not on a body face".to_string();
-                        self.status = e.clone();
-                        return ActionResult::Err(e);
+                        match self.bodies_the_cut_would_reach(sketch, &faces, distance, &target) {
+                            reached if reached.len() == 1 => ExtrudeBodyMode::Cut(reached[0]),
+                            reached if reached.is_empty() => {
+                                let e = "Cannot cut: the sketch is not on a body face and the \
+                                         profile does not run through any body"
+                                    .to_string();
+                                self.status = e.clone();
+                                return ActionResult::Err(e);
+                            }
+                            reached => {
+                                let names: Vec<String> = reached
+                                    .iter()
+                                    .map(|&bi| {
+                                        crate::names::element_name(&self.doc, SceneElement::Body(bi))
+                                            .map(|n| n.to_string())
+                                            .unwrap_or_else(|| format!("body {}", bi.index()))
+                                    })
+                                    .collect();
+                                let e = format!(
+                                    "This cut runs through {} bodies ({}); name one with \
+                                     `bodies` — one extrude cuts one body",
+                                    reached.len(),
+                                    names.join(", ")
+                                );
+                                self.status = e.clone();
+                                return ActionResult::Err(e);
+                            }
+                        }
                     }
                 };
                 // A new-body extrude of profiles that don't touch makes one body each (#837);
@@ -14296,7 +14466,7 @@ impl AppState {
                     crate::model::effective_length_unit(&self.doc, sketch),
                 );
                 self.status = match (cut_note, groups.len()) {
-                    (Some(note), _) => note.to_string(),
+                    (Some(note), _) => note,
                     (None, 1) => format!("Added extrusion ({shown})"),
                     (None, n) => format!("Added {n} extrusions ({shown})"),
                 };
@@ -14502,6 +14672,7 @@ impl AppState {
                     faces: vec![face],
                     distance,
                     body,
+                    bodies: Vec::new(),
                     target,
                     expression: None,
                     symmetric: self.pending_extrude_symmetric,
@@ -14783,7 +14954,7 @@ impl AppState {
                         .unwrap_or(distance);
                     let shown = crate::value::format_length_display_in(distance, unit);
                     self.status = match (cut_note, groups.len()) {
-                        (Some(note), _) => note.to_string(),
+                        (Some(note), _) => note,
                         (None, 1) => format!("Added extrusion ({shown})"),
                         (None, n) => format!("Added {n} extrusions ({shown})"),
                     };
@@ -15966,8 +16137,8 @@ impl AppState {
                     Err(e) => ActionResult::Err(e),
                 }
             }
-            Action::SetDrawingCircleDimOffset { drawing, view, center, offset } => {
-                match set_drawing_circle_dim_offset(&mut self.doc, drawing, view, center, offset) {
+            Action::SetDrawingCircleDimOffset { drawing, view, center, offset, angle } => {
+                match set_drawing_circle_dim_offset(&mut self.doc, drawing, view, center, offset, angle) {
                     Ok(()) => ActionResult::Ok,
                     Err(e) => ActionResult::Err(e),
                 }
@@ -17041,6 +17212,14 @@ op,
                     return ActionResult::Err(e);
                 }
                 self.doc.shape_order.push(ShapeKind::MoveOperation);
+                // #1960: moving a part is not re-creating it, so each output inherits the
+                // name of the input it came from. Without this the moved body came out
+                // unnamed while the name stayed on the consumed shadow, and `find` answered
+                // with geometry that is no longer in the scene.
+                let carried: Vec<Option<String>> = targets
+                    .iter()
+                    .map(|&t| self.doc.bodies.get(t).and_then(|b| b.name.clone()))
+                    .collect();
                 let mut outputs = Vec::with_capacity(targets.len());
                 for (ordinal, _) in targets.iter().enumerate() {
                     outputs.push(self.doc.bodies.insert(crate::model::Body {
@@ -17051,7 +17230,7 @@ op,
                             cut: Vec::new(),
                         },
                         material: None,
-                        name: None,
+                        name: carried.get(ordinal).cloned().flatten(),
                         shadow: false,
                     }));
                     self.doc.shape_order.push(ShapeKind::Body);
@@ -17151,6 +17330,11 @@ op,
                 let have = self.doc.move_ops[op].outputs.len();
                 if targets.len() > have {
                     let mut outputs = self.doc.move_ops[op].outputs.clone();
+                    // #1960: a target added to an existing move brings its name along too.
+                    let carried: Vec<Option<String>> = targets
+                        .iter()
+                        .map(|&t| self.doc.bodies.get(t).and_then(|b| b.name.clone()))
+                        .collect();
                     for ordinal in have..targets.len() {
                         outputs.push(self.doc.bodies.insert(crate::model::Body {
                             source: crate::model::BodySource::Moved {
@@ -17160,7 +17344,7 @@ op,
                                 cut: Vec::new(),
                             },
                             material: None,
-                            name: None,
+                            name: carried.get(ordinal).cloned().flatten(),
                             shadow: false,
                         }));
                         self.doc.shape_order.push(ShapeKind::Body);
@@ -17569,6 +17753,12 @@ op,
                     Some(ref m) => solid_count.filter(|&c| c > 0).unwrap_or(m.len()),
                 };
                 self.doc.shape_order.push(ShapeKind::BooleanOperation);
+                // #1960: a boolean that yields a single solid is still "that part, modified",
+                // so it inherits the name of the body it operated on. Several solids means
+                // the op split it, and there is no one part to carry the name.
+                let carried: Option<String> = (solids == 1)
+                    .then(|| a.first().and_then(|&k| self.doc.bodies.get(k)).and_then(|b| b.name.clone()))
+                    .flatten();
                 let mut outputs = Vec::with_capacity(solids);
                 for ordinal in 0..solids {
                     outputs.push(self.doc.bodies.insert(crate::model::Body {
@@ -17579,7 +17769,7 @@ op,
                             cut: Vec::new(),
                         },
                         material: None,
-                        name: None,
+                        name: carried.clone(),
                         shadow: false,
                     }));
                     self.doc.shape_order.push(ShapeKind::Body);
@@ -25412,6 +25602,7 @@ mod tests {
             faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
             distance: 0.0,
             body: ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: Some(ExtrudeTarget::Plane(pkey(1))),
             symmetric: false,
         
@@ -25447,6 +25638,7 @@ mod tests {
             faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
             distance: 5.0,
             body: ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -26303,6 +26495,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -26464,6 +26657,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 origin: Vec3::ZERO,
                 normal: glam::Vec3::Z,
                 label: "p".to_string(),
+                u_axis: None,
+                v_axis: None,
             },
             parent: ConstructionPlaneParent::Root,
         });
@@ -27254,6 +27449,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![crate::model::ExtrudeFace::Polygon(hole.to_vec())],
             distance: -10.0,
             body: ExtrudeBodyChoice::Cut,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -27308,6 +27504,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 faces: vec![crate::model::ExtrudeFace::Polygon(l.to_vec())],
                 distance: 4.0,
                 body: ExtrudeBodyChoice::New,
+                bodies: Vec::new(),
                 target: None,
                 symmetric: false,
             
@@ -28489,6 +28686,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Circle(rkey(0))],
             distance: 20.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -28591,6 +28789,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -28790,6 +28989,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
             distance: 10.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -29478,6 +29678,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![crate::model::ExtrudeFace::Polygon(host_lines.to_vec())],
             distance: 5.0,
             body: ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             expression: None,
             symmetric: false,
@@ -29574,6 +29775,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 faces: vec![crate::model::ExtrudeFace::Circle(hole)],
                 distance: -8.0,
                 body: ExtrudeBodyChoice::Cut,
+                bodies: Vec::new(),
                 target: None,
                 expression: None,
                 symmetric: false,
@@ -29793,6 +29995,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                     origin: Vec3::ZERO,
                     normal: Vec3::Z,
                     label: "Ground".to_string(),
+                    u_axis: None,
+                    v_axis: None,
                 },
                 10.0,
                 0.0,
@@ -29864,6 +30068,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                     origin: Vec3::ZERO,
                     normal: Vec3::Z,
                     label: "Ground".to_string(),
+                    u_axis: None,
+                    v_axis: None,
                 },
                 5.0,
                 0.0,
@@ -29891,6 +30097,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 origin: Vec3::ZERO,
                 normal: Vec3::Z,
                 label: "Ground".to_string(),
+                u_axis: None,
+                v_axis: None,
             },
             parent: ConstructionPlaneParent::Root,
         });
@@ -29914,6 +30122,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 origin: Vec3::ZERO,
                 normal: glam::Vec3::Z,
                 label: "Ground".to_string(),
+                u_axis: None,
+                v_axis: None,
             },
             parent: ConstructionPlaneParent::Root,
         });
@@ -30135,6 +30345,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 origin: Vec3::ZERO,
                 normal: Vec3::Z,
                 label: "Ground".to_string(),
+                u_axis: None,
+                v_axis: None,
             },
             parent: ConstructionPlaneParent::Root,
         });
@@ -30171,6 +30383,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 origin: Vec3::new(10.0, 20.0, 0.0),
                 normal: Vec3::Z,
                 label: "Point".to_string(),
+                u_axis: None,
+                v_axis: None,
             };
             let (new_ref, source, labels, line, pt) = complement_plane_anchor(
                 &state.doc,
@@ -30226,6 +30440,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 origin: Vec3::new(10.0, 20.0, 0.0),
                 normal: Vec3::Z,
                 label: "Point".to_string(),
+                u_axis: None,
+                v_axis: None,
             };
             let (new_ref, source, labels, line, pt) = complement_plane_anchor(
                 &state.doc,
@@ -30309,6 +30525,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 origin: Vec3::ZERO,
                 normal: Vec3::Z,
                 label: "Ground".to_string(),
+                u_axis: None,
+                v_axis: None,
             },
             parent: ConstructionPlaneParent::Root,
         });
@@ -30350,6 +30568,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                     origin: Vec3::ZERO,
                     normal: Vec3::Z,
                     label: "Ground".to_string(),
+                    u_axis: None,
+                    v_axis: None,
                 },
                 5.0,
                 0.0,
@@ -31587,6 +31807,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Polygon(rect_lines.to_vec())],
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -31627,6 +31848,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Polygon(a.to_vec())],
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -31641,6 +31863,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Polygon(b.to_vec())],
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -33444,6 +33667,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Circle(circle)],
             distance: 20.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
             taper: 0.0,
@@ -34505,6 +34729,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![profile.clone()],
             distance: 10.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -34615,6 +34840,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![profile.clone()],
             distance: 10.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
             taper: 0.0,
@@ -34761,6 +34987,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                     origin: Vec3::ZERO,
                     normal: Vec3::Z,
                     label: "Ground".to_string(),
+                    u_axis: None,
+                    v_axis: None,
                 },
                 z,
                 0.0,
@@ -36267,6 +36495,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
                 distance: h,
                 body: crate::actions::ExtrudeBodyChoice::New,
+                bodies: Vec::new(),
                 target: None,
                 symmetric: false,
                 taper: 0.0,
@@ -36318,6 +36547,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Polygon(far.to_vec())],
             distance: 10.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
             taper: 0.0,
@@ -36451,6 +36681,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![profile.clone()],
             distance: 4.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -36491,6 +36722,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             view: 0,
             center,
             offset: Some(4.5),
+            angle: None,
         });
         assert_eq!(state.doc.drawings[dkey(0)].views[0].circle_dim_offsets, vec![(center, 4.5)]);
         state.apply(Action::SetDrawingCircleDimOffset {
@@ -36498,6 +36730,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             view: 0,
             center,
             offset: Some(-2.0),
+            angle: None,
         });
         assert_eq!(state.doc.drawings[dkey(0)].views[0].circle_dim_offsets, vec![(center, -2.0)]);
         state.apply(Action::SetDrawingCircleDimOffset {
@@ -36505,6 +36738,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             view: 0,
             center,
             offset: None,
+            angle: None,
         });
         assert!(state.doc.drawings[dkey(0)].views[0].circle_dim_offsets.is_empty());
     }
@@ -36722,6 +36956,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Circle(rkey(0))],
             distance: 4.0, // outward
             body: crate::actions::ExtrudeBodyChoice::Cut,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -36765,6 +37000,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Circle(rkey(0))],
             distance: 4.0,
             body: crate::actions::ExtrudeBodyChoice::Cut,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -36804,6 +37040,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Circle(rkey(0))],
             distance: 4.0,
             body: crate::actions::ExtrudeBodyChoice::Cut,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -36836,6 +37073,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![profile.clone()],
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -39108,6 +39346,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 faces: vec![ExtrudeFace::Polygon(profile)],
                 distance: 10.0,
                 body: crate::actions::ExtrudeBodyChoice::New,
+                bodies: Vec::new(),
                 target: None,
                 symmetric: false,
                 taper: 0.0,
@@ -39383,6 +39622,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Circle(rkey(0))],
             distance: 6.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
         
@@ -40206,6 +40446,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                 origin: Vec3::ZERO,
                 normal: Vec3::Z,
                 label: "Ground".to_string(),
+                u_axis: None,
+                v_axis: None,
             },
             parent: ConstructionPlaneParent::Root,
         });
@@ -40419,6 +40661,7 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            bodies: Vec::new(),
             target: None,
             symmetric: false,
             taper: 0.0,
@@ -40850,6 +41093,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                                 origin: Vec3::ZERO,
                                 normal: Vec3::Z,
                                 label: "Ground".to_string(),
+                                u_axis: None,
+                                v_axis: None,
                             },
                             10.0,
                             0.0,
@@ -41218,6 +41463,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                                 origin: Vec3::ZERO,
                                 normal: Vec3::Z,
                                 label: "Ground".to_string(),
+                                u_axis: None,
+                                v_axis: None,
                             },
                             10.0,
                             0.0,
@@ -43562,6 +43809,8 @@ translate_mode: crate::model::MoveTranslateMode::Free,
                         origin: glam::Vec3::ZERO,
                         normal: glam::Vec3::Z,
                         label: "Ground".to_string(),
+                        u_axis: None,
+                        v_axis: None,
                     },
                     parent: ConstructionPlaneParent::Root,
                 });

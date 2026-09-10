@@ -279,6 +279,11 @@ pub enum Instruction {
         /// How the extrusion attaches to bodies (#32/#35): new body, add to the extruded
         /// face's body, or cut it from that body.
         body: crate::actions::ExtrudeBodyChoice,
+        /// Which body a `cut`/`add` acts on, by ordinal (#1957). Empty means "work it out":
+        /// the face being extruded from, or — with no host face — the one body the tool runs
+        /// through. Named explicitly, the profile need not sit on the target at all, so a
+        /// pocket can be sketched on a construction plane.
+        bodies: Vec<usize>,
         /// Extrude up to this object's extended plane instead of the fixed distance —
         /// the scripted "pull the gizmo and snap to a surface" (#114).
         target: Option<crate::model::ExtrudeTarget>,
@@ -534,6 +539,8 @@ pub enum Instruction {
         view: usize,
         center: (f32, f32, f32),
         offset: Option<f32>,
+        /// Leader direction, radians (#1963); `None`/`0` is straight out.
+        angle: Option<f32>,
     },
     /// Move a free point-to-point dimension's label off its auto-placed gap (#1774).
     SetDrawingPointDimOffset {
@@ -1923,14 +1930,19 @@ impl Instruction {
                 view,
                 center,
                 offset,
+                angle,
             } => {
                 let off = match offset {
                     Some(o) => format!("{o}"),
                     None => "nil".into(),
                 };
+                let ang = match angle {
+                    Some(a) => format!(", angle = {a}"),
+                    None => String::new(),
+                };
                 format!(
                     "bearcad.drawing_circle_dim_offset{{ drawing = {drawing}, view = {view}, \
-                     center = {{ {}, {}, {} }}, offset = {off} }}",
+                     center = {{ {}, {}, {} }}, offset = {off}{ang} }}",
                     center.0, center.1, center.2
                 )
             }
@@ -4596,6 +4608,7 @@ pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Ins
         faces: extrusion.faces.clone(),
         distance: extrusion.distance,
         body,
+        bodies: Vec::new(),
         target: extrusion.target.clone(),
         expression: (!extrusion.expression.trim().is_empty())
             .then(|| extrusion.expression.clone()),
@@ -7601,6 +7614,7 @@ impl ScriptRunner {
                 faces,
                 distance,
                 body,
+                bodies,
                 target,
                 expression,
                 symmetric,
@@ -7638,11 +7652,21 @@ impl ScriptRunner {
                     },
                     None => taper,
                 };
+                // #1957: resolve `bodies` ordinals to keys so a cut can name its target.
+                let mut target_bodies = Vec::with_capacity(bodies.len());
+                for ordinal in bodies {
+                    let Some(key) = state.doc.bodies.keys().nth(ordinal) else {
+                        self.last_action_error = Some(format!("No body {ordinal}"));
+                        return StepResult::Continue;
+                    };
+                    target_bodies.push(key);
+                }
                 let result = state.apply(Action::CreateExtrusion {
                     sketch,
                     faces,
                     distance,
                     body,
+                    bodies: target_bodies,
                     target,
                     expression,
                     symmetric,
@@ -8324,6 +8348,7 @@ impl ScriptRunner {
                 view,
                 center,
                 offset,
+                angle,
             } => {
                 let Some(drawing) = drawing_key(&state.doc, drawing) else {
                     self.last_action_error = Some(format!("No drawing {drawing}"));
@@ -8337,6 +8362,7 @@ impl ScriptRunner {
                     view,
                     center,
                     offset,
+                    angle,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
@@ -9533,6 +9559,8 @@ impl ScriptRunner {
                         origin,
                         normal: normal.normalize_or_zero(),
                         label: "Face".to_string(),
+                        u_axis: None,
+                        v_axis: None,
                     },
                     parent: crate::model::ConstructionPlaneParent::Root,
                 });

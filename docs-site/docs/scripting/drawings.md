@@ -23,6 +23,11 @@ bearcad.drawing_view{ drawing = d, component = 0 }
 bearcad.drawing_view_add{ drawing = d, view = 0, body = 1 }  -- shift-click
 ```
 
+Body ordinals count **consumed** bodies — the inputs an operation left behind as shadows —
+so `bodies = {0, 1}` on a document with history is often the pre-cut inputs rather than the
+parts you see. A view refuses a consumed body and says which; pass handles from
+`bearcad.element("live_body", n)` instead.
+
 `drawing_view` takes exactly one of `body`, `bodies`, `component`, `sketch`, or
 `cross_section` (a cut of the whole model — see [cross-section views](./declarative-modeling#cross-section-views)).
 `orientation` defaults to `"front"`; accepts `front`/`back`/`left`/`right`/`top`/`bottom`/`iso`
@@ -50,6 +55,10 @@ bearcad.drawing_dim_offset{ drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0}
   offset = 8, angle = 1.5708, side = -1 }
 local dim = bearcad.get{ kind = "edge_dimension", drawing = d, view = 0, index = 0 }
 bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = {20, 10, 10} }
+-- A hole's label: how far off the circle, and which way it leads (radians; 0 is straight
+-- out). Aim it when the default direction runs into the part.
+bearcad.drawing_circle_dim_offset{ drawing = d, view = 0, center = {20, 10, 10},
+  offset = 8, angle = 3.1416 }
 -- A smooth curve (a cut edge) toggles as one length dimension.
 bearcad.drawing_curve_dimension{ drawing = d, view = 0,
   points = { {0, 0, 10}, {5, 0, 14}, {12, 0, 15} } }

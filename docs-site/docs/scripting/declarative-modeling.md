@@ -217,8 +217,22 @@ bearcad.extrude{ profiles = faces, distance = 4, body = "join" }
 
 `profiles` takes one circle handle, one line list (a `rect` return), a text handle,
 a spec (`{circle=i}`, `{polygon={…}}`, `{text=i}`, `{text_glyph={text, glyph}}`,
-`{region={sketch, u, v}}`, `{boolean={…}}`), or a list of those. `body` is still the
-add/cut/join mode; `bodies` is still the target list.
+`{region={sketch, u, v}}`, `{boolean={…}}`), or a list of those.
+
+`body` is the add/cut/join mode. `bodies` names **which** body a `cut`/`add` acts on — one
+body, since one extrude attaches to one body (use `combine` for several). Omit it and the
+target is worked out: the face being extruded from, or, with no host face, the one body the
+profile runs through. So a pocket can be sketched on a construction plane part-way into a
+plate:
+
+```lua
+local plate = bearcad.extrude{ profiles = sides, distance = 10 }
+local cp = bearcad.plane{ offset = -2, from = 1 }
+bearcad.begin_sketch{ kind = "plane", index = cp }
+local pocket = bearcad.circle{ x = 20, y = 10, r = 5 }
+bearcad.exit_sketch()
+bearcad.extrude{ profiles = pocket, distance = 14, body = "cut", bodies = { plate } }
+```
 
 ```lua
 bearcad.extrude{ profiles = { text = 0 }, distance = 1, body = "cut" }  -- engrave the whole word
@@ -406,6 +420,26 @@ assert(bearcad.parameter_expression("A") == "5mm")
 `get` returns `nil` for an out-of-range or deleted index. See also
 `bearcad.sketch_dof()` / `bearcad.sketch_conflicts()` for solver introspection, and
 [`bearcad.ui.camera{}`](./ui-namespace#camera) for the camera pose.
+
+## Where a sketch measures from
+
+A sketch on a construction plane measures from that plane's origin. A sketch on a **body
+face** is anchored on the face itself — for a polygon face, on the profile loop's first
+vertex — so coordinates typed into it are neither world nor parent-sketch coordinates. Read
+the frame, or convert:
+
+```lua
+bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0,
+                      profile = "polygon", profile_lines = sides, top = false }
+local f = bearcad.sketch_frame()       -- { origin, u_axis, v_axis, normal }
+local u, v = bearcad.sketch_uv(48, 0, 24)   -- a world point, in this sketch's coordinates
+bearcad.circle{ x = u, y = v, r = 2.5 }     -- lands at world (48, 0, 24)
+bearcad.sketch_world(u, v)                  -- and back again
+```
+
+`sketch_frame(i)` reads any sketch; `sketch_uv` / `sketch_world` use the open one. Without
+them a cut aimed at world coordinates lands off the part, and the only sign is
+`the cut removed no material` — which now names the anchor it measured from.
 
 ## Cross-section views
 

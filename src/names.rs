@@ -127,20 +127,28 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
     if query.is_empty() {
         return None;
     }
-    let mut matches = nameable_elements(doc)
+    let matches: Vec<SceneElement> = nameable_elements(doc)
         .into_iter()
-        .filter(|element| element_name(doc, element.clone()) == Some(query));
-    let first = matches.next()?;
+        .filter(|element| element_name(doc, element.clone()) == Some(query))
+        .collect();
     // #1930: a solid verb names both the operation and the body it produced, so a name can
     // stand for two elements. The body is the one the call handed back and the one a script
     // goes on to build with, so it is what the name resolves to.
-    if matches!(first, SceneElement::Body(_)) {
-        return Some(first);
+    //
+    // #1960: and among bodies, the *live* one wins. An operation leaves its input behind as
+    // a shadow body carrying the same name; a shadow is hidden from the viewport and left
+    // out of export, so it is never what a lookup by name wants. Resolving to one turns
+    // every following call into a silent no-op on geometry that is not in the scene.
+    let is_live_body = |element: &SceneElement| {
+        matches!(element, SceneElement::Body(b) if doc.bodies.get(*b).is_some_and(|body| !body.shadow))
+    };
+    if let Some(live) = matches.iter().find(|e| is_live_body(e)) {
+        return Some(live.clone());
     }
-    match matches.find(|element| matches!(element, SceneElement::Body(_))) {
-        Some(body) => Some(body),
-        None => Some(first),
+    if let Some(body) = matches.iter().find(|e| matches!(e, SceneElement::Body(_))) {
+        return Some(body.clone());
     }
+    matches.into_iter().next()
 }
 
 /// How a picked [`crate::model::RevolveAxis`] reads in a context pane's axis picker — the

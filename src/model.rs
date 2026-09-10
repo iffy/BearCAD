@@ -841,6 +841,14 @@ pub enum PlaneAnchor {
         origin: glam::Vec3,
         normal: glam::Vec3,
         label: String,
+        /// In-plane axes of the reference this plane was hung on, when there was one
+        /// (#1959). A plane parallel to its reference inherits them verbatim so identical
+        /// sketch coordinates land in the same place on both; `plane_basis` derives a fresh
+        /// right-handed frame otherwise. `None` in documents written before this existed.
+        #[serde(default)]
+        u_axis: Option<glam::Vec3>,
+        #[serde(default)]
+        v_axis: Option<glam::Vec3>,
     },
     Axis {
         origin: glam::Vec3,
@@ -5243,6 +5251,13 @@ pub struct DrawingView {
     /// pushes the linear dimension further out, like `dimension_offsets`. Projected mm.
     #[serde(default)]
     pub circle_dim_offsets: Vec<([i32; 3], f32)>,
+    /// Per-circle leader **direction** for the Ø label, radians, keyed like
+    /// `circle_dim_offsets` (#1963). `0` (and an absent entry) is the historical straight-out
+    /// direction, so a document written before this renders unchanged. Without it the label
+    /// could only slide along that one direction, and a hole in a crowded view had nowhere
+    /// good to put its label.
+    #[serde(default)]
+    pub circle_dim_offset_angles: Vec<([i32; 3], f32)>,
     /// Smooth curves (a cut ellipse, a fillet run) whose **length** is shown (#1785), each
     /// stored as the curve's quantized world polyline. Clicks toggle the whole curve — its
     /// tessellation facets are not individually dimensionable (#1781). Like the other
@@ -5401,6 +5416,7 @@ impl DrawingView {
             dimension_label_sides: Vec::new(),
             dimensioned_circles: Vec::new(),
             circle_dim_offsets: Vec::new(),
+            circle_dim_offset_angles: Vec::new(),
             dimensioned_curves: Vec::new(),
             point_dims: Vec::new(),
             loupes: Vec::new(),
@@ -5434,6 +5450,7 @@ impl DrawingView {
             dimension_label_sides: Vec::new(),
             dimensioned_circles: Vec::new(),
             circle_dim_offsets: Vec::new(),
+            circle_dim_offset_angles: Vec::new(),
             dimensioned_curves: Vec::new(),
             point_dims: Vec::new(),
             loupes: Vec::new(),
