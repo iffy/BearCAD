@@ -2,8 +2,8 @@ name: Website
 
 # Push / docs edits: fetch (or restore) existing screenshots and deploy the site.
 # Do not rebuild the app or recapture shots on every commit (#1446).
-# Nightly (or workflow_dispatch with generate_screenshots): recapture, then deploy.
-# Nightly no-ops when the repo SHA still matches the deployed screenshots-commit.txt.
+# Weekly (or workflow_dispatch with generate_screenshots): recapture, then deploy.
+# Weekly no-ops when the repo SHA still matches the deployed screenshots-commit.txt.
 
 on:
   push:
@@ -15,7 +15,7 @@ on:
       - "scripts/pages-base.sh"
       - "scripts/fetch-web-release.sh"
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "0 6 * * 1"
   workflow_dispatch:
     inputs:
       generate_screenshots:
@@ -31,7 +31,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
-  # A failed or stale nightly files an issue rather than sitting unread (#1836).
+  # A failed or stale weekly run files an issue rather than sitting unread (#1836).
   issues: write
 
 jobs:
@@ -81,10 +81,10 @@ jobs:
           case "$GITHUB_EVENT_NAME" in
             schedule)
               if [[ -n "$marker" && "$marker" == "$GITHUB_SHA" ]]; then
-                echo "nightly: repo unchanged since last screenshot build ($marker); skip"
+                echo "weekly: repo unchanged since last screenshot build ($marker); skip"
                 run_site=false
               else
-                echo "nightly: regenerating screenshots (marker='${marker:-none}')"
+                echo "weekly: regenerating screenshots (marker='${marker:-none}')"
                 generate=true
               fi
               ;;
@@ -201,7 +201,7 @@ jobs:
           path: web/dist/
           if-no-files-found: error
 
-  # generate=true: build the app and recapture every screenshot (nightly / dispatch).
+  # generate=true: build the app and recapture every screenshot (weekly / dispatch).
   # generate=false: restore goldens + fetch from the live site; never recapture.
   build:
     if: needs.plan.outputs.run_site == 'true'
@@ -226,7 +226,7 @@ jobs:
           PAGES_BASE="${{ needs.plan.outputs.pages_base }}" \
           bash scripts/fetch-doc-screenshots.sh
 
-      # --- Screenshots (nightly / explicit generate) -----------------------------
+      # --- Screenshots (weekly / explicit generate) -----------------------------
       # Screenshots generate headless (offscreen wgpu, no X server / xvfb — #1804);
       # the software Vulkan driver is what makes the offscreen render work here.
       # The GUI -dev packages stay: the binary still links the windowed stack.
@@ -365,9 +365,9 @@ jobs:
   # #1836: a red scheduled run used to sit unread in the Actions tab while the published
   # screenshots froze. Say it in the one place that reaches a person: an issue.
   alert:
-    # Always run on the nightly: file/update the alarm when something is actually wrong,
+    # Always run on the weekly run: file/update the alarm when something is actually wrong,
     # and close it when this run is healthy (GitHub issue #8 was a false alarm from a
-    # quiet repo). Stale is only an alarm if this run did not recapture: a nightly that
+    # quiet repo). Stale is only an alarm if this run did not recapture: a weekly run that
     # regenerates and deploys has already dealt with the drift the plan job measured
     # (#1951 — it fired on every nightly that had any new commits).
     if: always() && github.event_name == 'schedule'
@@ -377,7 +377,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - name: File, update, or close the nightly screenshot alarm
+      - name: File, update, or close the weekly screenshot alarm
         env:
           GH_TOKEN: ${{ github.token }}
           # This job checks nothing out, so `gh` has no git remote to infer the repo from
@@ -392,7 +392,7 @@ jobs:
           REASON: ${{ needs.plan.outputs.reason }}
         run: |
           set -euo pipefail
-          title="Nightly doc screenshots are not being published"
+          title="Weekly doc screenshots are not being published"
           existing="$(gh issue list --state open --search "$title in:title" \
             --json number,title --jq "[.[] | select(.title == \"$title\")][0].number")"
           alarm=false
@@ -415,5 +415,5 @@ jobs:
               gh issue create --title "$title" --body "$body"
             fi
           elif [[ -n "$existing" && "$existing" != "null" ]]; then
-            gh issue close "$existing" --comment "Nightly is healthy again ($RUN_URL)."
+            gh issue close "$existing" --comment "The weekly run is healthy again ($RUN_URL)."
           fi

@@ -165,7 +165,7 @@ mod tests {
             return;
         }
         // A marker older than the threshold is stale *when it is not HEAD*; today's is
-        // not. Age of HEAD itself is not drift — a quiet repo must not raise the nightly
+        // not. Age of HEAD itself is not drift — a quiet repo must not raise the weekly
         // alarm just because the last commit is a few days old (GitHub issue #8).
         let day = 24 * 60 * 60;
         let now = crate::time::SystemTime::now()
@@ -175,9 +175,10 @@ mod tests {
         for (age_days, behind, want_stale) in [
             (0u64, 0u64, false),
             (0, 3, false),
-            (4, 0, false),
-            (3, 1, true),
-            (3, 9, true),
+            (9, 0, false),
+            (3, 1, false),
+            (9, 1, true),
+            (9, 9, true),
         ] {
             let out = Command::new("bash")
                 .arg(&script)
@@ -195,7 +196,7 @@ mod tests {
         }
     }
 
-    /// The check has to run as part of the docs build, and strictly on the nightly.
+    /// The check has to run as part of the docs build, and strictly on the weekly run.
     #[test]
     fn the_docs_build_runs_the_check() {
         let pkg = std::fs::read_to_string(repo().join("docs-site/package.json")).expect("pkg");

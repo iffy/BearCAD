@@ -10,14 +10,14 @@
 #   DRIFT_MARKER          SHA the screenshots were captured at ("" = never published)
 #   DRIFT_MARKER_TIME     commit time of that SHA, unix seconds (overrides git lookup)
 #   DRIFT_BEHIND          commits from the marker to HEAD (overrides git lookup)
-#   DRIFT_MAX_DAYS        stale beyond this many days behind (default 2)
+#   DRIFT_MAX_DAYS        stale beyond this many days behind (default 8)
 #   DRIFT_MAX_BEHIND      stale beyond this many commits behind (default 25)
 #
 # Prints `key=value` lines (also appended to $GITHUB_OUTPUT when set):
 #   stale=true|false  behind=N  days=N  marker=SHA  reason=...
 set -uo pipefail
 
-MAX_DAYS="${DRIFT_MAX_DAYS:-2}"
+MAX_DAYS="${DRIFT_MAX_DAYS:-8}"
 MAX_BEHIND="${DRIFT_MAX_BEHIND:-25}"
 marker="${DRIFT_MARKER:-}"
 
@@ -47,7 +47,7 @@ else
   fi
   stale=false
   # Age of HEAD is not drift: the nightly skips recapture when the marker already
-  # is HEAD, so a quiet repo would otherwise alarm every morning after MAX_DAYS
+  # is HEAD, so a quiet repo would otherwise alarm every week after MAX_DAYS
   # (GitHub issue #8 — "captured N days ago" with behind=0).
   if (( behind > 0 && days > MAX_DAYS )); then
     stale=true
