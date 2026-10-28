@@ -185,9 +185,8 @@ jobs:
 
       - name: Fetch solvespace submodule
         if: steps.fetch.outcome == 'failure'
-        run: |
-          git submodule update --init --depth 1 third_party/solvespace
-          git -C third_party/solvespace submodule update --init --depth 1 extlib/eigen extlib/mimalloc
+        shell: bash
+        run: scripts/fetch-solvespace.sh
 
       - name: Build web app (fallback)
         if: steps.fetch.outcome == 'failure'
@@ -269,9 +268,8 @@ jobs:
 
       - name: Fetch solvespace submodule (generate)
         if: needs.plan.outputs.generate == 'true'
-        run: |
-          git submodule update --init --depth 1 third_party/solvespace
-          git -C third_party/solvespace submodule update --init --depth 1 extlib/eigen extlib/mimalloc
+        shell: bash
+        run: scripts/fetch-solvespace.sh
 
       - name: Build OCCT (generate, cache miss only)
         if: needs.plan.outputs.generate == 'true' && steps.occt-cache.outputs.cache-hit != 'true'
