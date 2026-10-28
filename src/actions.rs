@@ -4118,6 +4118,9 @@ pub enum Action {
     /// grouped under a `SketchOffsetOperation`.
     /// Start an interactive tutorial (fresh document; see `crate::tutorial`).
     StartTutorial { index: usize },
+    /// Answer the web launch offer: `start` runs the cube tutorial with the Tutorials
+    /// pane open; otherwise just dismiss it.
+    RespondWelcomeTutorial { start: bool },
     /// Advance the running tutorial one step (the bubble's Next, or a satisfied step).
     TutorialNext,
     /// Step the running tutorial back one step to review it (auto-advance stands
@@ -5117,6 +5120,8 @@ pub struct AppState {
     pub installed_at_unix: Option<i64>,
     /// First-launch tooltip pointing at the Tutorials button (#1434).
     pub tutorial_prompt: Option<crate::tutorial::TutorialPrompt>,
+    /// The web launch popup offering the cube tutorial is up.
+    pub welcome_tutorial_offer: bool,
     /// The McMaster-Carr catalog window (#1022) is open. Here rather than on `App` for the
     /// same reason: scripts drive it for docs captures.
     pub mcmaster_open: bool,
@@ -5431,6 +5436,7 @@ impl Default for AppState {
             ai: crate::ai::SharedAi::default(),
             installed_at_unix: None,
             tutorial_prompt: None,
+            welcome_tutorial_offer: false,
             mcmaster_open: false,
             report_issue_open: false,
             mcmaster_part: String::new(),
@@ -10601,6 +10607,11 @@ impl AppState {
             Some(days) => days < crate::tutorial::PROMPT_WINDOW_DAYS,
             None => false,
         }
+    }
+
+    /// Raise the web launch popup offering the cube tutorial.
+    pub fn offer_welcome_tutorial(&mut self) {
+        self.welcome_tutorial_offer = true;
     }
 
     pub fn tutorial_prompt(&self) -> Option<&crate::tutorial::TutorialPrompt> {
@@ -16551,6 +16562,19 @@ impl AppState {
                 }
                 self.refresh_document_health();
                 self.status = "Edited sketch repeat".to_string();
+                ActionResult::Ok
+            }
+            Action::RespondWelcomeTutorial { start } => {
+                self.welcome_tutorial_offer = false;
+                if start {
+                    let index = crate::tutorial::tutorial_index("cube").expect("cube tutorial");
+                    if let err @ ActionResult::Err(_) =
+                        self.apply(Action::StartTutorial { index })
+                    {
+                        return err;
+                    }
+                    self.panes.set(Pane::Tutorials, true);
+                }
                 ActionResult::Ok
             }
             Action::StartTutorial { index } => {

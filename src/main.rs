@@ -586,6 +586,9 @@ fn main() {
                         false,
                         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     );
+                    if tutorial::welcome_offer_from_query(&query) {
+                        app.state.offer_welcome_tutorial();
+                    }
                     if let Some(index) = tutorial::tutorial_from_query(&query) {
                         app.state.apply(Action::StartTutorial { index });
                     }
@@ -4861,6 +4864,36 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             });
         if open_pane {
             self.state.apply(Action::SetTutorialPane { open: Some(true) });
+        }
+    }
+
+    /// Web launch popup offering the cube tutorial (see `tutorial::welcome_offer_from_query`).
+    fn show_welcome_tutorial(&mut self, ctx: &egui::Context) {
+        if !self.state.welcome_tutorial_offer {
+            return;
+        }
+        let mut answer: Option<bool> = None;
+        let modal = egui::Modal::new(egui::Id::new("welcome_tutorial")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.heading(tutorial::WELCOME_TITLE);
+            ui.add_space(6.0);
+            ui.label(tutorial::WELCOME_TEXT);
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button(tutorial::WELCOME_START).clicked() {
+                    answer = Some(true);
+                }
+                if ui.button(tutorial::WELCOME_DISMISS).clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        // Esc or a click outside counts as Dismiss.
+        if modal.should_close() {
+            answer.get_or_insert(false);
+        }
+        if let Some(start) = answer {
+            self.state.apply(Action::RespondWelcomeTutorial { start });
         }
     }
 
@@ -16016,6 +16049,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             self.state.tick_tutorial_prompt(dt);
         }
         self.show_tutorial_prompt(ctx);
+        self.show_welcome_tutorial(ctx);
 
         // Persist newly completed tutorials (#1241) without waiting for another
         // settings change — the pane reads from AppState, the file is the long-term copy.

@@ -607,6 +607,27 @@ pub fn tutorial_from_query(query: &str) -> Option<usize> {
         .and_then(|(_, value)| tutorial_index(value))
 }
 
+/// Whether the web app should offer the cube tutorial on launch: only when the page
+/// isn't opening a document (`?open=`) or already running a walkthrough (`?tutorial=`).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn welcome_offer_from_query(query: &str) -> bool {
+    !query
+        .trim_start_matches('?')
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(key, value)| match key {
+            "open" => !value.trim().is_empty(),
+            "tutorial" => true,
+            _ => false,
+        })
+}
+
+/// Web launch popup (see [`welcome_offer_from_query`]).
+pub const WELCOME_TITLE: &str = "Welcome to BearCAD!";
+pub const WELCOME_TEXT: &str = "Want to start with a quick tutorial? Bear will show you how to make a cube.";
+pub const WELCOME_START: &str = "Start tutorial";
+pub const WELCOME_DISMISS: &str = "Dismiss";
+
 // --- Short tutorials (#1238–#1240; atomic steps #1253) -----------------------------
 
 fn live_constraints(app: &AppState) -> impl Iterator<Item = &crate::model::Constraint> {
@@ -6994,6 +7015,43 @@ mod tests {
             !app.panes.is_visible(Pane::Tutorials),
             "starting a walkthrough closes the pane"
         );
+    }
+
+    /// Web launch offer: Yes starts the cube walkthrough with the Tutorials pane open.
+    #[test]
+    fn welcome_offer_start_runs_cube_with_pane_open() {
+        let mut app = AppState::default();
+        assert!(!app.welcome_tutorial_offer, "no offer unless the web launch arms it");
+        app.offer_welcome_tutorial();
+        assert!(app.welcome_tutorial_offer);
+        app.apply(Action::RespondWelcomeTutorial { start: true });
+        assert!(!app.welcome_tutorial_offer);
+        assert_eq!(
+            app.tutorial.map(|r| (r.tutorial, r.step)),
+            Some((tutorial_index("cube").unwrap(), 0))
+        );
+        assert!(app.panes.is_visible(Pane::Tutorials));
+    }
+
+    #[test]
+    fn welcome_offer_dismiss_starts_nothing() {
+        let mut app = AppState::default();
+        app.offer_welcome_tutorial();
+        app.apply(Action::RespondWelcomeTutorial { start: false });
+        assert!(!app.welcome_tutorial_offer);
+        assert!(app.tutorial.is_none());
+        assert!(!app.panes.is_visible(Pane::Tutorials));
+    }
+
+    /// The offer only shows when the page didn't ask to open a file (or a tutorial).
+    #[test]
+    fn welcome_offer_skipped_when_query_loads_something() {
+        assert!(welcome_offer_from_query(""));
+        assert!(welcome_offer_from_query("?foo=bar"));
+        assert!(!welcome_offer_from_query("?open=%2Fexamples%2Fa.bearcad"));
+        assert!(!welcome_offer_from_query("?x=1&open=/a.bearcad"));
+        assert!(!welcome_offer_from_query("?tutorial=cube"));
+        assert!(welcome_offer_from_query("?open="), "empty open loads nothing");
     }
 
     /// #1289: when a walkthrough finishes and others remain, open the Tutorials pane.

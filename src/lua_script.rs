@@ -8237,6 +8237,16 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    api.set(
+        "pane_visible",
+        lua.create_function(|lua, pane: String| {
+            let pane = Pane::from_name(&pane)
+                .ok_or_else(|| mlua::Error::external(format!("unknown pane '{pane}'")))?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            Ok(unsafe { tick.state() }.panes.is_visible(pane))
+        })?,
+    )?;
+
     // Last-frame pane rect in logical points (#1575), or nil when the pane is hidden.
     api.set(
         "pane_rect",
@@ -8897,6 +8907,33 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let state = unsafe { tick.state() };
             Ok(state.tutorials_button_highlighted())
+        })?,
+    )?;
+    api.set(
+        "welcome_tutorial",
+        lua.create_function(|lua, verb: Option<String>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            match verb.as_deref() {
+                None => {}
+                Some("show") => state.offer_welcome_tutorial(),
+                Some("start") => {
+                    if let crate::actions::ActionResult::Err(e) =
+                        state.apply(crate::actions::Action::RespondWelcomeTutorial { start: true })
+                    {
+                        return Err(mlua::Error::external(e));
+                    }
+                }
+                Some("dismiss") => {
+                    state.apply(crate::actions::Action::RespondWelcomeTutorial { start: false });
+                }
+                Some(other) => {
+                    return Err(mlua::Error::external(format!(
+                        "welcome_tutorial expects \"show\"/\"start\"/\"dismiss\", got {other:?}"
+                    )));
+                }
+            }
+            Ok(state.welcome_tutorial_offer)
         })?,
     )?;
     api.set(
@@ -13348,7 +13385,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         -- `bearcad.ui.*` sub-namespace so scripts can focus on modeling (#46).
         bearcad.ui = {}
         local ui_funcs = {
-            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_rect", "elements_row_rect", "context_row_rect", "menu_items", "menu_item_rect", "drawing_view_rect", "drawing_loupe_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
+            "tool", "tool_mode", "help", "tool_hints", "toolbar_shortcuts", "toolbar_tools", "focus_name", "focus_calibrate", "focus_dim", "pane", "pane_visible", "pane_rect", "elements_row_rect", "context_row_rect", "menu_items", "menu_item_rect", "drawing_view_rect", "drawing_loupe_rect", "pane_scroll", "scroll_pane", "ai_sections", "ai_pane_sections", "ai_mcp", "menu_structure",
             "add_geometric_constraint",
             "apply_construction", "toggle_construction", "apply_visibility", "toggle_visibility",
             "headless", "_deferred", "_pending_pointer", "palette", "settings",
@@ -13373,7 +13410,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tutorial_bubble",
             "tutorial_pane", "tutorials",
             "complete_all_tutorials", "unstart_all_tutorials",
-            "install_age", "tutorial_highlight", "tutorial_prompt",
+            "install_age", "tutorial_highlight", "tutorial_prompt", "welcome_tutorial",
             "complete_tutorial",
             "touch",
             "os_open",
@@ -15366,6 +15403,26 @@ pub mod tests {
             assert(bearcad.parameter_value("height") == 50, "height changed to 50mm")
             assert(bearcad.count("extrusion") == 1, "extruded")
             assert(bearcad.count("line") >= 4, "rectangle")
+            "#,
+        );
+    }
+
+    /// Web launch offer to start the cube tutorial: show / start / dismiss.
+    #[test]
+    fn welcome_tutorial_lua_shows_starts_and_dismisses() {
+        run_lua_expect_ok(
+            r#"
+            assert(bearcad.ui.welcome_tutorial() == false, "hidden by default")
+            assert(bearcad.ui.pane_visible("tutorials") == false)
+            assert(bearcad.ui.welcome_tutorial("show") == true)
+            assert(bearcad.ui.welcome_tutorial("dismiss") == false)
+            assert(bearcad.ui.tutorial_step() == nil, "dismiss starts nothing")
+
+            bearcad.ui.welcome_tutorial("show")
+            assert(bearcad.ui.welcome_tutorial("start") == false)
+            assert(bearcad.ui.tutorial_step() == 0, "tutorial running")
+            assert(bearcad.ui.tutorial_narration() == "Hi! Let's make a cube.", "the cube one")
+            assert(bearcad.ui.pane_visible("tutorials"), "tutorials pane open")
             "#,
         );
     }

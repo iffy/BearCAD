@@ -5430,6 +5430,9 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   **fresh install** (not an upgrade), if walkthroughs remain unfinished at launch, a
   standout tooltip points at the button: *Want to try some tutorials?* It fades a few
   seconds after the user starts working on the document.
+- **Web launch offer:** the web app opens with a popup asking whether to start with the cube
+  tutorial — **Start tutorial** runs it with the Tutorials pane open; **Dismiss** (or Esc)
+  closes it. Not shown when the page opens a document (`?open=`) or a tutorial (`?tutorial=`).
 - **One action per step** when authoring (#1253): every click is its own step, every bit of
   typing is its own step — never combine a click with typing (or two clicks / two typed
   values) in one step. See the module docs on `tutorial`.
@@ -5577,7 +5580,8 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   Prompting (#1434): `bearcad.ui.complete_all_tutorials()`, `bearcad.ui.unstart_all_tutorials()`,
   `bearcad.ui.install_age([days|false])`,
   `bearcad.ui.tutorial_highlight()`, `bearcad.ui.tutorial_prompt()` / `"launch"` / `"work"` /
-  `"tick"` / `"dismiss"`, `bearcad.ui.complete_tutorial(name)`.
+  `"tick"` / `"dismiss"`, `bearcad.ui.complete_tutorial(name)`,
+  `bearcad.ui.welcome_tutorial()` / `"show"` / `"start"` / `"dismiss"` (web launch offer).
 
 ### 11.x Auto-update (#427)
 - **Build identity (#460, #1129):** `build.rs` bakes `git describe --tags` and the short

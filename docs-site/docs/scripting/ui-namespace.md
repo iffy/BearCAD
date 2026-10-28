@@ -84,6 +84,7 @@ view bear's gear/shading-modes popup.
 ```lua
 bearcad.ui.pane("hierarchy", "hide")    -- show / hide / toggle a pane
 bearcad.ui.pane("view_bear", "show")    -- panes: hierarchy, context, parameters, view_bear, ai
+bearcad.ui.pane_visible("tutorials")    -- true / false
 local r = bearcad.ui.pane_rect("elements")  -- {x, y, w, h} window px, or nil if hidden
 local v = bearcad.ui.pane_scroll("ai")      -- {offset, content, viewport}, or nil if hidden
 bearcad.ui.scroll_pane("ai", 200)           -- wheel over a pane; positive scrolls down
@@ -229,6 +230,7 @@ local prompt = bearcad.ui.tutorial_prompt("launch")  -- {text=, alpha=}, or nil
 bearcad.ui.tutorial_prompt("work")
 bearcad.ui.tutorial_prompt("tick", 3.5)
 assert(bearcad.ui.tutorial_highlight())
+bearcad.ui.welcome_tutorial("show")     -- web launch popup; "start" | "dismiss"; returns shown?
 ```
 
 ```lua
