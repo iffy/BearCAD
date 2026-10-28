@@ -271,15 +271,16 @@ fn png_to_ico(png_path: &str, out_path: &std::path::Path) {
 /// sources — the same six translation units its own `slvs-solver`/`slvs-interface` CMake
 /// targets build, plus the flat-array shim (cpp/bearcad_slvs.cpp) and mimalloc
 /// (single-file amalgamation) for the solver's temporary arena. Header-only Eigen comes
-/// from the vendored extlib. Linked into every native build; the wasm32 app gets
+/// from third_party/eigen (vendored, not the gitlab-hosted extlib submodule). Linked into every native build; the wasm32 app gets
 /// libslvs from the emscripten kernel module instead (scripts/build-occt-wasm.sh).
 fn build_slvs() {
     use std::path::PathBuf;
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let ss = manifest.join("third_party/solvespace");
+    let eigen = manifest.join("third_party/eigen");
     if !ss.join("include/slvs.h").is_file() {
         panic!(
-            "solvespace submodule missing: run\n  git submodule update --init --depth 1 third_party/solvespace\n  (cd third_party/solvespace && git submodule update --init --depth 1 extlib/eigen extlib/mimalloc)"
+            "solvespace submodule missing: run\n  git submodule update --init --depth 1 third_party/solvespace\n  (cd third_party/solvespace && git submodule update --init --depth 1 extlib/mimalloc)"
         );
     }
 
@@ -304,7 +305,7 @@ fn build_slvs() {
         .define("LIBRARY", None)
         .include(ss.join("include"))
         .include(ss.join("src"))
-        .include(ss.join("extlib/eigen"))
+        .include(&eigen)
         .include(ss.join("extlib/mimalloc/include"))
         .flag_if_supported("-Wno-deprecated-declarations")
         .flag_if_supported("-Wno-unused-parameter")

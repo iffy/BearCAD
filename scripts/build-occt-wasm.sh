@@ -78,11 +78,11 @@ fi
 
 # The kernel module also carries SolveSpace's constraint solver (libslvs), which the
 # sketch solver calls through the same JS bridge (src/sketch_solver/slvs.rs).
-if [ ! -f "$slvs_src/include/slvs.h" ] || [ ! -f "$slvs_src/extlib/eigen/Eigen/Core" ] \
+if [ ! -f "$slvs_src/include/slvs.h" ] || [ ! -f "$repo_root/third_party/eigen/Eigen/Core" ] \
    || [ ! -f "$slvs_src/extlib/mimalloc/src/static.c" ]; then
-  echo "error: solvespace submodule (or its eigen/mimalloc extlibs) missing" >&2
+  echo "error: solvespace submodule (or its mimalloc extlib) missing" >&2
   echo "       run: git submodule update --init --depth 1 third_party/solvespace" >&2
-  echo "            (cd third_party/solvespace && git submodule update --init --depth 1 extlib/eigen extlib/mimalloc)" >&2
+  echo "            (cd third_party/solvespace && git submodule update --init --depth 1 extlib/mimalloc)" >&2
   exit 1
 fi
 
@@ -106,7 +106,7 @@ emcc "$repo_root/cpp/bearcad_kernel.cpp" \
   -DLIBRARY \
   -I"$slvs_src/include" \
   -I"$slvs_src/src" \
-  -I"$slvs_src/extlib/eigen" \
+  -I"$repo_root/third_party/eigen" \
   -I"$slvs_src/extlib/mimalloc/include" \
   -I"$occt_install/include/opencascade" \
   -L"$occt_install/lib" \
