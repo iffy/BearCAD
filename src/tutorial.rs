@@ -7043,6 +7043,15 @@ mod tests {
         assert!(!app.panes.is_visible(Pane::Tutorials));
     }
 
+    /// No offer once the cube tutorial is finished.
+    #[test]
+    fn welcome_offer_skipped_after_cube_completed() {
+        let mut app = AppState::default();
+        app.mark_tutorial_completed("cube");
+        app.offer_welcome_tutorial();
+        assert!(!app.welcome_tutorial_offer);
+    }
+
     /// The offer only shows when the page didn't ask to open a file (or a tutorial).
     #[test]
     fn welcome_offer_skipped_when_query_loads_something() {

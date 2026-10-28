@@ -149,6 +149,32 @@ impl AppSettings {
     }
 }
 
+/// Web has no settings file: finished tutorials live in the browser's localStorage, so
+/// the launch offer (and the pane's checks) remember them across visits.
+#[cfg(target_arch = "wasm32")]
+pub mod web {
+    const COMPLETED_TUTORIALS: &str = "bearcad.completed_tutorials";
+
+    fn storage() -> Option<web_sys::Storage> {
+        web_sys::window()?.local_storage().ok()?
+    }
+
+    pub fn load_completed_tutorials() -> Vec<String> {
+        storage()
+            .and_then(|s| s.get_item(COMPLETED_TUTORIALS).ok().flatten())
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_completed_tutorials(names: &[String]) -> Result<(), String> {
+        let storage = storage().ok_or("browser storage unavailable")?;
+        let json = serde_json::to_string(names).map_err(|e| e.to_string())?;
+        storage
+            .set_item(COMPLETED_TUTORIALS, &json)
+            .map_err(|e| format!("{e:?}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

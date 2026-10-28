@@ -5742,6 +5742,10 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
         // (#1241) land here too so the Tutorials pane can show completed checks.
         #[cfg(not(target_arch = "wasm32"))]
         let settings = settings::AppSettings::load();
+        #[cfg(target_arch = "wasm32")]
+        {
+            state.completed_tutorials = settings::web::load_completed_tutorials();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             state.library_directory = settings.library_directory.clone();
@@ -16078,6 +16082,15 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             self.settings.completed_tutorials = self.state.completed_tutorials.clone();
             if let Err(err) = self.settings.save() {
                 self.state.status = format!("Could not save settings: {err}");
+            }
+            self.state.completed_tutorials_dirty = false;
+        }
+        #[cfg(target_arch = "wasm32")]
+        if self.state.completed_tutorials_dirty {
+            if let Err(err) =
+                settings::web::save_completed_tutorials(&self.state.completed_tutorials)
+            {
+                self.state.status = format!("Could not save tutorial progress: {err}");
             }
             self.state.completed_tutorials_dirty = false;
         }

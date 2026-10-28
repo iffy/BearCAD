@@ -5432,7 +5432,8 @@ player is person-scale: eye height 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
   seconds after the user starts working on the document.
 - **Web launch offer:** the web app opens with a popup asking whether to start with the cube
   tutorial — **Start tutorial** runs it with the Tutorials pane open; **Dismiss** (or Esc)
-  closes it. Not shown when the page opens a document (`?open=`) or a tutorial (`?tutorial=`).
+  closes it. Not shown when the page opens a document (`?open=`) or a tutorial (`?tutorial=`),
+  or once the cube tutorial is finished (web keeps finished tutorials in localStorage).
 - **One action per step** when authoring (#1253): every click is its own step, every bit of
   typing is its own step — never combine a click with typing (or two clicks / two typed
   values) in one step. See the module docs on `tutorial`.

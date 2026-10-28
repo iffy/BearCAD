@@ -15423,6 +15423,9 @@ pub mod tests {
             assert(bearcad.ui.tutorial_step() == 0, "tutorial running")
             assert(bearcad.ui.tutorial_narration() == "Hi! Let's make a cube.", "the cube one")
             assert(bearcad.ui.pane_visible("tutorials"), "tutorials pane open")
+
+            bearcad.ui.complete_tutorial("cube")
+            assert(bearcad.ui.welcome_tutorial("show") == false, "cube done, no offer")
             "#,
         );
     }

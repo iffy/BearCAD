@@ -10609,9 +10609,9 @@ impl AppState {
         }
     }
 
-    /// Raise the web launch popup offering the cube tutorial.
+    /// Raise the web launch popup offering the cube tutorial, unless it's already done.
     pub fn offer_welcome_tutorial(&mut self) {
-        self.welcome_tutorial_offer = true;
+        self.welcome_tutorial_offer = !self.tutorial_completed("cube");
     }
 
     pub fn tutorial_prompt(&self) -> Option<&crate::tutorial::TutorialPrompt> {
