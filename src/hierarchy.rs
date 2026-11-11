@@ -4199,6 +4199,42 @@ fn icon_tint_for_row_style(style: RowStyle) -> Color32 {
 
 /// Icon for a hierarchy row, or `None` when no existing icon fits (the synthetic Document
 /// root — nothing in [`IconId`] represents "the whole document", so it renders without one).
+/// The kind badge a Selection Exploder loupe wears (#1969): what sort of thing picking it
+/// selects. Elements with an Elements-pane row reuse that row's icon; the sub-elements a fan
+/// offers (edges, corners, faces, axes) get the closest geometric glyph.
+pub fn icon_for_scene_element(doc: &Document, element: &SceneElement) -> Option<IconId> {
+    Some(match element {
+        SceneElement::Point(_)
+        | SceneElement::BodyVertex { .. }
+        | SceneElement::ProjectedCorner { .. }
+        | SceneElement::MovePoint(_)
+        | SceneElement::Origin => IconId::Vertex,
+        SceneElement::Line(_)
+        | SceneElement::FaceEdge(_)
+        | SceneElement::BodyEdge { .. }
+        | SceneElement::ProjectedEdge { .. }
+        | SceneElement::BodyAxis { .. }
+        | SceneElement::CircleNormal(_)
+        | SceneElement::GlobalAxis(_)
+        | SceneElement::ExtrusionEdge { .. }
+        | SceneElement::PrimitiveEdge { .. } => IconId::Line,
+        SceneElement::BodyFace { .. }
+        | SceneElement::SketchFace(_)
+        | SceneElement::RepeatedFace { .. } => IconId::Face,
+        SceneElement::BodyCylinder { .. } => IconId::ShapeCylinder,
+        SceneElement::DrawingElement { element, .. } => {
+            use crate::context::DrawingElementRef as D;
+            match element {
+                D::Projection(_) => IconId::Projection,
+                D::Text(_) => IconId::Text,
+                D::Dimension { .. } | D::PointDim { .. } => IconId::Dimension,
+                D::Loupe { .. } => IconId::ZoomLoupe,
+            }
+        }
+        other => return icon_for_hierarchy_node(doc, hierarchy_node_for_element(other)?),
+    })
+}
+
 fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId> {
     Some(match node {
         HierarchyNode::Document => return None,
@@ -7244,6 +7280,22 @@ mod tests {
     use crate::model::move_op_key_for_slot as mopkey;
     use crate::model::boolean_op_key_for_slot as bopkey;
     use super::*;
+
+    /// #1969: each Selection Exploder leaf names its kind with an icon — a body looks like a
+    /// body, a line like a line, a corner like a vertex.
+    #[test]
+    fn exploder_leaves_wear_their_kind_icon() {
+        let doc = Document::default();
+        let body = crate::model::body_key_for_slot(0);
+        let icon = |e: SceneElement| icon_for_scene_element(&doc, &e);
+        assert_eq!(icon(SceneElement::Body(body)), Some(IconId::Body));
+        assert_eq!(icon(SceneElement::Line(lkey(0))), Some(IconId::Line));
+        assert_eq!(
+            icon(SceneElement::BodyVertex { body, p: [0, 0, 0] }),
+            Some(IconId::Vertex)
+        );
+        assert_eq!(icon(SceneElement::ConstructionPlane(pkey(0))), Some(IconId::Plane));
+    }
     use crate::model::ShapeKind;
 
     /// #1193: projected sketch lines wear the Projection tool's icon in the Elements pane,

@@ -7417,6 +7417,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 if let Some(label) = face_element_label(&state.doc, element) {
                     entry.set("label", label)?;
                 }
+                // The kind badge its loupe wears (#1969), by icon name.
+                if let Some(icon) = crate::hierarchy::icon_for_scene_element(&state.doc, element) {
+                    entry.set("icon", icon.label())?;
+                }
                 out.set(i + 1, entry)?;
             }
             Ok(out)

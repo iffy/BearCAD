@@ -31647,6 +31647,30 @@ impl App {
                 r_loupe,
                 egui::Stroke::new(if hot { 2.5 } else { 1.5 }, frame),
             );
+            // Kind badge (#1969): a small icon on the rim saying what this leaf picks — a body,
+            // a line, a corner — so stacked look-alikes can be told apart at a glance.
+            if it.kind == DisplayKind::Leaf {
+                let icon = it
+                    .target
+                    .as_ref()
+                    .and_then(scene_element_from_pick)
+                    .and_then(|e| hierarchy::icon_for_scene_element(&self.state.doc, &e));
+                if let Some(icon) = icon {
+                    let br = (r_loupe * 0.28).clamp(9.0, 14.0);
+                    let bc = center
+                        + egui::vec2(-1.0, -1.0) * (r_loupe * std::f32::consts::FRAC_1_SQRT_2);
+                    painter.circle_filled(bc, br, egui::Color32::from_rgba_unmultiplied(12, 14, 18, 245));
+                    painter.circle_stroke(bc, br, egui::Stroke::new(1.0, frame));
+                    let side = br * 1.35;
+                    let tex = icons::sized_texture_at(painter.ctx(), icon, side);
+                    painter.image(
+                        tex.id,
+                        egui::Rect::from_center_size(bc, egui::vec2(side, side)),
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        if active { accent } else { egui::Color32::from_gray(225) },
+                    );
+                }
+            }
             match it.kind {
                 DisplayKind::Group => {
                     // A big count badge (bottom-right) showing the number of things in the group.

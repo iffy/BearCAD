@@ -154,11 +154,13 @@ pub enum IconId {
     DrawingComponents,
     /// Tutorials launcher (#1254): a graduation cap on the status-bar button.
     GraduationCap,
+    /// A corner point (#1969): the Selection Exploder's badge for a vertex.
+    Vertex,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 104] = [
+    pub const ALL: [Self; 105] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -263,6 +265,7 @@ impl IconId {
         Self::SketchComponents,
         Self::DrawingComponents,
         Self::GraduationCap,
+        Self::Vertex,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -373,6 +376,7 @@ impl IconId {
             Self::SketchComponents => include_str!("assets/icons/sketch-components.svg"),
             Self::DrawingComponents => include_str!("assets/icons/drawing-components.svg"),
             Self::GraduationCap => include_str!("assets/icons/graduation_cap.svg"),
+            Self::Vertex => include_str!("assets/icons/vertex.svg"),
         }
     }
 
@@ -484,6 +488,7 @@ impl IconId {
             Self::SketchComponents => "Sketch components",
             Self::DrawingComponents => "Drawing components",
             Self::GraduationCap => "Graduation cap",
+            Self::Vertex => "Vertex",
         }
     }
 }
