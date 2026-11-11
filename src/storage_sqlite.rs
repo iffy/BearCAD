@@ -1814,6 +1814,7 @@ fn member_kind_tag(m: ComponentMember) -> &'static str {
         ComponentMember::Revolution(_) => "revolution",
         ComponentMember::Sweep(_) => "sweep",
         ComponentMember::Drawing(_) => "drawing",
+        ComponentMember::Sketch(_) => "sketch",
     }
 }
 
@@ -1833,6 +1834,7 @@ fn member_id(m: ComponentMember) -> i64 {
         ComponentMember::Revolution(k) => key_bits(k),
         ComponentMember::Sweep(k) => key_bits(k),
         ComponentMember::Drawing(k) => key_bits(k),
+        ComponentMember::Sketch(k) => key_bits(k),
     }
 }
 
@@ -3762,6 +3764,7 @@ fn component_member_from(kind: &str, id: i64) -> Result<ComponentMember> {
         "revolution" => ComponentMember::Revolution(key_from(id)),
         "sweep" => ComponentMember::Sweep(key_from(id)),
         "drawing" => ComponentMember::Drawing(key_from(id)),
+        "sketch" => ComponentMember::Sketch(key_from(id)),
         other => return Err(format!("unknown component member kind {other}")),
     })
 }

@@ -20337,6 +20337,31 @@ pub mod tests {
         assert_eq!(state.doc.components.len(), 2);
     }
 
+    /// #1965: a sketch on a datum plane files into a component — and what's built from it
+    /// (the extrusion and its body) comes along.
+    #[test]
+    fn lua_sketch_moves_into_a_component() {
+        use crate::hierarchy::{owning_component, SceneElement};
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.exit_sketch()
+            local c = bearcad.component{ name = "Part" }
+            bearcad.move_to_component{ kind = "sketch", index = 0, component = c }
+            "#,
+        );
+        let ck = state.doc.components.keys().next().unwrap();
+        let sk = state.doc.sketches.keys().next().unwrap();
+        assert_eq!(owning_component(&state.doc, &SceneElement::Sketch(sk)), Some(ck));
+        let body = state.doc.bodies.keys().next().unwrap();
+        assert_eq!(owning_component(&state.doc, &SceneElement::Body(body)), Some(ck));
+        // The datum plane it sits on stays where it was.
+        let plane = state.doc.construction_planes.keys().next().unwrap();
+        assert_eq!(owning_component(&state.doc, &SceneElement::ConstructionPlane(plane)), None);
+    }
+
     /// #1236: `bearcad.copy` + `bearcad.paste` create an independent body; `linked = true`
     /// creates a dependent copy without shadowing the source.
     #[test]

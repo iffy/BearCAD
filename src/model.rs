@@ -6284,6 +6284,8 @@ pub enum ComponentMember {
     Revolution(RevolutionKey),
     Sweep(SweepKey),
     Drawing(DrawingKey),
+    /// A sketch filed on its own (#1965) — one on a datum plane can't come in via its plane.
+    Sketch(SketchId),
 }
 
 impl Document {
@@ -6363,6 +6365,10 @@ pub fn sketch_component(doc: &Document, sketch: SketchId) -> Option<ComponentKey
     ) -> Option<ComponentKey> {
         if depth > 8 {
             return None;
+        }
+        // Filed directly (#1965), ahead of wherever its host would put it.
+        if let Some(c) = doc.component_of(ComponentMember::Sketch(sketch)) {
+            return Some(c);
         }
         match doc.sketch_face(sketch)? {
             FaceId::ConstructionPlane(p) => plane_component(doc, p, depth + 1),

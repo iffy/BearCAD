@@ -3212,6 +3212,7 @@ pub fn component_member_element(member: crate::model::ComponentMember) -> Option
         CM::Sweep(i) => SceneElement::SweepOp(i),
         CM::Loft(i) => SceneElement::Loft(i),
         CM::Drawing(i) => SceneElement::Drawing(i),
+        CM::Sketch(i) => SceneElement::Sketch(i),
     })
 }
 
@@ -3238,6 +3239,7 @@ pub fn component_member_for_element(
         SceneElement::SweepOp(i) => CM::Sweep(*i),
         SceneElement::Loft(i) => CM::Loft(*i),
         SceneElement::Drawing(i) => CM::Drawing(*i),
+        SceneElement::Sketch(i) => CM::Sketch(*i),
         _ => return None,
     })
 }
@@ -3262,6 +3264,7 @@ pub fn component_member_for_node(node: &HierarchyNode) -> Option<crate::model::C
         HierarchyNode::Revolution(i) => CM::Revolution(*i),
         HierarchyNode::SweepOp(i) => CM::Sweep(*i),
         HierarchyNode::Drawing(i) => CM::Drawing(*i),
+        HierarchyNode::Sketch(i) => CM::Sketch(*i),
         _ => return None,
     })
 }
@@ -7210,6 +7213,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
             | HierarchyNode::Revolution(_)
             | HierarchyNode::SweepOp(_)
             | HierarchyNode::Loft(_)
+            | HierarchyNode::Sketch(_)
             | HierarchyNode::Component(_)
     )
 }

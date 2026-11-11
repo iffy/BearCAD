@@ -23104,6 +23104,8 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     members.extend(doc.edge_treatment_ops.keys().map(CM::EdgeTreatmentOp));
     members.extend(doc.revolutions.keys().map(CM::Revolution));
     members.extend(doc.sweeps.keys().map(CM::Sweep));
+    // New sketches land in the active component too (#1965).
+    members.extend(doc.sketches.keys().map(CM::Sketch));
     members
 }
 

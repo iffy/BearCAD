@@ -5,7 +5,7 @@ title: Components
 
 # Components
 
-Components group top-level elements — planes, features, bodies, drawings — into named,
+Components group top-level elements — planes, sketches, features, bodies, drawings — into named,
 nestable folders in the Elements pane. Grouping is organizational: it never changes
 geometry.
 

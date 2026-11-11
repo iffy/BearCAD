@@ -2238,6 +2238,7 @@ fn component_member_ref(
         M::EdgeTreatmentOp(k) => ord!(edge_treatment_ops, k, "edge_treatment_op"),
         M::Revolution(k) => ord!(revolutions, k, "revolution"),
         M::Sweep(k) => ord!(sweeps, k, "sweep"),
+        M::Sketch(k) => ord!(sketches, k, "sketch"),
     }
 }
 

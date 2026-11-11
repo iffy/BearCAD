@@ -246,6 +246,9 @@ mod tests {
             angle_unit: None,
         });
         doc.set_component_member(crate::model::ComponentMember::ConstructionPlane(pkey(0)), Some(ckey(1)));
+        // A sketch is a member of its own (#1965).
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(pkey(0)));
+        doc.set_component_member(crate::model::ComponentMember::Sketch(sketch), Some(ckey(0)));
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
