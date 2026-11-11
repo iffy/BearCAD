@@ -16471,18 +16471,12 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         });
                     }
                     SceneElement::Component(component) => {
-                        // Whole component → one multi-body projection (#1190).
-                        let bodies = self.state.component_body_indices(component);
-                        if bodies.is_empty() {
-                            self.state.status =
-                                "This component has no bodies to project".to_string();
-                        } else {
-                            self.state.apply(Action::AddDrawingView {
-                                drawing,
-                                bodies,
-                                orientation,
-                            });
-                        }
+                        // Whole component → one multi-body projection (#1190) that follows it (#1972).
+                        self.state.apply(Action::AddDrawingComponentView {
+                            drawing,
+                            component,
+                            orientation,
+                        });
                     }
                     SceneElement::Sketch(sketch) => {
                         self.state
@@ -30841,18 +30835,14 @@ impl App {
                             }),
                             actions::ActionResult::Ok
                         ),
-                        SceneElement::Component(component) => {
-                            let bodies = self.state.component_body_indices(component);
-                            !bodies.is_empty()
-                                && matches!(
-                                    self.state.apply(Action::AddDrawingView {
-                                        drawing,
-                                        bodies,
-                                        orientation,
-                                    }),
-                                    actions::ActionResult::Ok
-                                )
-                        }
+                        SceneElement::Component(component) => matches!(
+                            self.state.apply(Action::AddDrawingComponentView {
+                                drawing,
+                                component,
+                                orientation,
+                            }),
+                            actions::ActionResult::Ok
+                        ),
                         SceneElement::Sketch(sketch) => matches!(
                             self.state
                                 .apply(Action::AddDrawingSketchView { drawing, sketch, orientation }),
@@ -32831,17 +32821,11 @@ impl App {
                         });
                     }
                     SceneElement::Component(component) => {
-                        let bodies = self.state.component_body_indices(component);
-                        if bodies.is_empty() {
-                            self.state.status =
-                                "This component has no bodies to project".to_string();
-                        } else {
-                            self.state.apply(Action::AddDrawingView {
-                                drawing,
-                                bodies,
-                                orientation,
-                            });
-                        }
+                        self.state.apply(Action::AddDrawingComponentView {
+                            drawing,
+                            component,
+                            orientation,
+                        });
                     }
                     SceneElement::Sketch(sketch) => {
                         self.state

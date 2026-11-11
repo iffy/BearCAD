@@ -1011,6 +1011,20 @@ impl<'a> EmitCtx<'a> {
                             .as_lua_in(Some(self.doc)),
                         );
                         out.push('\n');
+                    } else if let Some(cord) = view
+                        .component
+                        .and_then(|ck| self.doc.components.keys().position(|k| k == ck))
+                    {
+                        // A whole-component view stays linked on replay (#1972).
+                        out.push_str(
+                            &Instruction::AddDrawingComponentView {
+                                drawing: dord,
+                                component: cord,
+                                orientation: view.orientation,
+                            }
+                            .as_lua_in(Some(self.doc)),
+                        );
+                        out.push('\n');
                     } else {
                         let bords: Vec<usize> = view
                             .bodies

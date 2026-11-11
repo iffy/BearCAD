@@ -8118,6 +8118,7 @@ mod tests {
         });
         doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
+                component: None,
                 cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,
@@ -8211,6 +8212,7 @@ label_hidden: false,
         let b = crate::hierarchy::quantize_body_point(glam::Vec3::new(40.0, 0.0, 0.0));
         doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
+                component: None,
                 cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,
@@ -8268,6 +8270,7 @@ label_hidden: false,
         let mut doc = Document::default();
         doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
+                component: None,
                 cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,

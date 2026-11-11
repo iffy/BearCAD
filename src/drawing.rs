@@ -5655,6 +5655,7 @@ mod tests {
 
         // The rendered bases come from resolved_view_axes unfolding the Top parent (X, Y).
         let parent = DrawingView {
+            component: None,
             cross_section: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Top,
             auto_placed: false,
@@ -5726,6 +5727,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
     fn aligned_child_ring_roll_renders_the_chosen_orientation() {
         use crate::model::{AlignDir, DrawingOrientation as O};
         let parent = DrawingView {
+            component: None,
             cross_section: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Front,
             auto_placed: false,
@@ -6410,6 +6412,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         doc.drawings.insert(Drawing {
             name: Some("Plate".to_string()),
             views: vec![DrawingView {
+                component: None,
                 cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,

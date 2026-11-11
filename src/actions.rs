@@ -3559,6 +3559,13 @@ pub enum Action {
         bodies: Vec<crate::model::BodyKey>,
         orientation: crate::model::DrawingOrientation,
     },
+    /// Project a whole component (#1190) as one view that follows it (#1972): bodies filed
+    /// into the component later join the projection.
+    AddDrawingComponentView {
+        drawing: crate::model::DrawingKey,
+        component: crate::model::ComponentKey,
+        orientation: crate::model::DrawingOrientation,
+    },
     /// Append bodies to an existing body projection (#1191): shift-click more bodies into the
     /// same card. Sketches refuse; already-present bodies are ignored.
     AddBodiesToDrawingView {
@@ -8096,23 +8103,7 @@ impl AppState {
     /// in body-index order. A body's component is resolved through its producing operation, so
     /// this covers bodies filed into the component directly and via their source.
     pub fn component_body_indices(&self, ci: crate::model::ComponentKey) -> Vec<crate::model::BodyKey> {
-        self.doc
-            .bodies
-            .iter()
-            .filter(|(bi, body)| {
-                // Shadow bodies are not deliverables (#1218) — skip them in component export
-                // the same way whole-document export skips them.
-                !body.shadow
-                    && crate::hierarchy::owning_component(
-                        &self.doc,
-                        &crate::hierarchy::SceneElement::Body(*bi),
-                    )
-                    // The body's owning component is `ci` itself or nested beneath it — its
-                    // parent chain (self first) passes through `ci`.
-                    .is_some_and(|owner| self.doc.component_chain(owner).contains(&ci))
-            })
-            .map(|(bi, _)| bi)
-            .collect()
+        component_bodies(&self.doc, ci)
     }
 
     /// A filename-friendly default name for a component export (#521): its name, or a fallback.
@@ -10477,11 +10468,20 @@ impl AppState {
             return;
         }
         let orientation = crate::model::DrawingOrientation::default();
-        let _ = self.apply(Action::AddDrawingView {
-            drawing,
-            bodies,
-            orientation,
-        });
+        // A lone component stays linked so the view follows it (#1972).
+        if let [crate::hierarchy::SceneElement::Component(component)] = handoff {
+            let _ = self.apply(Action::AddDrawingComponentView {
+                drawing,
+                component: *component,
+                orientation,
+            });
+        } else {
+            let _ = self.apply(Action::AddDrawingView {
+                drawing,
+                bodies,
+                orientation,
+            });
+        }
         self.arm_drawing_view_placement(drawing);
     }
 
@@ -10708,6 +10708,9 @@ impl AppState {
             } else {
                 self.active_component = None;
             }
+        }
+        if outermost {
+            sync_component_drawing_views(&mut self.doc);
         }
         if outermost {
             let after = self.doc.shape_order.len();
@@ -15425,6 +15428,24 @@ impl AppState {
                 );
                 ActionResult::Ok
             }
+            Action::AddDrawingComponentView { drawing, component, orientation } => {
+                if !self.doc.components.contains(component) {
+                    return ActionResult::Err(format!("No component {}", component.index()));
+                }
+                let bodies = self.component_body_indices(component);
+                if bodies.is_empty() {
+                    let e = "This component has no bodies to project".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let added = self.apply(Action::AddDrawingView { drawing, bodies, orientation });
+                if matches!(added, ActionResult::Ok) {
+                    if let Some(v) = self.doc.drawings[drawing].views.last_mut() {
+                        v.component = Some(component);
+                    }
+                }
+                added
+            }
             Action::AddBodiesToDrawingView {
                 drawing,
                 view,
@@ -15452,6 +15473,8 @@ impl AppState {
                 let mut added = 0usize;
                 for body in bodies {
                     if !v.bodies.contains(&body) {
+                        // Hand-picked extras make it a plain body list (#1972).
+                        v.component = None;
                         v.bodies.push(body);
                         added += 1;
                     }
@@ -15597,6 +15620,7 @@ impl AppState {
                 // A sectioned base's child shows the same cut (#1779) — sketch children are
                 // never sectioned, and this inherits only from a body base anyway.
                 view.cross_section = pv.cross_section;
+                view.component = pv.component;
                 view.aligned_parent = Some(parent);
                 view.aligned_dir = Some(dir);
                 // Showing the alignment is the point of an aligned view, so its dashed
@@ -18838,16 +18862,16 @@ op,
                                         bodies,
                                     });
                                 } else {
-                                    let _ = self.apply(Action::AddDrawingView {
+                                    let _ = self.apply(Action::AddDrawingComponentView {
                                         drawing,
-                                        bodies,
+                                        component: *ci,
                                         orientation,
                                     });
                                 }
                             } else {
-                                let _ = self.apply(Action::AddDrawingView {
+                                let _ = self.apply(Action::AddDrawingComponentView {
                                     drawing,
-                                    bodies,
+                                    component: *ci,
                                     orientation,
                                 });
                             }
@@ -23041,6 +23065,55 @@ fn assignable_members(doc: &Document) -> Vec<crate::model::ComponentMember> {
     members.extend(doc.revolutions.keys().map(CM::Revolution));
     members.extend(doc.sweeps.keys().map(CM::Sweep));
     members
+}
+
+/// Keep whole-component projections in step with their component (#1972): a view made from
+/// a component re-reads its members, so bodies filed in later join it and bodies moved out
+/// leave. A deleted component leaves the view as a plain body list.
+fn sync_component_drawing_views(doc: &mut crate::model::Document) {
+    let mut wanted: Vec<(crate::model::DrawingKey, usize, Vec<crate::model::BodyKey>)> = Vec::new();
+    let mut orphaned: Vec<(crate::model::DrawingKey, usize)> = Vec::new();
+    for (dk, d) in doc.drawings.iter() {
+        for (vi, v) in d.views.iter().enumerate() {
+            let Some(ck) = v.component else { continue };
+            if !doc.components.contains(ck) {
+                orphaned.push((dk, vi));
+                continue;
+            }
+            let members = component_bodies(doc, ck);
+            // Keep the existing order for bodies still present; append newcomers.
+            let mut next: Vec<_> = v.bodies.iter().copied().filter(|b| members.contains(b)).collect();
+            let newcomers: Vec<_> = members.iter().copied().filter(|b| !next.contains(b)).collect();
+            next.extend(newcomers);
+            if next != v.bodies {
+                wanted.push((dk, vi, next));
+            }
+        }
+    }
+    for (dk, vi) in orphaned {
+        doc.drawings[dk].views[vi].component = None;
+    }
+    for (dk, vi, bodies) in wanted {
+        doc.drawings[dk].views[vi].bodies = bodies;
+    }
+}
+
+/// Every non-shadow body inside component `ci`, nested components included (#1190).
+fn component_bodies(
+    doc: &crate::model::Document,
+    ci: crate::model::ComponentKey,
+) -> Vec<crate::model::BodyKey> {
+    doc.bodies
+        .iter()
+        .filter(|(bi, body)| {
+            // Shadow bodies are not deliverables (#1218).
+            !body.shadow
+                && crate::hierarchy::owning_component(doc, &crate::hierarchy::SceneElement::Body(*bi))
+                    // The body's owning component is `ci` itself or nested beneath it.
+                    .is_some_and(|owner| doc.component_chain(owner).contains(&ci))
+        })
+        .map(|(bi, _)| bi)
+        .collect()
 }
 
 /// File every element created since `before` into `component` (#429). Document order, so a
@@ -43228,6 +43301,53 @@ translate_mode: crate::model::MoveTranslateMode::Free,
         assert!(
             label.contains("Frame"),
             "caption should name the component, got {label:?}"
+        );
+    }
+
+    /// #1972: a projection of a whole component follows the component — bodies filed into
+    /// it afterwards appear in the view, and bodies moved out leave it.
+    #[test]
+    fn component_drawing_view_tracks_component_membership() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::ComponentMember as CM;
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateComponent {
+            name: Some("Frame".to_string()),
+            parent: None,
+        });
+        state
+            .doc
+            .set_component_member(CM::Body(bkey(0)), Some(ckey(0)));
+        state.apply(Action::CreateDrawing { name: None });
+        let drawing = state.editing_drawing.expect("drawing open");
+        state.tool = Tool::DrawingAdd;
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Component(ckey(0)),
+            additive: false,
+        });
+        assert_eq!(state.doc.drawings[drawing].views[0].bodies, vec![bkey(0)]);
+        assert_eq!(state.doc.drawings[drawing].views[0].component, Some(ckey(0)));
+
+        assert_eq!(
+            state.apply(Action::MoveToComponent {
+                element: SceneElement::Body(bkey(1)),
+                component: Some(ckey(0)),
+            }),
+            ActionResult::Ok
+        );
+        let mut bodies = state.doc.drawings[drawing].views[0].bodies.clone();
+        bodies.sort_unstable();
+        assert_eq!(bodies, vec![bkey(0), bkey(1)], "new member joins the projection");
+
+        state.apply(Action::MoveToComponent {
+            element: SceneElement::Body(bkey(0)),
+            component: None,
+        });
+        assert_eq!(
+            state.doc.drawings[drawing].views[0].bodies,
+            vec![bkey(1)],
+            "a body moved out of the component leaves the projection"
         );
     }
 

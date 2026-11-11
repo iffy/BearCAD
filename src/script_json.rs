@@ -1134,29 +1134,12 @@ pub fn instruction_from_json(
                 }
                 bodies
             } else {
-                // Component ordinal → every body currently inside it (#1190).
-                let ci = component.expect("component set");
-                let Some(ck) = doc.components.keys().nth(ci) else {
-                    return Err(format!("No component {ci}"));
-                };
-                // Expand via ownership the same way export does — without needing AppState.
-                let bodies: Vec<usize> = doc
-                    .bodies
-                    .keys()
-                    .enumerate()
-                    .filter(|(_, bi)| {
-                        crate::hierarchy::owning_component(
-                            doc,
-                            &crate::hierarchy::SceneElement::Body(*bi),
-                        )
-                        .is_some_and(|owner| doc.component_chain(owner).contains(&ck))
-                    })
-                    .map(|(ord, _)| ord)
-                    .collect();
-                if bodies.is_empty() {
-                    return Err("This component has no bodies to project".into());
-                }
-                bodies
+                // A whole component, kept in step with its members (#1190/#1972).
+                return Ok(Instruction::AddDrawingComponentView {
+                    drawing,
+                    component: component.expect("component set"),
+                    orientation,
+                });
             };
             Ok(Instruction::AddDrawingView {
                 drawing,

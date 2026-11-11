@@ -409,6 +409,13 @@ pub enum Instruction {
         bodies: Vec<usize>,
         orientation: crate::model::DrawingOrientation,
     },
+    /// Project a whole component as one view that follows its members (#1190/#1972) —
+    /// `bearcad.drawing_view{ component = i }`.
+    AddDrawingComponentView {
+        drawing: usize,
+        component: usize,
+        orientation: crate::model::DrawingOrientation,
+    },
     /// Append bodies to an existing body projection (#1191).
     AddBodiesToDrawingView {
         drawing: usize,
@@ -1778,6 +1785,10 @@ impl Instruction {
                     ),
                 }
             }
+            Instruction::AddDrawingComponentView { drawing, component, orientation } => format!(
+                "bearcad.drawing_view{{ drawing = {drawing}, component = {component}, orientation = {:?} }}",
+                orientation.label().to_ascii_lowercase()
+            ),
             Instruction::AddBodiesToDrawingView {
                 drawing,
                 view,
@@ -8101,6 +8112,23 @@ impl ScriptRunner {
                     drawing,
                     view,
                     bodies: resolved,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::AddDrawingComponentView { drawing, component, orientation } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let Some(component) = state.doc.components.keys().nth(component) else {
+                    self.last_action_error = Some(format!("No component {component}"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::AddDrawingComponentView {
+                    drawing,
+                    component,
+                    orientation,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

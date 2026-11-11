@@ -5180,6 +5180,10 @@ pub struct DrawingView {
     /// projection (#1191) or adding a whole component (#1190).
     #[serde(default)]
     pub bodies: Vec<BodyKey>,
+    /// When `Some`, the view projects this whole component (#1972): `bodies` is kept in step
+    /// with the component's members, so bodies filed into it later join the projection.
+    #[serde(default)]
+    pub component: Option<ComponentKey>,
     /// When `Some`, this view shows its bodies **cut** by a cross-section view's planes
     /// (#1689): the same chop the View workbench draws, with the opened faces hatched on the
     /// page. `None` for an ordinary projection.
@@ -5406,6 +5410,7 @@ impl DrawingView {
     pub fn from_bodies(bodies: Vec<BodyKey>, orientation: DrawingOrientation) -> Self {
         Self {
             bodies,
+            component: None,
             cross_section: None,
             sketch: None,
             orientation,
@@ -5440,6 +5445,7 @@ impl DrawingView {
     pub fn from_sketch(sketch: SketchId, orientation: DrawingOrientation) -> Self {
         Self {
             bodies: Vec::new(),
+            component: None,
             cross_section: None,
             sketch: Some(sketch),
             orientation,
@@ -6544,6 +6550,16 @@ mod tests {
         assert_eq!(kind.next().name(), "rigid", "and round again");
     }
     use super::*;
+
+    /// #1972: a drawing view saved before views could follow a component opens as a plain
+    /// body projection.
+    #[test]
+    fn old_drawing_view_payload_opens_without_component_link() {
+        let v: DrawingView =
+            serde_json::from_str(r#"{"bodies": [[0, 0]], "orientation": "Front"}"#).unwrap();
+        assert_eq!(v.bodies.len(), 1);
+        assert_eq!(v.component, None);
+    }
 
     /// #1056: membership names an element with the identity that element's own collection
     /// uses, so a key's generation travels with it. Recreating a loft reuses the freed slot,

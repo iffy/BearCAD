@@ -12147,28 +12147,30 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     bodies
                 } else {
                     let ci = component.expect("component set");
-                    let state = tick.state();
-                    let Some(ck) = state.doc.components.keys().nth(ci) else {
+                    let Some(ck) = tick.state().doc.components.keys().nth(ci) else {
                         return Err(mlua::Error::external(format!("No component {ci}")));
                     };
-                    let bodies: Vec<usize> = state
-                        .component_body_indices(ck)
-                        .into_iter()
-                        .filter_map(|bk| state.doc.bodies.keys().position(|k| k == bk))
-                        .collect();
-                    if bodies.is_empty() {
+                    if tick.state().component_body_indices(ck).is_empty() {
                         return Err(mlua::Error::external(
                             "This component has no bodies to project",
                         ));
                     }
-                    bodies
+                    // A whole component, kept in step with its members (#1972).
+                    tick.exec(Instruction::AddDrawingComponentView {
+                        drawing,
+                        component: ci,
+                        orientation,
+                    })?;
+                    Vec::new()
                 };
-                reject_consumed_bodies(&tick.state().doc, &bodies, "drawing_view")?;
-                tick.exec(Instruction::AddDrawingView {
-                    drawing,
-                    bodies,
-                    orientation,
-                })?;
+                if !bodies.is_empty() {
+                    reject_consumed_bodies(&tick.state().doc, &bodies, "drawing_view")?;
+                    tick.exec(Instruction::AddDrawingView {
+                        drawing,
+                        bodies,
+                        orientation,
+                    })?;
+                }
                 // Bodies imported *from* a view are shown cut by it (#1689).
                 if let Some(view) = cross_section {
                     let placed = tick
@@ -26274,6 +26276,33 @@ pub mod tests {
             label.contains("Frame"),
             "multi-body component view labels with the component name, got {label:?}"
         );
+    }
+
+    /// #1972: a component view picks up bodies filed into the component after it was placed,
+    /// and survives an export/replay round trip still linked.
+    #[test]
+    fn lua_component_drawing_view_follows_new_members() {
+        use crate::model::body_key_for_slot as bkey;
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.rect{ x = 30, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 5 }
+            local c = bearcad.component{ name = "Frame" }
+            bearcad.move_to_component{ kind = "body", index = 0, component = c }
+            local d = bearcad.drawing{ name = "Assembly" }
+            bearcad.drawing_view{ drawing = d, component = c }
+            bearcad.move_to_component{ kind = "body", index = 1, component = c }
+        "#,
+        );
+        let view = &state.doc.drawings[dkey(0)].views[0];
+        let mut bodies = view.bodies.clone();
+        bodies.sort_unstable();
+        assert_eq!(bodies, vec![bkey(0), bkey(1)], "body filed in later joins the view");
+        let lua = crate::export_lua::document_to_lua(&state.doc);
+        assert!(lua.contains("drawing_view{ drawing = 0, component = 0"), "export keeps the component link:\n{lua}");
     }
 
     /// #180: `bearcad.drawing_dimension{}` toggles a view edge's length dimension, keyed by the
