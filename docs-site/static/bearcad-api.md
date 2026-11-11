@@ -260,7 +260,7 @@ bearcad.clone_unit_instance{ instance }
 bearcad.combine{ op, a, b, keep_b, bake, name, shape_name, body_name }
 bearcad.component{ name, parent }?
 bearcad.constrain(name, …)
-bearcad.copy()
+bearcad.copy(target?)
 bearcad.count(kind)
 bearcad.count_saved(kind)
 bearcad.cross_section{ name }?

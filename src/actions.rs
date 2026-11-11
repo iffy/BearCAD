@@ -4263,6 +4263,9 @@ pub enum Action {
     RedoLast,
     /// Copy the current selection onto the session clipboard (#1236).
     CopySelection,
+    /// Copy these elements onto the session clipboard, whatever is selected (#1967) — a
+    /// row's context-menu Copy on a row outside the selection.
+    CopyElements { elements: Vec<SceneElement> },
     /// Begin interactive paste placement (#1236). `linked` is Paste Linked (bodies/
     /// components only). Shows a cyan 6-axis-constrained preview until CommitPaste.
     BeginPaste { linked: bool },
@@ -4309,6 +4312,7 @@ impl Action {
                     | Action::ClickSceneElement { .. }
                     | Action::ClearSceneSelection
                     | Action::CopySelection
+                    | Action::CopyElements { .. }
                     | Action::BeginPaste { .. }
                     | Action::SetPasteOffset { .. }
                     | Action::CancelPaste
@@ -6342,9 +6346,14 @@ impl AppState {
 
     /// Copy the selection onto the session clipboard (#1236).
     fn copy_selection(&mut self) -> ActionResult {
-        let Some(clip) = crate::copy_paste::clipboard_from_selection(
+        self.copy_elements(self.scene_selection.ordered())
+    }
+
+    /// Copy `elements` onto the session clipboard (#1236/#1967).
+    fn copy_elements(&mut self, elements: Vec<SceneElement>) -> ActionResult {
+        let Some(clip) = crate::copy_paste::clipboard_from_elements(
             &self.doc,
-            &self.scene_selection,
+            elements,
             |ci| self.component_body_indices(ci),
         ) else {
             let e = "Nothing copyable in the selection".to_string();
@@ -19037,6 +19046,7 @@ op,
                 ActionResult::Ok
             }
             Action::CopySelection => self.copy_selection(),
+            Action::CopyElements { elements } => self.copy_elements(elements),
             Action::BeginPaste { linked } => self.begin_paste(linked),
             Action::SetPasteOffset { offset } => {
                 if let Some(cp) = self.creating_paste.as_mut() {

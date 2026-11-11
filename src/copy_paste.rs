@@ -155,10 +155,11 @@ pub fn copyable_element(element: &SceneElement) -> Option<SceneElement> {
     }
 }
 
-/// Build clipboard items from the current selection. Returns `None` when nothing copyable.
-pub fn clipboard_from_selection(
+/// Build clipboard items from `elements` (#1967: a row's context-menu Copy copies that row).
+/// Returns `None` when nothing copyable.
+pub fn clipboard_from_elements(
     doc: &Document,
-    selection: &crate::selection::SceneSelection,
+    elements: impl IntoIterator<Item = SceneElement>,
     component_bodies: impl Fn(ComponentKey) -> Vec<BodyKey>,
 ) -> Option<Clipboard> {
     let mut items = Vec::new();
@@ -167,7 +168,7 @@ pub fn clipboard_from_selection(
     let mut seen_planes = std::collections::HashSet::new();
     let mut centroids = Vec::new();
 
-    for element in selection.ordered() {
+    for element in elements {
         let Some(el) = copyable_element(&element) else {
             continue;
         };

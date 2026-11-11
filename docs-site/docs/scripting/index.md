@@ -150,7 +150,8 @@ no ghost.
 
 ## Copy and paste
 
-`bearcad.copy()` then `bearcad.paste{ x = 40 }` (or `y`/`z`). Interactive paste in the
+`bearcad.copy()` then `bearcad.paste{ x = 40 }` (or `y`/`z`). `bearcad.copy(element)` (or a
+list) copies those instead of the selection. Interactive paste in the
 app previews a cyan ghost constrained to the six axis directions from the original, and
 commits on click or Enter; the script form places immediately.
 

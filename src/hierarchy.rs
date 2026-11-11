@@ -4785,7 +4785,7 @@ pub fn show_pane(
     on_clone_unit_instance: &mut impl FnMut(crate::model::UnitInstanceKey),
     clipboard_has_items: bool,
     clipboard_has_linkable: bool,
-    on_copy: &mut impl FnMut(),
+    on_copy: &mut impl FnMut(SceneElement),
     on_paste: &mut impl FnMut(bool),
     // `active_drawing`: the open drawing (Drawing workbench) enabling the row "Add to
     // drawing" action (#274); `on_add_to_drawing` receives the body index.
@@ -4986,6 +4986,7 @@ pub fn show_pane(
                     // Component rows render inline (#423): triangle, eye, icon, name; they
                     // collapse their contents and accept row drops.
                     if let HierarchyNode::Component(ci) = node {
+                        let row_top = ui.cursor().top();
                         show_component_row(
                             ui,
                             doc,
@@ -5016,6 +5017,13 @@ pub fn show_pane(
                             on_export_component_3mf,
                             on_add_to_drawing,
                         );
+                        // Component rows are clickable from a script too (#1967).
+                        let x = ui.min_rect().x_range();
+                        let row_rect = egui::Rect::from_x_y_ranges(
+                            (x.min + base_depth as f32 * ROW_INDENT).min(x.max)..=x.max,
+                            row_top..=ui.cursor().top(),
+                        );
+                        list_rows.push((node_label(doc, node), row_rect));
                         return;
                     }
                     // Section headers (#1205/#1671): collapse triangle + label, no eye.
@@ -5307,7 +5315,7 @@ fn show_graph_view(
     on_clone_unit_instance: &mut impl FnMut(crate::model::UnitInstanceKey),
     clipboard_has_items: bool,
     clipboard_has_linkable: bool,
-    on_copy: &mut impl FnMut(),
+    on_copy: &mut impl FnMut(SceneElement),
     on_paste: &mut impl FnMut(bool),
     highlight_elements: &HashSet<SceneElement>,
     armed: Option<&crate::element_picker::ElementPicker>,
@@ -6185,7 +6193,7 @@ fn show_component_row(
     on_delete_element: &mut impl FnMut(SceneElement),
     clipboard_has_items: bool,
     clipboard_has_linkable: bool,
-    on_copy: &mut impl FnMut(),
+    on_copy: &mut impl FnMut(SceneElement),
     on_paste: &mut impl FnMut(bool),
     on_add_component: &mut impl FnMut(Option<crate::model::ComponentKey>),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
@@ -6272,7 +6280,9 @@ fn show_component_row(
                 .interact(egui::Sense::drag())
                 .dnd_set_drag_payload(ComponentDragPayload(element.clone()));
         }
-        response.context_menu(|ui| {
+        // On both click targets, like element rows (#1856): a right-click on the icon used
+        // to open nothing (#1967).
+        let mut menu = |ui: &mut egui::Ui| {
             component_context_menu(
                 ui,
                 ci,
@@ -6290,7 +6300,9 @@ fn show_component_row(
                 on_paste,
                 on_delete_element,
             );
-        });
+        };
+        response.context_menu(&mut menu);
+        icon_response.context_menu(&mut menu);
     });
     // Whole-row drop target (#430): rect-based so releasing over any child widget (the
     // name label, the icon) still lands the drop — `Response::dnd_release_payload` misses
@@ -6356,7 +6368,7 @@ fn show_row(
     on_clone_unit_instance: &mut impl FnMut(crate::model::UnitInstanceKey),
     clipboard_has_items: bool,
     clipboard_has_linkable: bool,
-    on_copy: &mut impl FnMut(),
+    on_copy: &mut impl FnMut(SceneElement),
     on_paste: &mut impl FnMut(bool),
     active_drawing: Option<crate::model::DrawingKey>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
@@ -6894,7 +6906,7 @@ fn component_context_menu(
     on_export_component_3mf: &mut impl FnMut(crate::model::ComponentKey),
     on_export_component_step: &mut impl FnMut(crate::model::ComponentKey),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<crate::model::ComponentKey>),
-    on_copy: &mut impl FnMut(),
+    on_copy: &mut impl FnMut(SceneElement),
     on_paste: &mut impl FnMut(bool),
     on_delete_element: &mut impl FnMut(SceneElement),
 ) {
@@ -6926,7 +6938,7 @@ fn component_context_menu(
         ui.close();
     }
     if menu_button(ui, "Copy").clicked() {
-        on_copy();
+        on_copy(element.clone());
         ui.close();
     }
     if clipboard_has_items && menu_button(ui, "Paste").clicked() {
@@ -6976,7 +6988,7 @@ pub(crate) fn element_context_menu(
     clipboard_has_items: bool,
     clipboard_has_linkable: bool,
     element_is_copyable: bool,
-    on_copy: &mut impl FnMut(),
+    on_copy: &mut impl FnMut(SceneElement),
     on_paste: &mut impl FnMut(bool),
     // How many elements Delete would take (#1853): >1 when the menu was opened on a row
     // that is part of a multi-selection, so the item can say so before it happens.
@@ -7159,7 +7171,7 @@ pub(crate) fn element_context_menu(
     }
     // Copy / Paste / Paste Linked (#1236).
     if element_is_copyable && menu_button(ui, "Copy").clicked() {
-        on_copy();
+        on_copy(element.clone());
         ui.close();
     }
     if clipboard_has_items && menu_button(ui, "Paste").clicked() {
@@ -7359,7 +7371,7 @@ mod tests {
                     false,
                     false,
                     false,
-                    &mut || {},
+                    &mut |_| {},
                     &mut |_| {},
                     1,
                 );
@@ -8643,7 +8655,7 @@ label_hidden: false,
             &mut |_| {},
             false,
             false,
-            &mut || {},
+            &mut |_| {},
             &mut |_| {},
             None,
             &mut |_| {},

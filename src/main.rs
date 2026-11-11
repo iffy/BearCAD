@@ -16179,7 +16179,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             // Timeline rollback marker set/cleared from the pane (#524), applied after it closes.
             let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
             let mut joint_rest: Option<hierarchy::JointRestCommand> = None;
-            let mut do_copy = false;
+            let mut do_copy: Option<SceneElement> = None;
             let mut do_paste: Option<bool> = None;
             let pane_kept_open = show_pane_shell(ui, "tree", "Elements", false, 220.0, None, true, |ui| {
                     let mut queue_edit_sketch = |sketch: SketchId| {
@@ -16382,8 +16382,8 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                         &mut queue_clone_unit_instance,
                         !self.state.clipboard.is_empty(),
                         self.state.clipboard.has_linkable(),
-                        &mut || {
-                            do_copy = true;
+                        &mut |element| {
+                            do_copy = Some(element);
                         },
                         &mut |linked| {
                             do_paste = Some(linked);
@@ -16431,8 +16431,13 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
             if let Some(marker) = set_rollback {
                 self.rollback_marker = marker;
             }
-            if do_copy {
-                self.state.apply(Action::CopySelection);
+            if let Some(element) = do_copy {
+                // A row outside the selection copies just that row (#1967).
+                if self.state.scene_selection.is_selected(element.clone()) {
+                    self.state.apply(Action::CopySelection);
+                } else {
+                    self.state.apply(Action::CopyElements { elements: vec![element] });
+                }
             }
             if let Some(linked) = do_paste {
                 self.state.apply(Action::BeginPaste { linked });
@@ -32659,7 +32664,7 @@ impl App {
             let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
             let mut delete_element: Option<SceneElement> = None;
             let mut clone_unit_instance: Option<model::UnitInstanceKey> = None;
-            let mut do_copy = false;
+            let mut do_copy: Option<SceneElement> = None;
             let mut do_paste: Option<bool> = None;
             let mut bezier_acted = false;
 
@@ -32714,8 +32719,8 @@ impl App {
                             !self.state.clipboard.is_empty(),
                             self.state.clipboard.has_linkable(),
                             crate::copy_paste::copyable_element(&element).is_some(),
-                            &mut || {
-                                do_copy = true;
+                            &mut |element| {
+                                do_copy = Some(element);
                             },
                             &mut |linked| {
                                 do_paste = Some(linked);
@@ -32737,8 +32742,13 @@ impl App {
                     _ => None,
                 }
             }).flatten());
-            if do_copy {
-                self.state.apply(Action::CopySelection);
+            if let Some(element) = do_copy {
+                // A row outside the selection copies just that row (#1967).
+                if self.state.scene_selection.is_selected(element.clone()) {
+                    self.state.apply(Action::CopySelection);
+                } else {
+                    self.state.apply(Action::CopyElements { elements: vec![element] });
+                }
             }
             if let Some(linked) = do_paste {
                 self.state.apply(Action::BeginPaste { linked });

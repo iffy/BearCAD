@@ -203,6 +203,8 @@ pub enum Instruction {
     Undo,
     /// Copy the selection onto the session clipboard (#1236).
     CopySelection,
+    /// Copy these elements, whatever is selected (#1967) — `bearcad.copy(element)`.
+    CopyElements { elements: Vec<SceneElement> },
     /// Paste clipboard contents at an explicit offset (#1236). `linked` is Paste Linked.
     PasteAt {
         linked: bool,
@@ -1388,6 +1390,18 @@ impl Instruction {
             Instruction::Clear => "bearcad.clear()".to_string(),
             Instruction::Undo => "bearcad.undo()".to_string(),
             Instruction::CopySelection => "bearcad.copy()".to_string(),
+            Instruction::CopyElements { elements } => {
+                if elements.len() == 1 {
+                    format!("bearcad.copy({})", element_lua_ref(&elements[0], doc))
+                } else {
+                    let list = elements
+                        .iter()
+                        .map(|e| element_lua_ref(e, doc))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("bearcad.copy({{ {list} }})")
+                }
+            }
             Instruction::PasteAt { linked, x, y, z } => {
                 if *linked {
                     format!("bearcad.paste{{ linked = true, x = {x}, y = {y}, z = {z} }}")
@@ -4192,6 +4206,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::Clear => Some(Instruction::Clear),
         Action::UndoLast => Some(Instruction::Undo),
         Action::CopySelection => Some(Instruction::CopySelection),
+        Action::CopyElements { elements } => Some(Instruction::CopyElements {
+            elements: elements.clone(),
+        }),
         Action::PasteAt { linked, offset } => Some(Instruction::PasteAt {
             linked: *linked,
             x: offset.x,
@@ -7453,6 +7470,11 @@ impl ScriptRunner {
             }
             Instruction::CopySelection => {
                 let result = state.apply(Action::CopySelection);
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CopyElements { elements } => {
+                let result = state.apply(Action::CopyElements { elements });
                 self.record_action_error(result);
                 StepResult::Continue
             }

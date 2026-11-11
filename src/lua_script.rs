@@ -5241,12 +5241,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // Copy / Paste (#1236): `bearcad.copy()` then `bearcad.paste{ x = 40 }` (or
-    // `linked = true` for Paste Linked on bodies/components).
+    // `linked = true` for Paste Linked on bodies/components). `bearcad.copy(element)` (or a
+    // list) copies those instead of the selection (#1967).
     api.set(
         "copy",
-        lua.create_function(|lua, ()| {
+        lua.create_function(|lua, target: Option<Value>| {
+            let instruction = match target {
+                None | Some(Value::Nil) => Instruction::CopySelection,
+                Some(value) => Instruction::CopyElements { elements: resolve_elements(lua, value)? },
+            };
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::CopySelection) }
+            unsafe { tick.exec(instruction) }
         })?,
     )?;
     api.set(
@@ -20253,6 +20258,46 @@ pub mod tests {
         );
         // Pure shell (no boss) is still less than solid cuboid.
         assert!(v < 40.0 * 30.0 * 20.0 + 10.0 * 10.0 * 15.0 * 0.5 + 500.0);
+    }
+
+    /// #1967: copying a selected component and pasting it adds a copy of every body in it,
+    /// filed into a new component of its own.
+    #[test]
+    fn lua_copy_paste_component() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 10 }
+            bearcad.cuboid{ at = {40, 0, 0}, width = 10, depth = 10, height = 10 }
+            local c = bearcad.component{ name = "Pair" }
+            bearcad.move_to_component{ kind = "body", index = 0, component = c }
+            bearcad.move_to_component{ kind = "body", index = 1, component = c }
+            bearcad.clear_selection()
+            bearcad.select{ kind = "component", index = 0 }
+            bearcad.copy()
+            bearcad.paste{ x = 100 }
+            "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 4, "both bodies are pasted");
+        assert_eq!(state.doc.components.len(), 2, "the paste gets its own component");
+        let pasted = state.doc.components.keys().nth(1).unwrap();
+        let in_pasted = state.component_body_indices(pasted);
+        assert_eq!(in_pasted.len(), 2, "pasted bodies are filed into the new component");
+
+        // `bearcad.copy(c)` copies the component whatever is selected.
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 20, depth = 20, height = 10 }
+            local c = bearcad.component{ name = "Solo" }
+            bearcad.move_to_component{ kind = "body", index = 0, component = c }
+            bearcad.clear_selection()
+            bearcad.copy(c)
+            bearcad.paste{ x = 100 }
+            "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 2);
+        assert_eq!(state.doc.components.len(), 2);
     }
 
     /// #1236: `bearcad.copy` + `bearcad.paste` create an independent body; `linked = true`
