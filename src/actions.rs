@@ -3801,6 +3801,13 @@ pub enum Action {
         edge1: crate::model::DrawingEdgeKey,
         edge2: crate::model::DrawingEdgeKey,
     },
+    /// Toggle the distance dimension between two parallel edges (#1970).
+    ToggleDrawingDistance {
+        drawing: crate::model::DrawingKey,
+        view: usize,
+        edge1: crate::model::DrawingEdgeKey,
+        edge2: crate::model::DrawingEdgeKey,
+    },
     /// Open a drawing in the drawing pane (`Some`) or close the pane (`None`).
     EditDrawing { drawing: Option<crate::model::DrawingKey> },
     /// Finalize the in-progress revolve (reads `creating_revolve`).
@@ -16222,6 +16229,29 @@ impl AppState {
                 } else {
                     v.angle_dims.push(key);
                     self.status = "Showed angle dimension".to_string();
+                }
+                ActionResult::Ok
+            }
+            Action::ToggleDrawingDistance { drawing, view, edge1, edge2 } => {
+                let key = if edge1 <= edge2 { (edge1, edge2) } else { (edge2, edge1) };
+                let Some(d) = self.doc.drawings.get(drawing) else {
+                    return ActionResult::Err(format!("No drawing {}", drawing.index()));
+                };
+                let Some(v) = d.views.get(view) else {
+                    return ActionResult::Err(format!("No view {view} in drawing {}", drawing.index()));
+                };
+                if !crate::drawing::edge_pair_takes_distance(&d.views, v, edge1, edge2) {
+                    let e = "A distance needs two parallel edges, apart on the page".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let v = &mut self.doc.drawings[drawing].views[view];
+                if let Some(pos) = v.distance_dims.iter().position(|e| *e == key) {
+                    v.distance_dims.remove(pos);
+                    self.status = "Hid distance dimension".to_string();
+                } else {
+                    v.distance_dims.push(key);
+                    self.status = "Showed distance dimension".to_string();
                 }
                 ActionResult::Ok
             }

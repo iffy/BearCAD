@@ -8131,6 +8131,7 @@ mod tests {
         doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
                 component: None,
+                distance_dims: Vec::new(),
                 cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,
@@ -8225,6 +8226,7 @@ label_hidden: false,
         doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
                 component: None,
+                distance_dims: Vec::new(),
                 cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,
@@ -8283,6 +8285,7 @@ label_hidden: false,
         doc.drawings.insert(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
                 component: None,
+                distance_dims: Vec::new(),
                 cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,

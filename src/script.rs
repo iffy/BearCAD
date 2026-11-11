@@ -596,6 +596,13 @@ pub enum Instruction {
         edge1: ((f32, f32, f32), (f32, f32, f32)),
         edge2: ((f32, f32, f32), (f32, f32, f32)),
     },
+    /// Toggle the distance dimension between two parallel edges of a view (#1970).
+    ToggleDrawingDistance {
+        drawing: usize,
+        view: usize,
+        edge1: ((f32, f32, f32), (f32, f32, f32)),
+        edge2: ((f32, f32, f32), (f32, f32, f32)),
+    },
     /// Place a primitive shape (#909): a cuboid, cylinder, or sphere, straight into 3D.
     Shape { shape: crate::model::Primitive },
     /// Re-point an existing shape (#909).
@@ -2021,6 +2028,22 @@ impl Instruction {
                 };
                 format!(
                     "bearcad.drawing_angle{{ drawing = {drawing}, view = {view}, edge1 = {}, edge2 = {} }}",
+                    edge(*edge1),
+                    edge(*edge2)
+                )
+            }
+            Instruction::ToggleDrawingDistance {
+                drawing,
+                view,
+                edge1,
+                edge2,
+            } => {
+                let pt = |p: (f32, f32, f32)| format!("{{ {}, {}, {} }}", p.0, p.1, p.2);
+                let edge = |e: ((f32, f32, f32), (f32, f32, f32))| {
+                    format!("{{ a = {}, b = {} }}", pt(e.0), pt(e.1))
+                };
+                format!(
+                    "bearcad.drawing_distance{{ drawing = {drawing}, view = {view}, edge1 = {}, edge2 = {} }}",
                     edge(*edge1),
                     edge(*edge2)
                 )
@@ -8550,6 +8573,31 @@ impl ScriptRunner {
                     crate::model::normalized_edge_key(q(e.0), q(e.1))
                 };
                 let result = state.apply(Action::ToggleDrawingAngle {
+                    drawing,
+                    view,
+                    edge1: key(edge1),
+                    edge2: key(edge2),
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::ToggleDrawingDistance {
+                drawing,
+                view,
+                edge1,
+                edge2,
+            } => {
+                let Some(drawing) = drawing_key(&state.doc, drawing) else {
+                    self.last_action_error = Some(format!("No drawing {drawing}"));
+                    return StepResult::Continue;
+                };
+                let q = |p: (f32, f32, f32)| {
+                    crate::hierarchy::quantize_body_point(glam::Vec3::new(p.0, p.1, p.2))
+                };
+                let key = |e: ((f32, f32, f32), (f32, f32, f32))| {
+                    crate::model::normalized_edge_key(q(e.0), q(e.1))
+                };
+                let result = state.apply(Action::ToggleDrawingDistance {
                     drawing,
                     view,
                     edge1: key(edge1),

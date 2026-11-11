@@ -290,6 +290,7 @@ bearcad.drawing_circle_dimension{ drawing, view, center }
 bearcad.drawing_curve_dimension{ drawing, view, points }
 bearcad.drawing_dim_offset{ drawing, view, a, b, offset, angle, side }
 bearcad.drawing_dimension{ drawing, view, a, b }
+bearcad.drawing_distance{ … }
 bearcad.drawing_loupe{ drawing, view, at, radius, to, to_radius }
 bearcad.drawing_loupe_dimension{ drawing, view, index, a, b }
 bearcad.drawing_loupes{ drawing, view }

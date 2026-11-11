@@ -12527,6 +12527,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 t.set("dimensions", view.dimensioned_edges.len())?;
                 t.set("curve_dimensions", view.dimensioned_curves.len())?;
                 t.set("point_dimensions", view.point_dims.len())?;
+                t.set("angle_dimensions", view.angle_dims.len())?;
+                // Distances between parallel edges (#1970).
+                t.set("distance_dimensions", view.distance_dims.len())?;
                 t.set("align_lines", view.align_lines)?;
                 // Where the card sits on the page, and how big it is (page fractions, #1648).
                 t.set("pos_x", view.pos_x)?;
@@ -13156,6 +13159,40 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let edge2 = edge("edge2")?;
             unsafe {
                 tick.exec(Instruction::ToggleDrawingAngle {
+                    drawing,
+                    view,
+                    edge1,
+                    edge2,
+                })
+            }
+        })?,
+    )?;
+
+    // Toggle the distance between two parallel edges of a view (#1970); edges as for
+    // `drawing_distance`.
+    api.set(
+        "drawing_distance",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.ordinal_req("drawing")?;
+            let view: usize = opts.ordinal_req("view")?;
+            let point = |t: &Table, key: &str| -> mlua::Result<(f32, f32, f32)> {
+                let v: Vec<f32> = t.get(key)?;
+                if v.len() != 3 {
+                    return Err(mlua::Error::external(format!(
+                        "drawing_distance edge `{key}` must be a {{x, y, z}} point"
+                    )));
+                }
+                Ok((v[0], v[1], v[2]))
+            };
+            let edge = |key: &str| -> mlua::Result<((f32, f32, f32), (f32, f32, f32))> {
+                let t: Table = opts.get(key)?;
+                Ok((point(&t, "a")?, point(&t, "b")?))
+            };
+            let edge1 = edge("edge1")?;
+            let edge2 = edge("edge2")?;
+            unsafe {
+                tick.exec(Instruction::ToggleDrawingDistance {
                     drawing,
                     view,
                     edge1,
@@ -26924,6 +26961,34 @@ pub mod tests {
         assert_eq!(shown.doc.drawings[dkey(0)].views[0].angle_dims.len(), 1);
         let hidden = run_lua(&script(2));
         assert_eq!(hidden.doc.drawings[dkey(0)].views[0].angle_dims.len(), 0);
+    }
+
+    /// #1970: `bearcad.drawing_distance{}` shows the distance between two parallel edges of a
+    /// view; a second call hides it, and edges that aren't parallel are refused.
+    #[test]
+    fn lua_drawing_distance_between_parallel_edges() {
+        let script = |toggles: &str| {
+            format!(
+                r#"
+                bearcad.new()
+                bearcad.rect{{ x = 0, y = 0, width = 40, height = 25 }}
+                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 15 }}
+                local d = bearcad.drawing{{}}
+                bearcad.drawing_view{{ drawing = d, body = 0, orientation = "front" }}
+                {toggles}
+            "#
+            )
+        };
+        let pair = "bearcad.drawing_distance{ drawing = d, view = 0, edge1 = { a = {0,0,0}, b = {0,0,15} }, edge2 = { a = {40,0,0}, b = {40,0,15} } }\n";
+        let shown = run_lua(&script(pair));
+        assert_eq!(shown.doc.drawings[dkey(0)].views[0].distance_dims.len(), 1);
+        let hidden = run_lua(&script(&pair.repeat(2)));
+        assert_eq!(hidden.doc.drawings[dkey(0)].views[0].distance_dims.len(), 0);
+        // Edges that aren't parallel are refused.
+        run_lua(&script(
+            r#"local ok, err = pcall(bearcad.drawing_distance, { drawing = d, view = 0, edge1 = { a = {0,0,0}, b = {40,0,0} }, edge2 = { a = {0,0,0}, b = {0,0,15} } })
+               assert(not ok and tostring(err):find("parallel"), tostring(err))"#,
+        ));
     }
 
     /// #1651: `bearcad.drawing_view_style{}` and `drawing_view_orientation{}` reach the two

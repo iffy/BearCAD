@@ -16,7 +16,7 @@ With the **Dimension tool**:
 - Click edges to show/hide dimensions for a line. Circles get a diameter (Ø) dimension;
   a cylinder's side wall gets its length. A dimension covers the whole straight line, not
   the piece between the faces that meet it.
-- Shift+click two lines to show the angle between them.
+- Shift+click two lines to show the angle between them — or, if they're parallel, the distance.
 - Click and drag dimensions to reposition them. The line snaps to the edge's
   perpendicular or to either face that makes that edge. A label that does not
   fit along the line sits on the line, past either end — drag it to pick the end.

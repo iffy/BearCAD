@@ -5224,6 +5224,10 @@ pub struct DrawingView {
     /// `dimensioned_edges`; the pair itself is order-normalized.
     #[serde(default)]
     pub angle_dims: Vec<(([i32; 3], [i32; 3]), ([i32; 3], [i32; 3]))>,
+    /// Pairs of parallel edges whose **distance** apart is shown (#1970), keyed like
+    /// `angle_dims`.
+    #[serde(default)]
+    pub distance_dims: Vec<(([i32; 3], [i32; 3]), ([i32; 3], [i32; 3]))>,
     /// Per-edge dimension-label offset overrides (#294), keyed by the same edge key as
     /// `dimensioned_edges`. The value is the label's signed offset (mm, in projected view
     /// space) along the edge's outward from the geometry centroid — a positive
@@ -5416,6 +5420,7 @@ impl DrawingView {
             orientation,
             dimensioned_edges: Vec::new(),
             angle_dims: Vec::new(),
+            distance_dims: Vec::new(),
             dimension_offsets: Vec::new(),
             dimension_offset_angles: Vec::new(),
             dimension_label_sides: Vec::new(),
@@ -5451,6 +5456,7 @@ impl DrawingView {
             orientation,
             dimensioned_edges: Vec::new(),
             angle_dims: Vec::new(),
+            distance_dims: Vec::new(),
             dimension_offsets: Vec::new(),
             dimension_offset_angles: Vec::new(),
             dimension_label_sides: Vec::new(),
@@ -6559,6 +6565,8 @@ mod tests {
             serde_json::from_str(r#"{"bodies": [[0, 0]], "orientation": "Front"}"#).unwrap();
         assert_eq!(v.bodies.len(), 1);
         assert_eq!(v.component, None);
+        // …and with no distance dimensions (#1970).
+        assert!(v.distance_dims.is_empty());
     }
 
     /// #1056: membership names an element with the identity that element's own collection

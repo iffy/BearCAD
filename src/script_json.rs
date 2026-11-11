@@ -1289,6 +1289,22 @@ pub fn instruction_from_json(
             })
         }
 
+        "drawing_distance" => {
+            let edge = |key: &str| -> Result<((f32, f32, f32), (f32, f32, f32)), String> {
+                let t = o
+                    .get(key)
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| format!("drawing_distance `{key}` must be an edge object"))?;
+                Ok((xyz(t, "a")?, xyz(t, "b")?))
+            };
+            Ok(Instruction::ToggleDrawingDistance {
+                drawing: req_usize(o, "drawing", "drawing_distance")?,
+                view: req_usize(o, "view", "drawing_distance")?,
+                edge1: edge("edge1")?,
+                edge2: edge("edge2")?,
+            })
+        }
+
         other => Err(format!("unknown command '{other}'")),
     }
 }

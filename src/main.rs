@@ -30150,6 +30150,41 @@ impl App {
                         INK,
                     );
                 }
+                // Distance dimensions between parallel edges (#1970).
+                for (k1, k2) in &view.distance_dims {
+                    let flat = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+                    let edge = |k: &([i32; 3], [i32; 3])| (flat(dequant(k.0)), flat(dequant(k.1)));
+                    let Some(g) = crate::drawing::distance_dim_geometry(edge(k1), edge(k2)) else {
+                        continue;
+                    };
+                    let sp = |p: glam::Vec2| to_screen(egui::vec2(p.x, p.y));
+                    let stroke = egui::Stroke::new(crate::drawing::DIM_STROKE, INK);
+                    for (p, q) in &g.extensions {
+                        painter.line_segment([sp(*p), sp(*q)], stroke);
+                    }
+                    let out = (g.b - g.a).perp().normalize_or_zero();
+                    let line = crate::drawing::dimension_line_geometry(g.a, g.b, out, 0.0, arrow);
+                    painter.line_segment([sp(line.line.0), sp(line.line.1)], stroke);
+                    for tri in line.arrow_tris() {
+                        painter.add(egui::Shape::convex_polygon(
+                            tri.iter().map(|p| sp(*p)).collect(),
+                            INK,
+                            egui::Stroke::NONE,
+                        ));
+                    }
+                    let label = crate::value::format_length_display_in(g.distance, unit);
+                    let (sla, slb) = (sp(g.a), sp(g.b));
+                    let out_screen = (sp(g.a + out) - sp(g.a)).normalized();
+                    let (lp, ang) = crate::drawing::dimension_label_layout(
+                        glam::Vec2::new(sla.x, sla.y),
+                        glam::Vec2::new(slb.x, slb.y),
+                        glam::Vec2::new(out_screen.x, out_screen.y),
+                        crate::drawing::text_device_width(dim_font, &label),
+                        dim_font,
+                        5.0 * px_per_pt,
+                    );
+                    draw_rot_label(&painter, label, egui::pos2(lp.x, lp.y), ang);
+                }
             }
 
             // The claim is committed once the whole loop has seen every card (#1707) — the
@@ -30998,8 +31033,19 @@ impl App {
                 .apply(Action::ToggleDrawingCurveDimension { drawing, view, points });
         }
         if let Some((view, edge1, edge2)) = toggle_angle {
-            self.state
-                .apply(Action::ToggleDrawingAngle { drawing, view, edge1, edge2 });
+            // Parallel edges have no angle to measure — they take their distance (#1970).
+            let parallel = self.state.doc.drawings.get(drawing).is_some_and(|d| {
+                d.views.get(view).is_some_and(|v| {
+                    crate::drawing::edge_pair_takes_distance(&d.views, v, edge1, edge2)
+                })
+            });
+            if parallel {
+                self.state
+                    .apply(Action::ToggleDrawingDistance { drawing, view, edge1, edge2 });
+            } else {
+                self.state
+                    .apply(Action::ToggleDrawingAngle { drawing, view, edge1, edge2 });
+            }
         }
         // Persist the in-progress angle pick (armed first edge) across frames.
         match pending_angle {

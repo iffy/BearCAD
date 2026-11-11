@@ -65,6 +65,10 @@ bearcad.drawing_curve_dimension{ drawing = d, view = 0,
 bearcad.drawing_angle{ drawing = d, view = 0,
   edge1 = { a = {0, 0, 0}, b = {40, 0, 0} },
   edge2 = { a = {0, 0, 0}, b = {0, 0, 15} } }
+-- Distance between two parallel edges.
+bearcad.drawing_distance{ drawing = d, view = 0,
+  edge1 = { a = {0, 0, 0}, b = {0, 0, 15} },
+  edge2 = { a = {40, 0, 0}, b = {40, 0, 15} } }
 
 -- visible | wireframe | shaded | colorful | loose_pencil | color_pencil | watercolor
 bearcad.drawing_view_style{ drawing = d, view = 0, style = "shaded" }

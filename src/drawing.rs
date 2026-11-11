@@ -2189,6 +2189,92 @@ impl AngleDimGeometry {
     }
 }
 
+/// A distance dimension between two parallel projected edges (#1970): a dimension line
+/// square to both, its two ends on the edges' lines, plus extension lines where an edge stops
+/// short of it. All in the view's projected 2D mm space.
+pub struct DistanceDimGeometry {
+    /// The dimension line's ends — on edge 1's line, then on edge 2's.
+    pub a: glam::Vec2,
+    pub b: glam::Vec2,
+    /// Perpendicular distance between the two lines (projected mm, i.e. model mm).
+    pub distance: f32,
+    /// Extension lines from an edge's nearer end out to the dimension line, when the edges
+    /// don't overlap where it sits.
+    pub extensions: Vec<(glam::Vec2, glam::Vec2)>,
+}
+
+/// Whether two projected edges are parallel (and both non-degenerate) — the pairs that take a
+/// distance rather than an angle (#1970).
+pub fn projected_edges_parallel(e1: (glam::Vec2, glam::Vec2), e2: (glam::Vec2, glam::Vec2)) -> bool {
+    let (d1, d2) = ((e1.1 - e1.0).normalize_or_zero(), (e2.1 - e2.0).normalize_or_zero());
+    d1 != glam::Vec2::ZERO && d2 != glam::Vec2::ZERO && d1.perp_dot(d2).abs() < 1e-3
+}
+
+/// Two of a view's edges (quantized world keys), projected the way the view draws them.
+pub fn project_edge_pair(
+    views: &[DrawingView],
+    view: &DrawingView,
+    e1: crate::model::DrawingEdgeKey,
+    e2: crate::model::DrawingEdgeKey,
+) -> ((glam::Vec2, glam::Vec2), (glam::Vec2, glam::Vec2)) {
+    let (right, up) = resolved_view_axes(views, view);
+    let flat = |q: [i32; 3]| {
+        let p = Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32) / 100.0;
+        glam::Vec2::new(p.dot(right), p.dot(up))
+    };
+    ((flat(e1.0), flat(e1.1)), (flat(e2.0), flat(e2.1)))
+}
+
+/// Whether two of a view's edges take a distance dimension rather than an angle (#1970).
+pub fn edge_pair_takes_distance(
+    views: &[DrawingView],
+    view: &DrawingView,
+    e1: crate::model::DrawingEdgeKey,
+    e2: crate::model::DrawingEdgeKey,
+) -> bool {
+    let (p1, p2) = project_edge_pair(views, view, e1, e2);
+    distance_dim_geometry(p1, p2).is_some()
+}
+
+/// Build [`DistanceDimGeometry`] for two projected edges. `None` unless they are parallel
+/// and apart. The line sits in the middle of the span the two edges share along their
+/// direction, or — when they don't overlap — halfway across the gap between them, with
+/// extension lines carrying each edge out to it.
+pub fn distance_dim_geometry(
+    e1: (glam::Vec2, glam::Vec2),
+    e2: (glam::Vec2, glam::Vec2),
+) -> Option<DistanceDimGeometry> {
+    if !projected_edges_parallel(e1, e2) {
+        return None;
+    }
+    let dir = (e1.1 - e1.0).normalize();
+    let normal = dir.perp();
+    let offset = (e2.0 - e1.0).dot(normal);
+    if offset.abs() < 1e-4 {
+        return None;
+    }
+    let span = |e: (glam::Vec2, glam::Vec2)| {
+        let (s, t) = ((e.0 - e1.0).dot(dir), (e.1 - e1.0).dot(dir));
+        (s.min(t), s.max(t))
+    };
+    let (lo1, hi1) = span(e1);
+    let (lo2, hi2) = span(e2);
+    let (lo, hi) = (lo1.max(lo2), hi1.min(hi2));
+    // Overlapping: the middle of the shared span. Apart (lo > hi): the middle of the gap.
+    let t = (lo + hi) * 0.5;
+    let a = e1.0 + dir * t;
+    let b = a + normal * offset;
+    let mut extensions = Vec::new();
+    for ((elo, ehi), on_line) in [((lo1, hi1), a), ((lo2, hi2), b)] {
+        if t < elo || t > ehi {
+            let near = if t < elo { elo } else { ehi };
+            let from = on_line + dir * (near - t);
+            extensions.push((from, on_line));
+        }
+    }
+    Some(DistanceDimGeometry { a, b, distance: offset.abs(), extensions })
+}
+
 /// Build [`AngleDimGeometry`] for the angle between two projected edges. `arrow` is the
 /// arrowhead length in the same units. `None` when either edge is degenerate or the two are
 /// parallel, since parallel edges never make a corner to measure.
@@ -4379,6 +4465,36 @@ fn render_view_geometry<C: Canvas>(
         let sp = to_screen(g.label);
         canvas.text(sp.x, sp.y, 11.0, Anchor::Middle, &format!("{:.0}°", g.degrees));
     }
+
+    // Distance dimensions between parallel edges (#1970): a line square to both, arrows at
+    // each edge, the value beside it.
+    for (k1, k2) in &view.distance_dims {
+        let edge = |k: &([i32; 3], [i32; 3])| (project(dequant(k.0)), project(dequant(k.1)));
+        let Some(g) = distance_dim_geometry(edge(k1), edge(k2)) else {
+            continue;
+        };
+        let stroke_line = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
+            let (sp, sq) = (to_screen(p), to_screen(q));
+            canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, DIM_STROKE);
+        };
+        for (p, q) in &g.extensions {
+            stroke_line(canvas, *p, *q);
+        }
+        let out = (g.b - g.a).perp().normalize_or_zero();
+        let line = dimension_line_geometry(g.a, g.b, out, 0.0, arrow);
+        stroke_line(canvas, line.line.0, line.line.1);
+        for tri in line.arrow_tris() {
+            let pts: Vec<(f32, f32)> =
+                tri.iter().map(|p| { let s = to_screen(*p); (s.x, s.y) }).collect();
+            canvas.poly(&pts, BLACK);
+        }
+        let label = crate::value::format_length_display_in(g.distance, unit);
+        let (sa, sb) = (to_screen(g.a), to_screen(g.b));
+        let out_screen = (to_screen(g.a + out) - to_screen(g.a)).normalize_or_zero();
+        let (lp, ang) =
+            dimension_label_layout(sa, sb, out_screen, text_device_width(11.0, &label), 11.0, 5.0);
+        canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
+    }
 }
 
 // ----- SVG backend -----
@@ -5211,6 +5327,42 @@ mod tests {
     }
 
     /// #1652: parallel edges never meet, so there is nothing to arc between.
+    /// #1970: two parallel edges measure their perpendicular distance; the dimension line
+    /// sits where both edges are, and reaches an edge that stops short with an extension line.
+    #[test]
+    fn distance_dimension_between_parallel_edges() {
+        use glam::vec2;
+        // Two vertical studs' facing sides, 30 apart, overlapping from y=0..10.
+        let g = distance_dim_geometry(
+            (vec2(0.0, 0.0), vec2(0.0, 20.0)),
+            (vec2(30.0, -5.0), vec2(30.0, 10.0)),
+        )
+        .unwrap();
+        assert!((g.distance - 30.0).abs() < 1e-4);
+        assert!((g.a - vec2(0.0, 5.0)).length() < 1e-4, "{:?}", g.a);
+        assert!((g.b - vec2(30.0, 5.0)).length() < 1e-4, "{:?}", g.b);
+        assert!(g.extensions.is_empty());
+        // Edges that don't overlap: an extension line for each.
+        let g = distance_dim_geometry(
+            (vec2(0.0, 0.0), vec2(0.0, 10.0)),
+            (vec2(30.0, 20.0), vec2(30.0, 30.0)),
+        )
+        .unwrap();
+        assert!((g.distance - 30.0).abs() < 1e-4);
+        assert_eq!(g.extensions.len(), 2);
+        // Not parallel, or collinear: nothing to measure.
+        assert!(distance_dim_geometry(
+            (vec2(0.0, 0.0), vec2(0.0, 10.0)),
+            (vec2(0.0, 0.0), vec2(10.0, 0.0)),
+        )
+        .is_none());
+        assert!(distance_dim_geometry(
+            (vec2(0.0, 0.0), vec2(0.0, 10.0)),
+            (vec2(0.0, 20.0), vec2(0.0, 30.0)),
+        )
+        .is_none());
+    }
+
     #[test]
     fn angle_dimension_declines_parallel_edges() {
         assert!(angle_dim_geometry(
@@ -5656,6 +5808,7 @@ mod tests {
         // The rendered bases come from resolved_view_axes unfolding the Top parent (X, Y).
         let parent = DrawingView {
             component: None,
+            distance_dims: Vec::new(),
             cross_section: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Top,
             auto_placed: false,
@@ -5728,6 +5881,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         use crate::model::{AlignDir, DrawingOrientation as O};
         let parent = DrawingView {
             component: None,
+            distance_dims: Vec::new(),
             cross_section: None,
             bodies: vec![bkey(0)], sketch: None, orientation: O::Front,
             auto_placed: false,
@@ -6413,6 +6567,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
             name: Some("Plate".to_string()),
             views: vec![DrawingView {
                 component: None,
+                distance_dims: Vec::new(),
                 cross_section: None,
                 bodies: vec![bkey(0)],
                 sketch: None,
