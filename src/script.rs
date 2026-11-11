@@ -956,6 +956,11 @@ pub enum Instruction {
         element: SceneElement,
         component: Option<usize>,
     },
+    /// Move several elements into a component, or with `None` to the root (#1966).
+    MoveElementsToComponent {
+        elements: Vec<SceneElement>,
+        component: Option<usize>,
+    },
     /// Set a component's unit overrides (#423).
     SetComponentUnits {
         component: usize,
@@ -2464,6 +2469,18 @@ impl Instruction {
                     "bearcad.move_to_component{{ kind = {:?}, index = {}, component = {target} }}",
                     tokens.kind, tokens.index
                 )
+            }
+            Instruction::MoveElementsToComponent { elements, component } => {
+                let target = match component {
+                    Some(c) => c.to_string(),
+                    None => "false".to_string(),
+                };
+                let list = elements
+                    .iter()
+                    .map(|e| element_lua_ref(e, doc))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("bearcad.move_to_component{{ elements = {{ {list} }}, component = {target} }}")
             }
             Instruction::SetComponentUnits { component, length, angle } => {
                 let mut args = format!("component = {component}");
@@ -4522,6 +4539,15 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 None => None,
             },
         }),
+        Action::MoveElementsToComponent { elements, component } => {
+            Some(Instruction::MoveElementsToComponent {
+                elements: elements.clone(),
+                component: match component {
+                    Some(c) => Some(component_ordinal(doc, *c)?),
+                    None => None,
+                },
+            })
+        }
         Action::SetComponentUnits { component, length, angle } => {
             Some(Instruction::SetComponentUnits {
                 component: component_ordinal(doc, *component)?,
@@ -9332,6 +9358,18 @@ impl ScriptRunner {
                     other => other.flatten(),
                 };
                 let result = state.apply(Action::MoveToComponent { element, component });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::MoveElementsToComponent { elements, component } => {
+                let component = match component.map(|c| component_key(&state.doc, c)) {
+                    Some(None) => {
+                        self.last_action_error = Some("Component not found".to_string());
+                        return StepResult::Continue;
+                    }
+                    other => other.flatten(),
+                };
+                let result = state.apply(Action::MoveElementsToComponent { elements, component });
                 self.record_action_error(result);
                 StepResult::Continue
             }

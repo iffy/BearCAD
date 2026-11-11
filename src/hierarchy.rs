@@ -7214,6 +7214,8 @@ fn component_member_node(node: HierarchyNode) -> bool {
             | HierarchyNode::SweepOp(_)
             | HierarchyNode::Loft(_)
             | HierarchyNode::Sketch(_)
+            // A shape files as its body (#1966).
+            | HierarchyNode::Shape(_)
             | HierarchyNode::Component(_)
     )
 }

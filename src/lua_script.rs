@@ -5660,17 +5660,24 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_to_component",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "move_to_component", &["kind", "index", "component"])?;
+            check_keys(&opts, "move_to_component", &["kind", "index", "elements", "component"])?;
+            let component = match opts.get::<Value>("component")? {
+                Value::Boolean(false) | Value::Nil => None,
+                other => Some(Ordinal::from_lua(other, lua)?.0),
+            };
+            // Several at once (#1966): `elements = { handle, {kind, index}, … }`.
+            if let Some(list) = opts.get::<Option<Value>>("elements")? {
+                let elements = resolve_elements(lua, list)?;
+                return unsafe {
+                    tick.exec(Instruction::MoveElementsToComponent { elements, component })
+                };
+            }
             let kind: String = opts.get("kind")?;
             let index: usize = opts.ordinal_req("index")?;
             let element = scene_element_from_kind(unsafe { &tick.state().doc }, &kind, index)
                 .ok_or_else(|| {
                     mlua::Error::external(format!("unknown element kind '{kind}'"))
                 })?;
-            let component = match opts.get::<Value>("component")? {
-                Value::Boolean(false) | Value::Nil => None,
-                other => Some(Ordinal::from_lua(other, lua)?.0),
-            };
             unsafe { tick.exec(Instruction::MoveToComponent { element, component }) }
         })?,
     )?;
@@ -20360,6 +20367,28 @@ pub mod tests {
         // The datum plane it sits on stays where it was.
         let plane = state.doc.construction_planes.keys().next().unwrap();
         assert_eq!(owning_component(&state.doc, &SceneElement::ConstructionPlane(plane)), None);
+    }
+
+    /// #1966: `move_to_component{ elements = {...} }` files several elements in one step.
+    #[test]
+    fn lua_move_several_elements_into_a_component() {
+        use crate::hierarchy::{owning_component, SceneElement};
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.cuboid{ width = 10, depth = 10, height = 10 }
+            bearcad.cuboid{ width = 10, depth = 10, height = 10, at = {20, 0, 0} }
+            local c = bearcad.component{ name = "Pair" }
+            bearcad.move_to_component{
+              elements = { { kind = "body", index = 0 }, { kind = "body", index = 1 } },
+              component = c,
+            }
+            "#,
+        );
+        let ck = state.doc.components.keys().next().unwrap();
+        for body in state.doc.bodies.keys() {
+            assert_eq!(owning_component(&state.doc, &SceneElement::Body(body)), Some(ck));
+        }
     }
 
     /// #1236: `bearcad.copy` + `bearcad.paste` create an independent body; `linked = true`

@@ -16457,7 +16457,7 @@ Active document: {} bodies, {} sketches, {} lines, {} parameters
                 }
             }
             if let Some((element, component)) = move_to_component {
-                self.state.apply(Action::MoveToComponent { element, component });
+                self.state.move_element_or_selection_to_component(element, component);
             }
             if let Some(element) = delete_element {
                 self.state.delete_element_or_selection(element);
@@ -32906,7 +32906,7 @@ impl App {
                 self.export_3mf_body(index);
             }
             if let Some((element, component)) = move_to_component {
-                self.state.apply(Action::MoveToComponent { element, component });
+                self.state.move_element_or_selection_to_component(element, component);
             }
             if let Some(marker) = set_rollback {
                 self.rollback_marker = marker;

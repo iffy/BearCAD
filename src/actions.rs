@@ -3035,6 +3035,12 @@ pub enum Action {
         element: crate::hierarchy::SceneElement,
         component: Option<crate::model::ComponentKey>,
     },
+    /// Move several elements into a component (or the root) in one step (#1966): a dragged
+    /// multi-selection. Elements that can't be filed are skipped.
+    MoveElementsToComponent {
+        elements: Vec<crate::hierarchy::SceneElement>,
+        component: Option<crate::model::ComponentKey>,
+    },
     /// Set a component's unit overrides (#423); `None` inherits from the parent chain.
     SetComponentUnits {
         component: crate::model::ComponentKey,
@@ -10352,6 +10358,20 @@ impl AppState {
     /// Right-clicking one of several selected rows and choosing Delete means all of them —
     /// the menu opened *on the selection*, not on that one row. A right-click somewhere
     /// outside the selection still means only what was clicked.
+    /// A row dragged (or "Move to"'d) onto a component takes the whole selection with it when
+    /// it is part of a multi-selection (#1966), the way Delete does (#1853).
+    pub fn move_element_or_selection_to_component(
+        &mut self,
+        element: SceneElement,
+        component: Option<crate::model::ComponentKey>,
+    ) -> ActionResult {
+        let selected = self.scene_selection.ordered();
+        if selected.len() > 1 && selected.contains(&element) {
+            return self.apply(Action::MoveElementsToComponent { elements: selected, component });
+        }
+        self.apply(Action::MoveToComponent { element, component })
+    }
+
     pub fn delete_element_or_selection(&mut self, element: SceneElement) -> ActionResult {
         if crate::selection::delete_menu_count(&self.scene_selection, &element) > 1 {
             return self.apply(Action::DeleteSelection);
@@ -19456,8 +19476,14 @@ op,
                     self.status = "Moved component".to_string();
                     return ActionResult::Ok;
                 }
-                // A shape isn't a component member of its own (#909), and neither is anything
-                // nested or derived.
+                // A shape isn't a component member of its own (#909) — its body is, so a
+                // shape's row files its body (#1966). Anything nested or derived can't move.
+                let element = match element {
+                    SceneElement::Shape(p) => crate::model::body_index_for_primitive(&self.doc, p)
+                        .map(SceneElement::Body)
+                        .unwrap_or(SceneElement::Shape(p)),
+                    other => other,
+                };
                 let Some(member) = crate::hierarchy::component_member_for_element(&element) else {
                     let e = "This element can't be moved into a component".to_string();
                     self.status = e.clone();
@@ -19467,6 +19493,31 @@ op,
                 self.status = match component {
                     Some(_) => "Moved into component".to_string(),
                     None => "Moved out of component".to_string(),
+                };
+                ActionResult::Ok
+            }
+            Action::MoveElementsToComponent { elements, component } => {
+                let mut moved = 0usize;
+                let mut last_err = None;
+                for element in elements {
+                    // The target itself rides along in a selection; it stays where it is.
+                    if Some(&element) == component.map(SceneElement::Component).as_ref() {
+                        continue;
+                    }
+                    match self.apply(Action::MoveToComponent { element, component }) {
+                        ActionResult::Ok => moved += 1,
+                        ActionResult::Err(e) => last_err = Some(e),
+                        ActionResult::NeedsDialog => {}
+                    }
+                }
+                if moved == 0 {
+                    let e = last_err.unwrap_or_else(|| "Nothing to move".to_string());
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.status = match component {
+                    Some(_) => format!("Moved {moved} into component"),
+                    None => format!("Moved {moved} out of component"),
                 };
                 ActionResult::Ok
             }

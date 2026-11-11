@@ -16,8 +16,8 @@ geometry.
   to go back to creating at the root.
 - Contents indent under the component; the **triangle** collapses/expands them.
 - **Drag** any top-level row onto a component to move it there (list or graph; a name tag
-  follows the cursor; or use right-click → **Move to**). Drop on the **Document** row to
-  move it back out. Components drag into each other to nest.
+  follows the cursor; or use right-click → **Move to**). Dragging one of several selected
+  rows moves them all. Drop on the **Document** row to move it back out. Components drag into each other to nest.
 - **Hiding** a component hides everything inside it, nested components included.
 - Deleting a component keeps its contents — they move to its parent.
 - **Export** a component straight to **STL** or **STEP** from its right-click menu: every

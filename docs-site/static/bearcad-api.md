@@ -370,7 +370,7 @@ bearcad.materials()
 bearcad.mirror_bodies{ plane, bodies, output, name }
 bearcad.mirror_sketch{ sketch, line, lines, circles }
 bearcad.move_bodies{ bodies, images, x, y, z, rotate, rx, ry, rz, roll, flip, spin, gap, from, to, name, shape_name, body_name }
-bearcad.move_to_component{ kind, index, component }
+bearcad.move_to_component{ kind, index, elements, component }
 bearcad.new()
 bearcad.offset_sketch{ sketch, lines, circles, distance, construction }
 bearcad.open(path)
