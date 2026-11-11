@@ -337,15 +337,16 @@ pub fn sketch_vertices(doc: &Document, sketch: SketchId) -> Vec<ConstraintPoint>
             points.push(ConstraintPoint::FaceCircleCenter { face });
         }
     }
-    // The body face the sketch sits on (#26/#27, #139) is *not* exposed as FaceVertex
-    // corners here (#1395): a sketch drawn on an extrusion cap/side wall snaps to that face's
-    // boundary edges as FaceEdge **lines** (see `sketch_lines`) instead. Snapping to a face
-    // corner would create a Coincident(point, vertex) constraint that fixes the point to that
-    // specific corner. When the body reshapes, that corner may not move (e.g. the corner of a
-    // rectangle on the y=0 edge, while width changes the y-extent), and the sketch would stay
-    // put — confusing for users who snapped to "the edge". `sketch_lines` still offers the
-    // FaceEdge OnLine snap, which pins the point to the edge line and tracks the face as it
-    // reshapes.
+    // The corners of the body face the sketch sits on (#26/#27, #139, #1973). A FaceVertex
+    // resolves from the face's live boundary, so a point snapped to a corner follows that
+    // corner as the body reshapes. Round faces have no corners — their boundary is chords.
+    if let Some((face, count)) = sketched_on_face_boundary(doc, sketch) {
+        if crate::extrude::face_circle_world(doc, &face).is_none() {
+            for index in 0..count {
+                points.push(ConstraintPoint::FaceVertex { face: face.clone(), index });
+            }
+        }
+    }
     points
 }
 
@@ -625,11 +626,10 @@ mod tests {
         assert!((snap.uv.0 - 2.0).abs() < EPS && snap.uv.1.abs() < EPS);
     }
 
-    /// #139/#1395: a sketch drawn on a body's own extrusion cap face can snap to, and
-    /// constrain against, that face's own boundary edges — so the face's edge lines appear as
-    /// snap candidates (`sketch_lines`) and are reachable via `find_snap`. Since #1395 the
-    /// face's corners no longer snap as FaceVertex *points*; they are only offered as part of
-    /// a FaceEdge line (so the snap pins to the edge, not a single possibly-fixed corner).
+    /// #139/#1395/#1973: a sketch drawn on a body's own extrusion cap face can snap to, and
+    /// constrain against, that face's own corners and boundary edges. A cursor on a corner
+    /// snaps to the corner (FaceVertex, which tracks the face as it reshapes); a cursor along
+    /// an edge snaps onto that edge line (FaceEdge).
     #[test]
     fn sketched_on_face_boundary_is_snappable() {
         use crate::model::{ExtrudeFace, Extrusion, FaceId};
@@ -654,33 +654,35 @@ mod tests {
             profile: profile.clone(),
             top: true,
         });
+        let cap_face = FaceId::ExtrudeCap {
+            extrusion: xkey(0),
+            profile: profile.clone(),
+            top: true,
+        };
 
-        // The cap face no longer offers its corners as snap-able vertices (#1395).
-        let verts = sketch_vertices(&doc, cap);
-        assert!(
-            verts.iter().all(|p| !matches!(p, ConstraintPoint::FaceVertex { .. })),
-            "face corners must not be exposed as vertex snaps, got {verts:?}"
-        );
-        // ...but it still offers its 4 boundary edges as lines.
+        let corners = sketch_vertices(&doc, cap)
+            .iter()
+            .filter(|p| matches!(p, ConstraintPoint::FaceVertex { .. }))
+            .count();
+        assert_eq!(corners, 4, "cap face should expose its 4 corners");
         let face_edges = sketch_lines(&doc, cap)
             .iter()
             .filter(|l| matches!(l, ConstraintLine::FaceEdge { .. }))
             .count();
         assert_eq!(face_edges, 4, "cap face should expose its 4 edges");
 
-        // A cursor sitting on a face corner's projected location snaps onto the face's edge
-        // line (OnLine), not a FaceVertex corner (#1395).
-        let cap_face = FaceId::ExtrudeCap {
-            extrusion: xkey(0),
-            profile: profile.clone(),
-            top: true,
-        };
-        let v0 = ConstraintPoint::FaceVertex {
-            face: cap_face.clone(),
-            index: 1,
-        };
-        let (u, v) = point_uv(&doc, cap, v0).unwrap();
-        let snap = find_snap(&doc, cap, (u, v), 1.0, &[]).unwrap();
+        // A cursor on a corner snaps to that corner (#1973).
+        let v1 = ConstraintPoint::FaceVertex { face: cap_face.clone(), index: 1 };
+        let (u, v) = point_uv(&doc, cap, v1.clone()).unwrap();
+        let snap = find_snap(&doc, cap, (u + 0.2, v + 0.2), 1.0, &[]).unwrap();
+        assert_eq!(snap.target, SnapTarget::Vertex(v1));
+        assert!(dist_sq(snap.uv, (u, v)) < 1e-8);
+
+        // A cursor along an edge, away from corners and the midpoint, snaps onto the edge line.
+        let v0 = ConstraintPoint::FaceVertex { face: cap_face.clone(), index: 0 };
+        let (u0, v0uv) = point_uv(&doc, cap, v0).unwrap();
+        let q = (u0 + (u - u0) * 0.25, v0uv + (v - v0uv) * 0.25);
+        let snap = find_snap(&doc, cap, q, 1.0, &[]).unwrap();
         assert_eq!(
             snap.target,
             SnapTarget::OnLine(ConstraintLine::FaceEdge { face: cap_face, index: 0 })
