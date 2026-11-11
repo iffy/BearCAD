@@ -9737,6 +9737,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #1974: the pointer aimed at the open sketch's local (u, v) — the ground helpers only
+    // reach z = 0, so on a raised cap or side wall they land off the intended sketch point.
+    api.set(
+        "move_sketch",
+        lua.create_function(|lua, (u, v): (f32, f32)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let w = sketch_uv_to_world(unsafe { tick.state() }, u, v).map_err(mlua::Error::external)?;
+            unsafe { tick.exec(Instruction::MoveWorld { x: w.x, y: w.y, z: w.z }) }
+        })?,
+    )?;
+    api.set(
+        "click_sketch",
+        lua.create_function(|lua, (u, v, opts): (f32, f32, Option<Table>)| {
+            let mods = click_mods(opts)?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let w = sketch_uv_to_world(unsafe { tick.state() }, u, v).map_err(mlua::Error::external)?;
+            unsafe { tick.exec(Instruction::ClickWorld { x: w.x, y: w.y, z: w.z, mods }) }
+        })?,
+    )?;
+
     // #1639: the same pointer, aimed at any point in world space — how a script clicks a
     // body's side wall (the ground helpers can only reach z = 0).
     api.set(
@@ -13470,7 +13490,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "touch",
             "os_open",
             "move", "click", "double_click", "repeat_tool", "move_ground", "click_ground",
-            "move_world", "click_world", "press", "press_world", "release",
+            "move_world", "click_world", "move_sketch", "click_sketch", "press", "press_world", "release",
             "drag", "drag_ground", "drag_world", "right_drag", "right_drag_pan",
             "right_click", "right_click_ground", "context_menu",
             "key", "keydown", "keyup", "type",
@@ -13542,7 +13562,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         for _, name in ipairs({
             "move", "click", "double_click", "move_ground", "click_ground",
             "press", "press_world", "release",
-            "move_world", "click_world", "drag", "drag_ground", "drag_world",
+            "move_world", "click_world", "move_sketch", "click_sketch", "drag", "drag_ground", "drag_world",
             "right_click", "right_click_ground", "right_drag", "right_drag_shift",
             "type", "key", "keydown", "keyup",
         }) do
@@ -13643,6 +13663,15 @@ pub fn load_script(lua: &Lua, path: &Path) -> mlua::Result<mlua::Thread> {
     register_api(lua)?;
     let func = lua.load(&source).set_name(path.to_string_lossy()).into_function()?;
     lua.create_thread(func)
+}
+
+/// The world point at the open sketch's local `(u, v)` (#1974).
+fn sketch_uv_to_world(state: &AppState, u: f32, v: f32) -> Result<glam::Vec3, String> {
+    let session = state.sketch_session.ok_or("no sketch is open")?;
+    let face = state.doc.sketch_face(session.sketch).ok_or("the open sketch has no face")?;
+    let frame = crate::face::sketch_frame(&state.doc, face)
+        .ok_or("the open sketch's face no longer resolves")?;
+    Ok(crate::face::local_to_world(&frame, u, v))
 }
 
 #[cfg(test)]
@@ -14353,6 +14382,28 @@ pub mod tests {
         let img = state.doc.tracing_images.values().next().unwrap();
         assert_eq!(sketch.face, FaceId::ConstructionPlane(img.plane));
         assert!(state.sketch_session.is_some());
+    }
+
+    /// #1974: `click_sketch`/`move_sketch` aim at the open sketch's local (u, v), so a click on
+    /// a raised cap lands where the sketch coordinates say, not at the ground point (x, y, 0).
+    #[test]
+    fn sketch_pointer_helpers_aim_at_sketch_local_coordinates() {
+        let state = run_lua(
+            r#"
+            assert(type(bearcad.ui.click_sketch) == "function")
+            assert(type(bearcad.ui.move_sketch) == "function")
+            local ok, err = pcall(function() bearcad.ui.click_sketch(1, 2) end)
+            assert(not ok and tostring(err):find("sketch"), tostring(err))
+            bearcad.rect{ x = 0, y = 0, width = 100, height = 40 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
+            bearcad.exit_sketch()
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "polygon",
+                                  lines = {0, 1, 2, 3}, top = true }
+            bearcad.ui.move_sketch(0, 40)
+            "#,
+        );
+        let w = sketch_uv_to_world(&state, 0.0, 40.0).unwrap();
+        assert!((w - glam::Vec3::new(0.0, 40.0, 20.0)).length() < 1e-3, "{w:?}");
     }
 
     /// #1589: an image's box anchors (corners, edge midpoints, centre) and edges are

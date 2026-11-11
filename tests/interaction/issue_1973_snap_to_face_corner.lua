@@ -19,13 +19,12 @@ bearcad.ui.wait(5)
 bearcad.ui.tool("rectangle")
 bearcad.ui.wait(3)
 
--- First corner: slightly off the cap's top-left corner (0, W). The cap is at z = 20, so aim
--- in world space (the ground helpers land at z = 0).
-bearcad.ui.click_world(1, 39, 20)
+-- First corner: slightly off the cap's top-left corner (0, W).
+bearcad.ui.click_sketch(1, 39)
 bearcad.ui.wait(6)
-bearcad.ui.move_world(30, 20, 20)
+bearcad.ui.move_sketch(30, 20)
 bearcad.ui.wait(3)
-bearcad.ui.click_world(30, 20, 20)
+bearcad.ui.click_sketch(30, 20)
 bearcad.ui.wait(5)
 bearcad.exit_sketch()
 

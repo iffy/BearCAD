@@ -25,11 +25,11 @@ bearcad.ui.wait(3)
 
 -- Draw a small rect on the cap. First corner clicks near the cap's TOP edge (deliberately a
 -- few mm off, as anyone actually clicks) and snaps onto that edge line.
-bearcad.ui.click_ground(6, 38)
+bearcad.ui.click_sketch(6, 38)
 bearcad.ui.wait(6)
-bearcad.ui.move_ground(30, 20)
+bearcad.ui.move_sketch(30, 20)
 bearcad.ui.wait(3)
-bearcad.ui.click_ground(30, 20)
+bearcad.ui.click_sketch(30, 20)
 bearcad.ui.wait(5)
 bearcad.exit_sketch()
 

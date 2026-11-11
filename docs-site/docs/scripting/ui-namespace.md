@@ -24,6 +24,8 @@ bearcad.ui.repeat_tool{ axis = "x", count = 5, gap = 40 }   -- the Repeat tool's
 bearcad.ui.repeat_tool{ offset = true, to_end = false, computed = "gap" }  -- and its toggles
 bearcad.ui.click_world(20, 10, 50)      -- a point in world space: a body's side wall, say
 bearcad.ui.move_world(20, 10, 50)
+bearcad.ui.click_sketch(5, 40)          -- the open sketch's own (u, v), on whatever face it sits
+bearcad.ui.move_sketch(5, 40)
 -- A drag you can stop inside: press, move (as often as you like), then release. Between
 -- the two, mid-drag state is readable — hover, status, geometry.
 bearcad.ui.press_world(-20, 1.5, 0)

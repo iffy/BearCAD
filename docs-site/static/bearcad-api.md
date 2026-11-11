@@ -214,7 +214,8 @@ bearcad.ui.camera{ yaw?, pitch?, distance?, target?, projection?, shading?, grou
 bearcad.ui.camera{}                          -- read it back, shading and ground included
 bearcad.ui.shading("loose_pencil")           -- …|realistic|loose_pencil|dark_pencil|color_pencil|watercolor
 bearcad.ui.pane("ai"|"hierarchy"|"context"|"parameters"|…, "show"|"hide"|"toggle")
-bearcad.ui.click_ground(x, y)               -- sketch-plane millimetres
+bearcad.ui.click_ground(x, y)               -- ground (z = 0) millimetres
+bearcad.ui.click_sketch(u, v)               -- the open sketch's own coordinates, on any face
 bearcad.ui.click_world(x, y, z)             -- any world point: a body's side wall, say
 bearcad.ui.click(x, y) / click(rect)        -- viewport px, or a window-space rect/orb
 bearcad.ui.double_click(x, y) / (rect)      -- waits out egui's click counter
@@ -445,6 +446,7 @@ bearcad.ui.camera{ yaw, pitch, distance, target, projection, shading, ground }?
 bearcad.ui.changelog(verb?)
 bearcad.ui.click(…)
 bearcad.ui.click_ground(x, y, opts?)
+bearcad.ui.click_sketch(u, v, opts?)
 bearcad.ui.click_world(x, y, z, opts?)
 bearcad.ui.close_tab(index?)
 bearcad.ui.commit_dim()
@@ -496,6 +498,7 @@ bearcad.ui.menu_structure()
 bearcad.ui.move(…)
 bearcad.ui.move_ground(x, y)
 bearcad.ui.move_preview()
+bearcad.ui.move_sketch(u, v)
 bearcad.ui.move_world(x, y, z)
 bearcad.ui.new_tab{ … }?
 bearcad.ui.orbit(dx, dy)
