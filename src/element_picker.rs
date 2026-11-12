@@ -624,10 +624,35 @@ pub fn sketch_line_tangent_chain(doc: &Document, li: crate::model::LineKey) -> V
         })
         .collect();
     for chain in crate::gpu_viewport::chain_by_tangency(&ends) {
-        let mut members: Vec<crate::model::LineKey> = chain.into_iter().map(|i| lines[i]).collect();
+        let members: Vec<crate::model::LineKey> = chain.into_iter().map(|i| lines[i]).collect();
         if members.contains(&li) {
-            members.sort_unstable();
-            return members;
+            // Two *straight* lines never read as one run, however collinear: only a join with
+            // a curved segment is a smooth continuation worth selecting together (#1978).
+            let mut run = vec![li];
+            let mut grew = true;
+            while grew {
+                grew = false;
+                for &m in &members {
+                    if run.contains(&m) {
+                        continue;
+                    }
+                    let joined = run.iter().any(|&r| {
+                        let (a, b) = (&doc.lines[r], &doc.lines[m]);
+                        (a.bezier.is_some() || b.bezier.is_some())
+                            && [(a.x0, a.y0), (a.x1, a.y1)].iter().any(|&p| {
+                                [(b.x0, b.y0), (b.x1, b.y1)]
+                                    .iter()
+                                    .any(|&q| quantize(p.0, p.1) == quantize(q.0, q.1))
+                            })
+                    });
+                    if joined {
+                        run.push(m);
+                        grew = true;
+                    }
+                }
+            }
+            run.sort_unstable();
+            return run;
         }
     }
     vec![li]
@@ -2270,6 +2295,19 @@ mod tests {
         }
         // The 90° corner is a boundary: line 3 is its own run.
         assert_eq!(sketch_line_tangent_chain(&doc, lkey(3)), vec![lkey(3)]);
+    }
+
+    #[test]
+    fn two_straight_collinear_lines_are_not_a_run() {
+        // #1978: only a join with a curve chains; straight-to-straight never does.
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(
+            crate::model::plane_key_for_slot(0),
+        ));
+        doc.lines.insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, -10.0, 0.0));
+        assert_eq!(sketch_line_tangent_chain(&doc, lkey(0)), vec![lkey(0)]);
+        assert_eq!(sketch_line_tangent_chain(&doc, lkey(1)), vec![lkey(1)]);
     }
 
     #[test]
