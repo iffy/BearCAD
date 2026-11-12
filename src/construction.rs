@@ -2279,12 +2279,12 @@ pub fn resolve_pick_target(
             match &kind {
                 PickTargetKind::ConstructionPlane(index) => {
                     let plane = &doc.construction_planes[*index];
-                    let origin = ground_point.unwrap_or(plane.origin);
-                    let projected = project_point_on_plane(origin, plane);
+                    // Anchor at the plane's own origin, not the ground point under the
+                    // cursor — that is far off when the plane is seen edge-on (#1980).
                     consider(PickTarget {
                         kind: kind.clone(),
                         reference: PlaneReference::Face {
-                            origin: projected,
+                            origin: plane.origin,
                             normal: plane.normal,
                             label: "Construction plane".to_string(),
                             u_axis: None,
@@ -2930,12 +2930,6 @@ fn draw_plane_face_highlight(
 ) {
     let corners = plane_corners(plane);
     draw_quad_face_highlight(painter, project, corners, color);
-}
-
-fn project_point_on_plane(point: Vec3, plane: &ConstructionPlane) -> Vec3 {
-    let n = plane.normal;
-    let dist = (point - plane.origin).dot(n);
-    point - n * dist
 }
 
 fn segment_midpoint(a: Vec3, b: Vec3) -> Vec3 {
@@ -6662,6 +6656,29 @@ mod tests {
         let target = resolve_pick_target(on_the_border, &project, None, &doc, None).unwrap();
         assert_eq!(target.kind, PickTargetKind::ConstructionPlane(pkey(0)));
         assert!(matches!(target.reference, PlaneReference::Face { .. }));
+    }
+
+    /// #1980: picking a construction plane anchors the new plane at the picked plane's own
+    /// origin, not wherever the ground under the cursor happened to be (far off when the
+    /// plane is seen edge-on).
+    #[test]
+    fn picking_a_construction_plane_anchors_at_its_origin() {
+        let doc = Document::default();
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let target = resolve_plane_pick_target(
+            Pos2::new(30.0, 30.0),
+            &project,
+            Some(Vec3::new(30.0, 30.0, 0.0)),
+            &doc,
+            Vec3::new(30.0, 30.0, 100.0),
+            None,
+        )
+        .unwrap();
+        assert_eq!(target.kind, PickTargetKind::ConstructionPlane(pkey(0)));
+        let PlaneReference::Face { origin, .. } = target.reference else {
+            panic!("expected a face reference");
+        };
+        assert!(origin.length() < 1e-4, "{origin:?}");
     }
 
     #[test]
