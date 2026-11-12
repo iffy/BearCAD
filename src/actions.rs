@@ -20034,19 +20034,20 @@ op,
         if crate::snapping::snap_constraint_already_present(&self.doc, point.clone(), target.clone()) {
             return Ok(());
         }
-        let kind = crate::snapping::snap_constraint_kind(point, target);
-        self.doc.constraints.insert(crate::model::Constraint {
-            sketch,
-            kind,
-            expression: String::new(),
-            dim_offset: None,
-            name: None,
-        });
-        self.doc
-            .shape_order
-            .push(crate::model::ShapeKind::Constraint);
-        if let Some(new_index) = self.doc.constraints.keys().last() {
-            crate::constraints::remove_subsumed_point_on_line(&mut self.doc, sketch, new_index);
+        for kind in crate::snapping::snap_constraint_kinds(point, target) {
+            self.doc.constraints.insert(crate::model::Constraint {
+                sketch,
+                kind,
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
+            });
+            self.doc
+                .shape_order
+                .push(crate::model::ShapeKind::Constraint);
+            if let Some(new_index) = self.doc.constraints.keys().last() {
+                crate::constraints::remove_subsumed_point_on_line(&mut self.doc, sketch, new_index);
+            }
         }
         crate::constraints::solve_document_constraints(&mut self.doc)?;
         self.refresh_document_health();

@@ -25862,7 +25862,9 @@ fn snap_icon(target: snapping::SnapTarget) -> icons::IconId {
         | snapping::SnapTarget::Origin
         | snapping::SnapTarget::OnLine(_)
         | snapping::SnapTarget::OnLineExtension(_)
-        | snapping::SnapTarget::OnFaceCircle(_) => icons::IconId::Coincident,
+        | snapping::SnapTarget::OnFaceCircle(_)
+        | snapping::SnapTarget::OnCircle(_)
+        | snapping::SnapTarget::Intersection(..) => icons::IconId::Coincident,
         snapping::SnapTarget::NormalAtMidpoint(_) => icons::IconId::Perpendicular,
     }
 }

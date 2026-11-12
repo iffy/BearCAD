@@ -28,6 +28,11 @@ pub enum SnapTarget {
     /// snaps as one true circle instead of a ring of chord midpoints. Pinned with a
     /// point-on-circle coincidence against the face's analytic centre and radius.
     OnFaceCircle(crate::model::FaceId),
+    /// On the rim of a sketch circle (#1977). Pinned with a point-on-circle coincidence.
+    OnCircle(crate::model::CircleKey),
+    /// Where two curves (lines, origin axes, circles) cross (#1977). Pinned with a
+    /// point-on-curve coincidence against each.
+    Intersection(ConstraintEntity, ConstraintEntity),
     /// The infinite line normal to `line`, through its midpoint (inference snapping: only
     /// reachable after first touching that line's midpoint — see `AppState`'s remembered anchor,
     /// mirroring `OnLineExtension`'s vertex-touch mechanic for #21). Committing this snap invents
@@ -99,6 +104,20 @@ pub fn find_snap(
         .iter()
         .flat_map(owning_lines)
         .collect();
+    let excluded_circles: Vec<crate::model::CircleKey> = exclude
+        .iter()
+        .filter_map(|p| match p {
+            ConstraintPoint::CircleCenter(c) => Some(*c),
+            _ => None,
+        })
+        .collect();
+
+    // Crossings of two curves outrank midpoints and on-curve snaps (#1977).
+    if let Some(snap) =
+        nearest_intersection(doc, sketch, query, radius, &excluded_lines, &excluded_circles)
+    {
+        return Some(snap);
+    }
 
     // Nearest line midpoint (next priority).
     let mut best_mid: Option<(f32, Snap)> = None;
@@ -152,6 +171,31 @@ pub fn find_snap(
             ));
         }
     }
+    // Sketch circles' rims (#1977).
+    for (key, circle) in doc.circles.iter() {
+        if circle.sketch != sketch || excluded_circles.contains(&key) {
+            continue;
+        }
+        let d = dist_sq(query, (circle.cx, circle.cy)).sqrt();
+        if d < 1e-6 {
+            continue;
+        }
+        let scale = circle.r / d;
+        let foot = (
+            circle.cx + (query.0 - circle.cx) * scale,
+            circle.cy + (query.1 - circle.cy) * scale,
+        );
+        let d2 = dist_sq(query, foot);
+        if d2 <= radius_sq && best_on_line.as_ref().is_none_or(|(b, _)| d2 < *b) {
+            best_on_line = Some((
+                d2,
+                Snap {
+                    uv: foot,
+                    target: SnapTarget::OnCircle(key),
+                },
+            ));
+        }
+    }
     // The rim of a circular body face the sketch sits on (#1858): the true circle, so the
     // point lands exactly on it rather than on one of the 48 chords that approximate it.
     if let Some((face, (cu, cv), radius)) = sketched_on_face_circle(doc, sketch) {
@@ -175,6 +219,142 @@ pub fn find_snap(
         return Some(snap);
     }
     best_on_line.map(|(_, snap)| snap)
+}
+
+enum Curve {
+    Segment(ConstraintEntity, (f32, f32), (f32, f32)),
+    Axis(SketchAxis),
+    Circle(crate::model::CircleKey, (f32, f32), f32),
+}
+
+impl Curve {
+    fn entity(&self) -> ConstraintEntity {
+        match self {
+            Curve::Segment(e, ..) => e.clone(),
+            Curve::Axis(a) => ConstraintEntity::Line(ConstraintLine::OriginAxis(*a)),
+            Curve::Circle(k, ..) => ConstraintEntity::Circle(*k),
+        }
+    }
+
+    fn distance_to(&self, p: (f32, f32)) -> f32 {
+        match self {
+            Curve::Segment(_, a, b) => project_onto_segment(p, *a, *b)
+                .map_or(f32::INFINITY, |f| dist_sq(p, f).sqrt()),
+            Curve::Axis(SketchAxis::X) => p.1.abs(),
+            Curve::Axis(SketchAxis::Y) => p.0.abs(),
+            Curve::Circle(_, c, r) => (dist_sq(p, *c).sqrt() - r).abs(),
+        }
+    }
+}
+
+/// Points where two curves cross. Segments are finite; axes are infinite.
+fn curve_crossings(a: &Curve, b: &Curve) -> Vec<(f32, f32)> {
+    const BIG: f32 = 1.0e6;
+    let as_line = |c: &Curve| match c {
+        Curve::Segment(_, p, q) => Some((*p, *q, false)),
+        Curve::Axis(SketchAxis::X) => Some(((-BIG, 0.0), (BIG, 0.0), true)),
+        Curve::Axis(SketchAxis::Y) => Some(((0.0, -BIG), (0.0, BIG), true)),
+        Curve::Circle(..) => None,
+    };
+    match (as_line(a), as_line(b), a, b) {
+        (Some((p, q, _)), Some((r, s, _)), ..) => {
+            let (d1, d2) = ((q.0 - p.0, q.1 - p.1), (s.0 - r.0, s.1 - r.1));
+            let den = d1.0 * d2.1 - d1.1 * d2.0;
+            if den.abs() < 1e-9 {
+                return Vec::new();
+            }
+            let t = ((r.0 - p.0) * d2.1 - (r.1 - p.1) * d2.0) / den;
+            let u = ((r.0 - p.0) * d1.1 - (r.1 - p.1) * d1.0) / den;
+            if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+                vec![(p.0 + d1.0 * t, p.1 + d1.1 * t)]
+            } else {
+                Vec::new()
+            }
+        }
+        (Some((p, q, _)), None, _, Curve::Circle(_, c, r))
+        | (None, Some((p, q, _)), Curve::Circle(_, c, r), _) => {
+            // f64: an axis spans ±1e6, where f32 loses the quadratic's cancellation.
+            let (px, py, qx, qy) = (p.0 as f64, p.1 as f64, q.0 as f64, q.1 as f64);
+            let d = (qx - px, qy - py);
+            let f = (px - c.0 as f64, py - c.1 as f64);
+            let r = *r as f64;
+            let qa = d.0 * d.0 + d.1 * d.1;
+            let qb = 2.0 * (f.0 * d.0 + f.1 * d.1);
+            let qc = f.0 * f.0 + f.1 * f.1 - r * r;
+            let disc = qb * qb - 4.0 * qa * qc;
+            if qa < 1e-12 || disc < 0.0 {
+                return Vec::new();
+            }
+            let root = disc.sqrt();
+            [(-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa)]
+                .into_iter()
+                .filter(|t| (0.0..=1.0).contains(t))
+                .map(|t| ((px + d.0 * t) as f32, (py + d.1 * t) as f32))
+                .collect()
+        }
+        (None, None, Curve::Circle(_, c1, r1), Curve::Circle(_, c2, r2)) => {
+            let d = dist_sq(*c1, *c2).sqrt();
+            if d < 1e-6 || d > r1 + r2 || d < (r1 - r2).abs() {
+                return Vec::new();
+            }
+            let x = (d * d + r1 * r1 - r2 * r2) / (2.0 * d);
+            let h = (r1 * r1 - x * x).max(0.0).sqrt();
+            let ux = ((c2.0 - c1.0) / d, (c2.1 - c1.1) / d);
+            let m = (c1.0 + ux.0 * x, c1.1 + ux.1 * x);
+            vec![
+                (m.0 - ux.1 * h, m.1 + ux.0 * h),
+                (m.0 + ux.1 * h, m.1 - ux.0 * h),
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The crossing of two curves nearest `query` within `radius` (#1977).
+fn nearest_intersection(
+    doc: &Document,
+    sketch: SketchId,
+    query: (f32, f32),
+    radius: f32,
+    excluded_lines: &[ConstraintLine],
+    excluded_circles: &[crate::model::CircleKey],
+) -> Option<Snap> {
+    let mut curves = Vec::new();
+    for line in sketch_lines(doc, sketch) {
+        if excluded_lines.contains(&line) {
+            continue;
+        }
+        if let Ok((p, q)) = line_uv_endpoints(doc, sketch, line.clone()) {
+            curves.push(Curve::Segment(ConstraintEntity::Line(line), p, q));
+        }
+    }
+    curves.push(Curve::Axis(SketchAxis::X));
+    curves.push(Curve::Axis(SketchAxis::Y));
+    for (key, c) in doc.circles.iter() {
+        if c.sketch == sketch && !excluded_circles.contains(&key) {
+            curves.push(Curve::Circle(key, (c.cx, c.cy), c.r));
+        }
+    }
+    // Only curves passing near the query can cross near it.
+    curves.retain(|c| c.distance_to(query) <= radius * 2.0);
+    let mut best: Option<(f32, Snap)> = None;
+    for i in 0..curves.len() {
+        for j in (i + 1)..curves.len() {
+            for pt in curve_crossings(&curves[i], &curves[j]) {
+                let d2 = dist_sq(query, pt);
+                if d2 <= radius * radius && best.as_ref().is_none_or(|(b, _)| d2 < *b) {
+                    best = Some((
+                        d2,
+                        Snap {
+                            uv: pt,
+                            target: SnapTarget::Intersection(curves[i].entity(), curves[j].entity()),
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    best.map(|(_, s)| s)
 }
 
 /// The constraint that pins `point` to `target` when a snapped point is left in place.
@@ -201,9 +381,31 @@ pub fn snap_constraint_kind(point: ConstraintPoint, target: SnapTarget) -> Const
             a: ConstraintEntity::Point(point),
             b: ConstraintEntity::Line(line),
         },
+        SnapTarget::OnCircle(circle) => ConstraintKind::Coincident {
+            a: ConstraintEntity::Point(point),
+            b: ConstraintEntity::Circle(circle),
+        },
+        SnapTarget::Intersection(..) => unreachable!(
+            "Intersection is pinned by snap_constraint_kinds, not snap_constraint_kind"
+        ),
         SnapTarget::NormalAtMidpoint(_) => unreachable!(
             "NormalAtMidpoint is handled by add_normal_at_midpoint_constraint, not snap_constraint_kind"
         ),
+    }
+}
+
+/// Every constraint that pins `point` to `target`: one for most snaps, two for an
+/// [`SnapTarget::Intersection`] (#1977). Not for `NormalAtMidpoint`.
+pub fn snap_constraint_kinds(point: ConstraintPoint, target: SnapTarget) -> Vec<ConstraintKind> {
+    match target {
+        SnapTarget::Intersection(a, b) => [a, b]
+            .into_iter()
+            .map(|entity| ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(point.clone()),
+                b: entity,
+            })
+            .collect(),
+        other => vec![snap_constraint_kind(point, other)],
     }
 }
 
@@ -213,10 +415,11 @@ pub fn snap_constraint_already_present(
     point: ConstraintPoint,
     target: SnapTarget,
 ) -> bool {
-    let kind = snap_constraint_kind(point, target);
-    doc.constraints
-        .values()
-        .any(|c| constraint_equivalent(&c.kind, &kind))
+    snap_constraint_kinds(point, target).iter().all(|kind| {
+        doc.constraints
+            .values()
+            .any(|c| constraint_equivalent(&c.kind, kind))
+    })
 }
 
 fn constraint_equivalent(a: &ConstraintKind, b: &ConstraintKind) -> bool {
@@ -237,6 +440,7 @@ fn entity_eq(a: &ConstraintEntity, b: &ConstraintEntity) -> bool {
     match (a, b) {
         (ConstraintEntity::Point(p), ConstraintEntity::Point(q)) => p == q,
         (ConstraintEntity::Line(l), ConstraintEntity::Line(m)) => l == m,
+        (ConstraintEntity::Circle(c), ConstraintEntity::Circle(d)) => c == d,
         (ConstraintEntity::Origin, ConstraintEntity::Origin) => true,
         _ => false,
     }
@@ -556,6 +760,43 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(pkey(0)));
         (doc, sketch)
+    }
+
+    /// #1977: a sketch circle's rim is a snap target, pinned with a point-on-circle
+    /// coincidence.
+    #[test]
+    fn snaps_onto_a_sketch_circles_rim() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles.insert(crate::model::Circle::from_local_center_radius(sketch, 30.0, 30.0, 10.0, 0.0));
+        let snap = find_snap(&doc, sketch, (40.4, 30.5), 1.0, &[]).expect("snap to rim");
+        assert_eq!(snap.target, SnapTarget::OnCircle(rkey(0)));
+        let on_rim = ((snap.uv.0 - 30.0).powi(2) + (snap.uv.1 - 30.0).powi(2)).sqrt();
+        assert!((on_rim - 10.0).abs() < 1e-3, "{:?}", snap.uv);
+        assert!(matches!(
+            snap_constraint_kind(ConstraintPoint::CircleCenter(rkey(1)), snap.target),
+            ConstraintKind::Coincident { b: ConstraintEntity::Circle(c), .. } if c == rkey(0)
+        ));
+        // The circle's own centre never snaps to its own rim.
+        assert!(find_snap(&doc, sketch, (40.4, 30.5), 1.0, &[ConstraintPoint::CircleCenter(rkey(0))]).is_none());
+    }
+
+    /// #1977: where a circle crosses another curve (here the Y axis), that crossing is a
+    /// snap point of its own, pinned to both curves.
+    #[test]
+    fn snaps_to_where_a_circle_crosses_an_axis() {
+        use crate::model::SketchAxis;
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles.insert(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        let snap = find_snap(&doc, sketch, (0.4, 10.4), 1.0, &[]).expect("snap to crossing");
+        let SnapTarget::Intersection(a, b) = &snap.target else {
+            panic!("expected an intersection, got {:?}", snap.target);
+        };
+        assert!(
+            [a, b].contains(&&ConstraintEntity::Circle(rkey(0)))
+                && [a, b].contains(&&ConstraintEntity::Line(ConstraintLine::OriginAxis(SketchAxis::Y))),
+            "{a:?} {b:?}"
+        );
+        assert!(snap.uv.0.abs() < 1e-3 && (snap.uv.1 - 10.0).abs() < 1e-3, "{:?}", snap.uv);
     }
 
     #[test]
