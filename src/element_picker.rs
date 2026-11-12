@@ -432,11 +432,26 @@ impl PickRule {
             PickRule::OnFace(face) => point_lies_on_face(doc, face, element),
             PickRule::InSketch(sketch) => element_in_sketch(doc, *sketch, element),
             PickRule::ProjectableInto(sketch) => match element {
-                // A projected line of this sketch is re-picked to un-project it; every other
-                // sketch line — this sketch's own geometry, or another sketch's, which no
-                // projection source can track — is refused.
+                // A projected line of this sketch is re-picked to un-project it; another
+                // sketch's straight line is a source (#1979); this sketch's own drawn
+                // geometry is refused.
                 SceneElement::Line(li) => doc.lines.get(*li).is_some_and(|l| {
-                    l.sketch == *sketch && l.projection.is_some()
+                    if l.sketch == *sketch {
+                        l.projection.is_some()
+                    } else {
+                        l.projection.is_none() && l.bezier.is_none() && !l.shadow
+                    }
+                }),
+                // Another sketch's circle, but only one that projects (seen edge-on).
+                SceneElement::Circle(ci) => doc.circles.get(*ci).is_some_and(|c| {
+                    c.sketch != *sketch
+                        && !c.shadow
+                        && crate::projection::resolve_projection_source(
+                            doc,
+                            *sketch,
+                            &crate::model::ProjectionSource::SketchCircle { circle: *ci },
+                        )
+                        .is_some()
                 }),
                 SceneElement::Body(_)
                 | SceneElement::BodyEdge { .. }

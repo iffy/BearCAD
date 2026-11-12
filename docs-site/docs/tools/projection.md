@@ -11,13 +11,14 @@ one, like Offset.
 
 - Select outside **body edges** (a **face** or **corner** takes the whole body), or a
   **construction plane**, then press **Enter** (or the blue commit button) to project.
+- Select another sketch's **line** (or a **circle** seen edge-on) to project it too.
 - Select only **projected lines** and press **Enter** to un-project them.
 - Or select edges/a body/a plane before opening the sketch, then **P** → **Enter**.
 - Projected lines draw solid cyan, behave like construction geometry, and show the
   projector icon in the Elements pane.
 
-The tool picks outside geometry only; the sketch's own drawn geometry belongs to the other
-sketch tools.
+The sketch's own drawn geometry can't be projected into itself. A curved line, or a circle
+that isn't edge-on to the sketch plane, can't be projected.
 
 Projections are **associative**: when the source body changes — or the source plane moves
 or is resized — the projected lines follow it. Imported units project too — a

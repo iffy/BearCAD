@@ -1889,6 +1889,7 @@ pub fn selection_picker_for(
                     ElementKind::Plane,
                     ElementKind::Vertex,
                     ElementKind::Line,
+                    ElementKind::Circle,
                     ElementKind::Edge,
                     ElementKind::Body,
                 ])

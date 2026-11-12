@@ -12923,6 +12923,21 @@ impl AppState {
                 }
                 let mut created = 0usize;
                 for source in sources {
+                    // A sketch can't project its own geometry into itself (#1979).
+                    let own = match &source {
+                        crate::model::ProjectionSource::SketchLine { line } => {
+                            self.doc.lines.get(*line).is_some_and(|l| l.sketch == session.sketch)
+                        }
+                        crate::model::ProjectionSource::SketchCircle { circle } => self
+                            .doc
+                            .circles
+                            .get(*circle)
+                            .is_some_and(|c| c.sketch == session.sketch),
+                        _ => false,
+                    };
+                    if own {
+                        continue;
+                    }
                     let Some((wa, wb)) = crate::projection::resolve_projection_source(
                         &self.doc,
                         session.sketch,
@@ -37874,6 +37889,35 @@ translate_mode: crate::model::MoveTranslateMode::Free,
             "status should report un-project, got {}",
             state.status
         );
+    }
+
+    /// #1979: Project takes another sketch's line into the open sketch, and refuses the
+    /// open sketch's own geometry.
+    #[test]
+    fn project_takes_another_sketchs_line() {
+        let mut state = AppState::default();
+        let ground = state.doc.ground_plane().unwrap();
+        let other = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(ground));
+        let li = state.doc.lines.insert(crate::model::Line::from_local_endpoints(other, 0.0, 0.0, 0.0, 10.0));
+        let yz = state.doc.construction_planes.keys().nth(2).unwrap();
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(yz));
+        let own = state.doc.lines.insert(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 5.0));
+        state.sketch_session = Some(SketchSession { sketch });
+        state.scene_selection.insert(SceneElement::Line(li));
+        state.scene_selection.insert(SceneElement::Line(own));
+        let result = state.apply(Action::ProjectSelection);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let projected: Vec<_> = state
+            .doc
+            .lines
+            .values()
+            .filter(|l| l.sketch == sketch && l.projection.is_some())
+            .collect();
+        assert_eq!(projected.len(), 1);
+        assert!(matches!(
+            projected[0].projection,
+            Some(crate::model::ProjectionSource::SketchLine { line }) if line == li
+        ));
     }
 
     /// #1193: a mixed selection (projected line + projectable source) still projects the

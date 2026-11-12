@@ -4955,8 +4955,8 @@ The model in one place:
   and click paths use, so there is one definition and not three; the in-sketch Mirror, Offset
   and Repeat pickers carry it, which is what let the Mirror tool's hover arm go),
   `ProjectableInto(sketch)` (the Projection tool's sources, #983: outside bodies/edges/corners,
-  planes that cross the sketch, and the sketch's own projected lines — picked to un-project
-  them), `LiveBody` (not deleted, not
+  planes that cross the sketch, other sketches' straight lines and edge-on circles (#1979), and
+  the sketch's own projected lines — picked to un-project them), `LiveBody` (not deleted, not
   consumed by another operation), `OnBodies` / `OffBodies` (the Move tool's start points land on
   a **moving** body, its end points on stationary geometry, #649/#650), `Straight` (a
   Revolve axis or Repeat path takes no curve), `Construction(bool)`, and `NotIn(…)` (Combine's B

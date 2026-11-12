@@ -4605,6 +4605,12 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                     crate::model::ProjectionSource::Plane { plane } => {
                         Some(SceneElement::ConstructionPlane(*plane))
                     }
+                    crate::model::ProjectionSource::SketchLine { line } => {
+                        Some(SceneElement::Line(*line))
+                    }
+                    crate::model::ProjectionSource::SketchCircle { circle } => {
+                        Some(SceneElement::Circle(*circle))
+                    }
                     crate::model::ProjectionSource::UnitEdge { .. } => None,
                 })
                 .collect(),

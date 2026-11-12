@@ -352,6 +352,12 @@ pub enum ProjectionSource {
     /// intersection, spanning the source plane's drawn extent. Identified by index — stable,
     /// unlike a mesh edge — so the reference follows the plane through moves and resizes.
     Plane { plane: ConstructionPlaneKey },
+    /// A straight line of **another** sketch (#1979): projected along the target sketch's
+    /// normal, following the source line as it moves.
+    SketchLine { line: LineKey },
+    /// A circle of another sketch (#1979). Only a circle seen edge-on projects — as the
+    /// segment its disc collapses to; a parallel or tilted one would need an ellipse.
+    SketchCircle { circle: CircleKey },
 }
 
 /// Number of straight sub-segments used to approximate a curved [`Line`] for rendering,

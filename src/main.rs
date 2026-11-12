@@ -22707,6 +22707,7 @@ fn resolve_viewport_hover_highlight(
                     Some(SceneElement::ConstructionPlane(*index))
                 }
                 construction::PickTargetKind::Line(index) => Some(SceneElement::Line(*index)),
+                construction::PickTargetKind::Circle(index) => Some(SceneElement::Circle(*index)),
                 _ => None,
             };
             element
@@ -33579,6 +33580,9 @@ impl App {
                                     construction::PickTargetKind::Line(index) => {
                                         Some(SceneElement::Line(index))
                                     }
+                                    construction::PickTargetKind::Circle(index) => {
+                                        Some(SceneElement::Circle(index))
+                                    }
                                     _ => None,
                                 })
                         });
@@ -43615,6 +43619,7 @@ mod tests {
                 ElementKind::Plane,
                 ElementKind::Vertex,
                 ElementKind::Line,
+                ElementKind::Circle,
                 ElementKind::Edge,
                 ElementKind::Body,
             ])

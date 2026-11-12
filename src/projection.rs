@@ -34,6 +34,26 @@ pub fn resolve_projection_source(
             crate::units::unit_edge_world_segment(doc, *instance, face, *edge)
         }
         ProjectionSource::Plane { plane } => plane_sketch_intersection(doc, sketch, *plane),
+        ProjectionSource::SketchLine { line } => {
+            let line = doc.lines.get(*line).filter(|l| l.bezier.is_none())?;
+            crate::face::line_world_endpoints(doc, line)
+        }
+        ProjectionSource::SketchCircle { circle } => {
+            let circle = doc.circles.get(*circle)?;
+            let source = crate::face::sketch_geometry_frame(doc, circle.sketch)?;
+            let target = crate::face::sketch_geometry_frame(doc, sketch)?;
+            // Seen edge-on (the target normal lies in the circle's plane) the disc projects to
+            // a segment: the circle's diameter perpendicular to that normal, within its plane.
+            if target.normal.dot(source.normal).abs() > 1e-3 {
+                return None;
+            }
+            let dir = source.normal.cross(target.normal).normalize_or_zero();
+            if dir.length_squared() < 0.5 {
+                return None;
+            }
+            let center = crate::face::local_to_world(&source, circle.cx, circle.cy);
+            Some((center - dir * circle.r, center + dir * circle.r))
+        }
     }
 }
 
@@ -178,6 +198,14 @@ pub fn projection_sources_from_selection(
             SceneElement::ConstructionPlane(plane) => {
                 push(ProjectionSource::Plane { plane });
             }
+            // Another sketch's drawn geometry (#1979). `ProjectSources` drops the target
+            // sketch's own lines, and a projected line is a reference, not a source.
+            SceneElement::Line(line) => {
+                if doc.lines.get(line).is_some_and(|l| l.projection.is_none()) {
+                    push(ProjectionSource::SketchLine { line });
+                }
+            }
+            SceneElement::Circle(circle) => push(ProjectionSource::SketchCircle { circle }),
             _ => {}
         }
     }
@@ -188,6 +216,34 @@ pub fn projection_sources_from_selection(
 mod tests {
     use crate::model::plane_key_for_slot as pkey;
     use super::*;
+
+    /// #1979: another sketch's straight line and its edge-on circle project into a sketch.
+    #[test]
+    fn another_sketchs_line_and_edge_on_circle_project() {
+        use crate::model::{Circle, FaceId, Line};
+        let mut doc = Document::default();
+        // Source sketch on XZ (normal Y); target sketch on YZ (normal X).
+        let source = doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
+        let target = doc.add_sketch(FaceId::ConstructionPlane(pkey(2)));
+        let line = doc.lines.insert(Line::from_local_endpoints(source, 0.0, 5.0, 10.0, 5.0));
+        let circle = doc.circles.insert(Circle::from_local_center_radius(source, 0.0, 0.0, 4.0, 0.0));
+        // The XZ line runs along X: seen along X it collapses to a point.
+        let (a, b) =
+            resolve_projection_source(&doc, target, &ProjectionSource::SketchLine { line }).unwrap();
+        assert!((a - Vec3::new(0.0, 0.0, 5.0)).length() < 1e-4 && (b - Vec3::new(10.0, 0.0, 5.0)).length() < 1e-4);
+        // The XZ circle seen along X is a segment of length 2r along Z... in world Y? Its plane
+        // normal is Y and the target normal X, so the segment runs along Z.
+        let (a, b) =
+            resolve_projection_source(&doc, target, &ProjectionSource::SketchCircle { circle }).unwrap();
+        assert!(((a - b).length() - 8.0).abs() < 1e-3, "{a:?} {b:?}");
+        assert!((a - b).normalize().dot(Vec3::Z).abs() > 0.999);
+        // Seen face-on (a sketch parallel to the circle's) it would be an ellipse/circle: refused.
+        let parallel = doc.add_sketch(FaceId::ConstructionPlane(pkey(1)));
+        assert!(
+            resolve_projection_source(&doc, parallel, &ProjectionSource::SketchCircle { circle })
+                .is_none()
+        );
+    }
 
     /// #983: a datum plane's projection into a sketch runs along the two planes'
     /// intersection — every point on both planes — spanning the source's drawn extent even

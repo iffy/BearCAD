@@ -1244,6 +1244,10 @@ impl<'a> EmitCtx<'a> {
                 }
                 // A unit instance's face edge has no `bearcad.project` spelling.
                 Some(ProjectionSource::UnitEdge { .. }) => unresolved = true,
+                // Another sketch's geometry (#1979): re-projected by hand after the import.
+                Some(ProjectionSource::SketchLine { .. } | ProjectionSource::SketchCircle { .. }) => {
+                    unresolved = true
+                }
             }
         }
         if bodies.is_empty() && planes.is_empty() && !unresolved {
