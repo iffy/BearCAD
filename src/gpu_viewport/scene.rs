@@ -3551,9 +3551,16 @@ impl<'a> SceneMesh<'a> {
             (Vec3::new(0.0, axis_len, 0.0), palette.y_axis),
             (Vec3::new(0.0, 0.0, axis_len), palette.z_axis),
         ] {
+            // An axis pointing at the camera runs through the eye; its far end is behind
+            // the lens, where the screen-space widening smears it into a wedge (#1975).
+            let fwd = (cam.target - cam.eye()).normalize_or_zero();
+            let Some((a, b)) = clip_segment_to_depth(Vec3::ZERO, end, cam.eye(), fwd, AXIS_MIN_DEPTH)
+            else {
+                continue;
+            };
             self.push_screen_width_segment(
-                Vec3::ZERO,
-                end,
+                a,
+                b,
                 sketch_ground_color(color, dim),
                 ORIGIN_AXIS_WIDTH_PX,
                 cam.eye(),
@@ -5467,6 +5474,21 @@ fn offset_point_along_view_ray(p: Vec3, eye: Vec3, bias: f32) -> Vec3 {
     p + to_cam * bias
 }
 
+const AXIS_MIN_DEPTH: f32 = 1.0;
+
+/// The part of `a`–`b` at least `min_depth` in front of the eye along `fwd` (#1975), or
+/// `None` when none is.
+fn clip_segment_to_depth(a: Vec3, b: Vec3, eye: Vec3, fwd: Vec3, min_depth: f32) -> Option<(Vec3, Vec3)> {
+    let da = (a - eye).dot(fwd) - min_depth;
+    let db = (b - eye).dot(fwd) - min_depth;
+    match (da >= 0.0, db >= 0.0) {
+        (true, true) => Some((a, b)),
+        (false, false) => None,
+        (true, false) => Some((a, a + (b - a) * (da / (da - db)))),
+        (false, true) => Some((b + (a - b) * (db / (db - da)), b)),
+    }
+}
+
 fn offset_segment_toward_camera(a: Vec3, b: Vec3, eye: Vec3, bias: f32) -> (Vec3, Vec3) {
     (
         offset_point_along_view_ray(a, eye, bias),
@@ -7188,6 +7210,18 @@ pub fn line_screen_quad(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_axis_through_the_eye_is_clipped_in_front_of_the_camera() {
+        use super::*;
+        let eye = Vec3::new(0.0, 50.0, 0.0);
+        let fwd = Vec3::new(0.0, -1.0, 0.0);
+        // +Y axis runs from the origin (50 ahead) to 1000 (behind the eye).
+        let (a, b) = clip_segment_to_depth(Vec3::ZERO, Vec3::new(0.0, 1000.0, 0.0), eye, fwd, 1.0).unwrap();
+        assert_eq!(a, Vec3::ZERO);
+        assert!((b.y - 49.0).abs() < 1e-3, "{b:?}");
+        assert!(clip_segment_to_depth(Vec3::new(0.0, 60.0, 0.0), Vec3::new(0.0, 100.0, 0.0), eye, fwd, 1.0).is_none());
+    }
+
     use crate::model::circle_key_for_slot as rkey;
     use crate::model::line_key_for_slot as lkey;
     use crate::model::plane_key_for_slot as pkey;

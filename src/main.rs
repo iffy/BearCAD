@@ -33297,7 +33297,19 @@ impl App {
                         snap_ground_point(&self.state, session, &frame, &project, gp, &[]);
                     update_extension_anchors(&mut self.state, snap_target.clone());
 
-                    if !was_creating && primary_pressed && !over_committed_dim_label {
+                    // A circle's diameter label sits on its centre; a click that snaps to a
+                    // vertex starts the line there rather than grabbing the label (#1976).
+                    let on_vertex_snap = matches!(
+                        snap_target,
+                        Some(
+                            crate::snapping::SnapTarget::Vertex(_)
+                                | crate::snapping::SnapTarget::Origin
+                        )
+                    );
+                    if !was_creating
+                        && primary_pressed
+                        && (!over_committed_dim_label || on_vertex_snap)
+                    {
                         self.state.line_start_snap = snap_target.clone();
                         self.state.line_end_snap = None;
                         self.state.creating_line = Some(CreatingLine {
